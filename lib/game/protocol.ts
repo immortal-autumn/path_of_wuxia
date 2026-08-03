@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type {
+  ActionSystemState,
   ChatMessage,
   GameSnapshot,
   MapEditSessionState,
@@ -99,6 +100,9 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("sync"), requestId }),
   z.object({ type: z.literal("move"), requestId, locationId: id }),
   z.object({ type: z.literal("act"), requestId, actionId: id }),
+  z.object({ type: z.literal("action.start"), requestId, actionId: id }),
+  z.object({ type: z.literal("action.cancel"), requestId, jobId: id }),
+  z.object({ type: z.literal("action.queue.reorder"), requestId, jobIds: z.array(id).max(8) }),
   z.object({ type: z.literal("attributes.allocate"), requestId, allocations }),
   z.object({ type: z.literal("cultivation.breakthrough"), requestId }),
   z.object({ type: z.literal("chat.send"), requestId, content: z.string().min(1).max(240) }),
@@ -126,6 +130,7 @@ export type ServerMessage =
   | { type: "snapshot"; snapshot: GameSnapshot }
   | { type: "ack"; requestId: string; message?: string }
   | { type: "self.updated"; player: PlayerSelf }
+  | { type: "action.updated"; actionState: ActionSystemState }
   | { type: "cultivation.updated"; player: PlayerSelf; delta: number; offline: boolean; message: string }
   | { type: "players.updated"; players: OnlinePlayer[] }
   | { type: "world.event"; event: WorldEvent }

@@ -1,4 +1,13 @@
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
+import {
+  actionSuccessChance,
+  applyNeedDeltas,
+  needPenalty,
+  parseCheck,
+  parseOutcomes,
+  parseRequirements,
+  settleNeedValues,
+} from "./action-engine";
 import type { GameDatabase } from "./database";
 import { getGameDatabase, inTransaction } from "./database";
 import { chunkForGrid, chunkKey, directionBetween, gridToWorldPosition, OPPOSITE_DIRECTION } from "./map";
@@ -14,6 +23,10 @@ import {
 } from "./progression";
 import { createWorldStatus } from "./time";
 import type {
+  ActionJob,
+  ActionOutcome,
+  ActionSystemState,
+  ActionTemplate,
   ActionDefinition,
   BaseAttributes,
   ChatMessage,
@@ -32,6 +45,8 @@ import type {
   MapViewport,
   OnlinePlayer,
   PlayerSelf,
+  PlayerNeeds,
+  PlayerSkill,
   RouteType,
   SessionIdentity,
   TransitionKind,
@@ -69,6 +84,17 @@ type RouteRow = {
   from_direction: Direction | null; to_direction: Direction | null; version: number;
 };
 type EventRow = { id: number; player_id: string | null; event_type: string; content: string; created_at: string };
+type ActionTemplateRow = {
+  id: string; binding_id: string; name: string; description: string; category: ActionTemplate["category"];
+  target_kind: ActionTemplate["targetKind"]; duration_seconds: number; requirements_json: string; check_json: string;
+  costs_json: string; outcomes_json: string; result_template: string; adult: number;
+  visibility: ActionTemplate["visibility"]; cooldown_seconds: number; version: number;
+};
+type ActionJobRow = {
+  id: string; action_name: string; player_id: string; action_template_id: string; target_player_id: string | null;
+  target_location_id: string | null; status: ActionJob["status"]; queue_position: number;
+  started_at: string | null; completes_at: string | null; result_text: string | null;
+};
 
 function tokenHash(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -108,6 +134,36 @@ function mapEvent(row: EventRow): WorldEvent {
   return { id: row.id, playerId: row.player_id, eventType: row.event_type, content: row.content, createdAt: row.created_at };
 }
 
+function mapActionJob(row: ActionJobRow): ActionJob {
+  return {
+    id: row.id,
+    name: row.action_name,
+    playerId: row.player_id,
+    actionTemplateId: row.action_template_id,
+    targetPlayerId: row.target_player_id,
+    targetLocationId: row.target_location_id,
+    status: row.status,
+    queuePosition: row.queue_position,
+    startedAt: row.started_at,
+    completesAt: row.completes_at,
+    resultText: row.result_text,
+  };
+}
+
+function actionOutcomeSummary(outcome: ActionOutcome) {
+  const parts: string[] = [];
+  if (outcome.silverDelta) parts.push(`银两${outcome.silverDelta > 0 ? "+" : ""}${outcome.silverDelta}`);
+  if (outcome.hpDelta) parts.push(`气血${outcome.hpDelta > 0 ? "+" : ""}${outcome.hpDelta}`);
+  if (outcome.cultivationDelta) parts.push(`修为${outcome.cultivationDelta > 0 ? "+" : ""}${outcome.cultivationDelta}`);
+  if (outcome.needDeltas) {
+    const labels = { satiety: "饱食", hydration: "饮水", hygiene: "卫生", fatigue: "疲劳", bladder: "如厕" } as const;
+    for (const [key, value] of Object.entries(outcome.needDeltas)) {
+      if (value) parts.push(`${labels[key as keyof typeof labels]}${value > 0 ? "+" : ""}${value}`);
+    }
+  }
+  return parts.join(" · ") || "结果由行动检定决定";
+}
+
 function cleanText(value: string, label: string, maxLength: number) {
   const cleaned = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
   if (!cleaned) throw new Error(`${label}不能为空。`);
@@ -137,6 +193,69 @@ export class GameService {
     private readonly randomPercent: () => number = () => randomInt(100),
   ) {}
 
+  private ensurePlayerSystems(playerId: string, at = this.now()) {
+    const timestamp = at.toISOString();
+    this.db.prepare("INSERT OR IGNORE INTO player_needs(player_id,updated_at) VALUES (?,?)").run(playerId, timestamp);
+    this.db.prepare(`
+      INSERT OR IGNORE INTO player_skills(player_id,skill_id,level,experience,updated_at)
+      SELECT ?,id,0,0,? FROM skill_definitions WHERE is_active=1
+    `).run(playerId, timestamp);
+  }
+
+  private readNeeds(playerId: string): PlayerNeeds {
+    this.ensurePlayerSystems(playerId);
+    const row = this.db.prepare(`
+      SELECT satiety,hydration,hygiene,fatigue,bladder,updated_at FROM player_needs WHERE player_id=?
+    `).get(playerId) as {
+      satiety: number; hydration: number; hygiene: number; fatigue: number; bladder: number; updated_at: string;
+    };
+    return {
+      satiety: row.satiety,
+      hydration: row.hydration,
+      hygiene: row.hygiene,
+      fatigue: row.fatigue,
+      bladder: row.bladder,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  private writeNeeds(playerId: string, needs: PlayerNeeds) {
+    this.db.prepare(`
+      UPDATE player_needs SET satiety=?,hydration=?,hygiene=?,fatigue=?,bladder=?,updated_at=? WHERE player_id=?
+    `).run(needs.satiety, needs.hydration, needs.hygiene, needs.fatigue, needs.bladder, needs.updatedAt, playerId);
+  }
+
+  private settleNeedsInternal(playerId: string, at: Date) {
+    const settled = settleNeedValues(this.readNeeds(playerId), at);
+    this.writeNeeds(playerId, settled);
+    return settled;
+  }
+
+  getNeeds(playerId: string) {
+    this.getPlayerRow(playerId);
+    return this.settleNeedsInternal(playerId, this.now());
+  }
+
+  private getPlayerSkills(playerId: string): PlayerSkill[] {
+    this.ensurePlayerSystems(playerId);
+    return (this.db.prepare(`
+      SELECT s.id,s.name,s.description,s.attribute_key,s.category,ps.level,ps.experience
+      FROM player_skills ps JOIN skill_definitions s ON s.id=ps.skill_id
+      WHERE ps.player_id=? AND s.is_active=1 ORDER BY s.category,s.id
+    `).all(playerId) as Array<{
+      id: string; name: string; description: string; attribute_key: keyof BaseAttributes;
+      category: string; level: number; experience: number;
+    }>).map((row) => ({
+      id: row.id,
+      name: row.name,
+      description: row.description,
+      attributeKey: row.attribute_key,
+      category: row.category,
+      level: row.level,
+      experience: row.experience,
+    }));
+  }
+
   private playerSelect() {
     return `
       SELECT p.id,p.name,p.title,p.hp,p.silver,p.current_location,
@@ -163,6 +282,7 @@ export class GameService {
     const levelCost = cultivationForNextLevel(row.realm_index, row.realm_level);
     const breakthroughCost = Math.ceil(levelCost * 0.3);
     const chance = breakthroughChance(row.realm_level);
+    const needs = this.readNeeds(row.id);
     return {
       id: row.id, name: row.name, title: row.title, hp: Math.min(row.hp, derived.maxHp), maxHp: derived.maxHp,
       endurance: Math.min(row.endurance, derived.maxEndurance), maxEndurance: derived.maxEndurance,
@@ -177,6 +297,8 @@ export class GameService {
         nextMinorAttributePoints: minorAttributePoints(row.realm_index),
         nextRealmAttributePoints: row.realm_index < REALMS.length - 1 ? majorAttributePoints(row.realm_index + 1) : 0,
       },
+      needs,
+      skills: this.getPlayerSkills(row.id),
     };
   }
 
@@ -262,11 +384,14 @@ export class GameService {
       SELECT p.id FROM sessions s JOIN players p ON p.id=s.player_id WHERE s.token_hash=? AND s.expires_at>?
     `).get(tokenHash(token), this.now().toISOString()) as { id: string } | undefined;
     if (!row) return null;
+    this.settleActionQueue(row.id, true);
     return this.settleCultivation(row.id, true).player;
   }
 
   getPlayer(playerId: string) {
-    return this.mapPlayer(this.getPlayerRow(playerId));
+    const row = this.getPlayerRow(playerId);
+    this.settleNeedsInternal(playerId, this.now());
+    return this.mapPlayer(row);
   }
 
   allocateAttributes(playerId: string, allocations: BaseAttributes) {
@@ -450,6 +575,295 @@ export class GameService {
     }));
   }
 
+  private getTemplateRow(actionTemplateId: string) {
+    const row = this.db.prepare(`
+      SELECT id,'' AS binding_id,name,description,category,target_kind,duration_seconds,requirements_json,
+        check_json,costs_json,outcomes_json,result_template,adult,visibility,cooldown_seconds,version
+      FROM action_templates WHERE id=? AND is_active=1
+    `).get(actionTemplateId) as ActionTemplateRow | undefined;
+    if (!row) throw new Error("行动规则不存在或已停用。");
+    return row;
+  }
+
+  private actionJobs(playerId: string) {
+    return (this.db.prepare(`
+      SELECT j.id,t.name AS action_name,j.player_id,j.action_template_id,j.target_player_id,j.target_location_id,
+        j.status,j.queue_position,j.started_at,j.completes_at,j.result_text
+      FROM action_jobs j JOIN action_templates t ON t.id=j.action_template_id
+      WHERE j.player_id=? AND j.status IN ('running','queued','paused')
+      ORDER BY CASE j.status WHEN 'running' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END,j.queue_position,j.created_at
+    `).all(playerId) as ActionJobRow[]).map(mapActionJob);
+  }
+
+  private skillLevel(playerId: string, skillId: string | undefined) {
+    if (!skillId) return 0;
+    this.ensurePlayerSystems(playerId);
+    return (this.db.prepare("SELECT level FROM player_skills WHERE player_id=? AND skill_id=?").get(playerId, skillId) as { level: number } | undefined)?.level ?? 0;
+  }
+
+  private addSkillExperience(playerId: string, skillId: string | undefined, gain: number, at: string) {
+    if (!skillId || gain <= 0) return;
+    this.ensurePlayerSystems(playerId, new Date(at));
+    const row = this.db.prepare("SELECT level,experience FROM player_skills WHERE player_id=? AND skill_id=?").get(playerId, skillId) as { level: number; experience: number } | undefined;
+    if (!row) return;
+    let level = row.level;
+    let experience = row.experience + Math.floor(gain);
+    while (level < 100) {
+      const required = 100 * (level + 1);
+      if (experience < required) break;
+      experience -= required;
+      level += 1;
+    }
+    this.db.prepare("UPDATE player_skills SET level=?,experience=?,updated_at=? WHERE player_id=? AND skill_id=?")
+      .run(level, experience, at, playerId, skillId);
+  }
+
+  private applyActionOutcome(playerId: string, job: ActionJobRow, completedAt: Date) {
+    this.settleCultivationInternal(playerId, completedAt, false);
+    const template = this.getTemplateRow(job.action_template_id);
+    const requirements = parseRequirements(template.requirements_json);
+    const check = parseCheck(template.check_json);
+    const outcomes = parseOutcomes(template.outcomes_json);
+    const row = this.getPlayerRow(playerId);
+    const attributes: BaseAttributes = {
+      strength: row.strength, agility: row.agility, constitution: row.constitution,
+      root: row.root, comprehension: row.comprehension, spirit: row.spirit,
+    };
+    const needs = this.settleNeedsInternal(playerId, completedAt);
+    const skillId = check.skillId ?? requirements.skillId;
+    const chance = actionSuccessChance({ attributes, skillLevel: this.skillLevel(playerId, skillId), needs, check });
+    const success = chance >= 100 || this.randomPercent() < chance;
+    const outcome = success ? outcomes.success : outcomes.failure;
+    const timestamp = completedAt.toISOString();
+    const nextNeeds = applyNeedDeltas(needs, outcome.needDeltas);
+    nextNeeds.updatedAt = timestamp;
+    this.writeNeeds(playerId, nextNeeds);
+
+    const derived = deriveStats(attributes, row.realm_index);
+    const hp = Math.max(0, Math.min(derived.maxHp, row.hp + (outcome.hpDelta ?? 0)));
+    const silver = Math.max(0, row.silver + (outcome.silverDelta ?? 0));
+    this.db.prepare("UPDATE players SET hp=?,silver=?,updated_at=?,last_seen_at=? WHERE id=?")
+      .run(hp, silver, timestamp, timestamp, playerId);
+
+    if (outcome.cultivationDelta) {
+      const advanced = this.advanceCultivation(row, outcome.cultivationDelta);
+      this.db.prepare(`
+        UPDATE player_progression SET realm_level=?,cultivation_progress=?,unspent_points=?,updated_at=? WHERE player_id=?
+      `).run(advanced.level, advanced.progress, advanced.unspentPoints, timestamp, playerId);
+      this.db.prepare(`
+        INSERT INTO cultivation_logs(player_id,kind,delta,realm_index,realm_level,detail,created_at)
+        VALUES (?,'action',?,?,?,?,?)
+      `).run(playerId, outcome.cultivationDelta, row.realm_index, advanced.level, template.name, timestamp);
+    }
+    this.addSkillExperience(playerId, skillId, outcome.skillExperience ?? 0, timestamp);
+
+    const content = template.result_template.replaceAll("{name}", row.name);
+    this.db.prepare(`
+      INSERT INTO action_logs(player_id,kind,action_template_id,action_job_id,from_location,to_location,result_text,created_at)
+      VALUES (?,'action',?,?,?,?,?,?)
+    `).run(playerId, template.id, job.id, row.current_location, row.current_location, content, timestamp);
+    if (template.visibility === "public") {
+      this.db.prepare("INSERT INTO world_events(player_id,event_type,content,created_at) VALUES (?,'action',?,?)")
+        .run(playerId, content, timestamp);
+    } else {
+      this.db.prepare("INSERT INTO private_events(player_id,event_type,content,created_at) VALUES (?,'action',?,?)")
+        .run(playerId, content, timestamp);
+    }
+    this.db.prepare("UPDATE action_jobs SET status='completed',result_text=?,updated_at=? WHERE id=?")
+      .run(`${success ? "成功" : "失败"}（${chance}%） · ${content}`, timestamp, job.id);
+  }
+
+  private startNextQueuedJob(playerId: string, at: Date) {
+    const next = this.db.prepare(`
+      SELECT j.id,t.duration_seconds FROM action_jobs j JOIN action_templates t ON t.id=j.action_template_id
+      WHERE j.player_id=? AND j.status='queued' ORDER BY j.queue_position,j.created_at LIMIT 1
+    `).get(playerId) as { id: string; duration_seconds: number } | undefined;
+    if (!next) return false;
+    const startedAt = at.toISOString();
+    const completesAt = new Date(at.getTime() + next.duration_seconds * 1000).toISOString();
+    this.db.prepare("UPDATE action_jobs SET status='running',queue_position=0,started_at=?,completes_at=?,updated_at=? WHERE id=?")
+      .run(startedAt, completesAt, startedAt, next.id);
+    this.db.prepare("UPDATE action_jobs SET queue_position=queue_position-1 WHERE player_id=? AND status='queued' AND queue_position>0")
+      .run(playerId);
+    return true;
+  }
+
+  private settleActionQueueInternal(playerId: string, at: Date) {
+    this.getPlayerRow(playerId);
+    this.settleNeedsInternal(playerId, at);
+    let completed = 0;
+    for (let guard = 0; guard < 32; guard += 1) {
+      const running = this.db.prepare(`
+        SELECT j.id,t.name AS action_name,j.player_id,j.action_template_id,j.target_player_id,j.target_location_id,
+          j.status,j.queue_position,j.started_at,j.completes_at,j.result_text
+        FROM action_jobs j JOIN action_templates t ON t.id=j.action_template_id
+        WHERE j.player_id=? AND j.status='running' LIMIT 1
+      `).get(playerId) as ActionJobRow | undefined;
+      if (!running) {
+        if (!this.startNextQueuedJob(playerId, at)) break;
+        continue;
+      }
+      if (!running.completes_at || new Date(running.completes_at).getTime() > at.getTime()) break;
+      const completedAt = new Date(running.completes_at);
+      this.applyActionOutcome(playerId, running, completedAt);
+      completed += 1;
+      this.startNextQueuedJob(playerId, completedAt);
+    }
+    return completed;
+  }
+
+  settleActionQueue(playerId: string, offline = false) {
+    return inTransaction(this.db, () => ({
+      completed: this.settleActionQueueInternal(playerId, this.now()),
+      offline,
+    }));
+  }
+
+  settleDueActions(playerId: string) {
+    const due = this.db.prepare(`
+      SELECT 1 FROM action_jobs WHERE player_id=? AND status='running' AND completes_at<=? LIMIT 1
+    `).get(playerId, this.now().toISOString());
+    return due ? this.settleActionQueue(playerId, false).completed : 0;
+  }
+
+  private unavailableReason(playerId: string, template: ActionTemplateRow) {
+    const requirements = parseRequirements(template.requirements_json);
+    const player = this.getPlayerRow(playerId);
+    if (requirements.attribute && player[requirements.attribute] < (requirements.minimumAttribute ?? 0)) {
+      return `${requirements.attribute}需要达到${requirements.minimumAttribute}`;
+    }
+    if (requirements.skillId && this.skillLevel(playerId, requirements.skillId) < (requirements.minimumSkillLevel ?? 0)) {
+      return `技能熟练度需要达到${requirements.minimumSkillLevel}`;
+    }
+    return null;
+  }
+
+  private readActionState(playerId: string): ActionSystemState {
+    const player = this.getPlayer(playerId);
+    const needs = player.needs;
+    const rows = this.db.prepare(`
+      SELECT t.id,b.id AS binding_id,t.name,t.description,t.category,t.target_kind,t.duration_seconds,
+        t.requirements_json,t.check_json,t.costs_json,t.outcomes_json,t.result_template,t.adult,
+        t.visibility,t.cooldown_seconds,t.version
+      FROM location_action_bindings b JOIN action_templates t ON t.id=b.action_template_id
+      WHERE b.location_id=? AND b.is_active=1 AND t.is_active=1
+      ORDER BY b.priority DESC,t.category,t.name,t.id
+    `).all(player.currentLocation) as ActionTemplateRow[];
+    const jobs = this.actionJobs(playerId);
+    return {
+      available: rows.map((row) => {
+        const check = parseCheck(row.check_json);
+        const outcomes = parseOutcomes(row.outcomes_json);
+        const reason = this.unavailableReason(playerId, row);
+        return {
+          id: row.id,
+          bindingId: row.binding_id,
+          name: row.name,
+          description: row.description,
+          category: row.category,
+          targetKind: row.target_kind,
+          durationSeconds: row.duration_seconds,
+          successChance: actionSuccessChance({
+            attributes: player.attributes,
+            skillLevel: this.skillLevel(playerId, check.skillId),
+            needs,
+            check,
+          }),
+          adult: row.adult === 1,
+          visibility: row.visibility,
+          available: reason === null,
+          unavailableReason: reason,
+          outcomeSummary: actionOutcomeSummary(outcomes.success),
+        };
+      }),
+      current: jobs.find((job) => job.status === "running" || job.status === "paused") ?? null,
+      queued: jobs.filter((job) => job.status === "queued"),
+      maxQueued: 8,
+      needs,
+      needPenalty: needPenalty(needs),
+    };
+  }
+
+  getActionState(playerId: string) {
+    this.settleActionQueue(playerId);
+    return this.readActionState(playerId);
+  }
+
+  startAction(playerId: string, actionTemplateId: string) {
+    return inTransaction(this.db, () => {
+      const now = this.now();
+      this.settleActionQueueInternal(playerId, now);
+      const player = this.getPlayerRow(playerId);
+      const template = this.db.prepare(`
+        SELECT t.id,b.id AS binding_id,t.name,t.description,t.category,t.target_kind,t.duration_seconds,
+          t.requirements_json,t.check_json,t.costs_json,t.outcomes_json,t.result_template,t.adult,
+          t.visibility,t.cooldown_seconds,t.version
+        FROM location_action_bindings b JOIN action_templates t ON t.id=b.action_template_id
+        WHERE b.location_id=? AND b.action_template_id=? AND b.is_active=1 AND t.is_active=1
+      `).get(player.current_location, actionTemplateId) as ActionTemplateRow | undefined;
+      if (!template) throw new Error("这里无法进行这项行动。");
+      const reason = this.unavailableReason(playerId, template);
+      if (reason) throw new Error(reason);
+      if (template.target_kind === "player") throw new Error("这项行动需要先选择目标。");
+      const jobs = this.actionJobs(playerId);
+      const queuedCount = jobs.filter((job) => job.status === "queued").length;
+      if (queuedCount >= 8) throw new Error("等待队列最多只能安排8项行动。");
+      const running = jobs.some((job) => job.status === "running" || job.status === "paused");
+      const id = randomUUID();
+      const timestamp = now.toISOString();
+      const position = running ? queuedCount + 1 : 0;
+      const status = running ? "queued" : "running";
+      const completesAt = running ? null : new Date(now.getTime() + template.duration_seconds * 1000).toISOString();
+      this.db.prepare(`
+        INSERT INTO action_jobs(
+          id,player_id,action_template_id,binding_id,target_location_id,status,queue_position,
+          started_at,completes_at,reserved_json,context_json,created_at,updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,'{}','{}',?,?)
+      `).run(
+        id, playerId, template.id, template.binding_id, player.current_location, status, position,
+        running ? null : timestamp, completesAt, timestamp, timestamp,
+      );
+      if (!running && template.duration_seconds === 0) this.settleActionQueueInternal(playerId, now);
+      return {
+        actionState: this.readActionState(playerId),
+        message: running
+          ? `${template.name}已加入等待队列。`
+          : template.duration_seconds === 0
+            ? `${template.name}完成。`
+            : `${template.name}已经开始。`,
+      };
+    });
+  }
+
+  cancelAction(playerId: string, jobId: string) {
+    return inTransaction(this.db, () => {
+      const now = this.now();
+      this.settleActionQueueInternal(playerId, now);
+      const job = this.db.prepare("SELECT status FROM action_jobs WHERE id=? AND player_id=?").get(jobId, playerId) as { status: string } | undefined;
+      if (!job || !["running", "queued", "paused"].includes(job.status)) throw new Error("这项行动已经无法取消。");
+      this.db.prepare("UPDATE action_jobs SET status='cancelled',updated_at=? WHERE id=?").run(now.toISOString(), jobId);
+      if (job.status === "running") this.startNextQueuedJob(playerId, now);
+      const queued = this.db.prepare("SELECT id FROM action_jobs WHERE player_id=? AND status='queued' ORDER BY queue_position,created_at").all(playerId) as Array<{ id: string }>;
+      const update = this.db.prepare("UPDATE action_jobs SET queue_position=? WHERE id=?");
+      queued.forEach((row, index) => update.run(index + 1, row.id));
+      return { actionState: this.readActionState(playerId), message: "行动已取消。" };
+    });
+  }
+
+  reorderActionQueue(playerId: string, jobIds: string[]) {
+    return inTransaction(this.db, () => {
+      this.settleActionQueueInternal(playerId, this.now());
+      const current = (this.db.prepare("SELECT id FROM action_jobs WHERE player_id=? AND status='queued' ORDER BY queue_position,created_at").all(playerId) as Array<{ id: string }>).map((row) => row.id);
+      if (jobIds.length !== current.length || new Set(jobIds).size !== current.length || current.some((id) => !jobIds.includes(id))) {
+        throw new Error("等待队列内容已经变化，请刷新后再试。");
+      }
+      const update = this.db.prepare("UPDATE action_jobs SET queue_position=?,updated_at=? WHERE id=?");
+      const timestamp = this.now().toISOString();
+      jobIds.forEach((id, index) => update.run(index + 1, timestamp, id));
+      return { actionState: this.readActionState(playerId), message: "等待队列顺序已更新。" };
+    });
+  }
+
   getNeighborhood(startLocationId: string, maxDepth = 3) {
     const start = this.getLocation(startLocationId);
     const visited = new Set<string>([start.id]);
@@ -514,6 +928,7 @@ export class GameService {
   }
 
   getSnapshot(playerId: string, onlinePlayerIds: string[]): GameSnapshot {
+    this.settleActionQueue(playerId, false);
     this.settleCultivation(playerId, false);
     const self = this.getPlayer(playerId);
     const current = this.getLocation(self.currentLocation);
@@ -525,6 +940,7 @@ export class GameService {
       self, world: this.getWorldStatus(allOnlinePlayers.length), currentLayer: this.getLayer(current.layerId),
       regions: neighborhood.regions, locations: neighborhood.locations, routes: neighborhood.routes,
       transitions: this.getTransitions(self.currentLocation), actions: this.getActions([self.currentLocation]),
+      actionState: this.readActionState(playerId),
       onlinePlayers, recentEvents: this.getRecentEvents(), chatMessages: this.getRecentChat(),
     };
   }
@@ -928,6 +1344,10 @@ export class GameService {
 
   move(playerId: string, destinationId: string): GameMutation {
     return inTransaction(this.db, () => {
+      this.settleActionQueueInternal(playerId, this.now());
+      if (this.db.prepare("SELECT 1 FROM action_jobs WHERE player_id=? AND status IN ('running','paused')").get(playerId)) {
+        throw new Error("当前行动尚未完成，请先等待或取消行动。");
+      }
       this.settleCultivationInternal(playerId, this.now(), false);
       const player = this.getPlayer(playerId);
       if (destinationId === player.currentLocation) throw new Error("你已经在这里了。");

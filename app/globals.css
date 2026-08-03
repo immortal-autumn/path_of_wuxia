@@ -77,7 +77,7 @@ h2 {
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-rows: minmax(96px, auto) minmax(0, 1fr) minmax(150px, auto);
+  grid-template-rows: minmax(96px, auto) minmax(280px, 1fr) minmax(160px, 30vh);
   gap: 8px;
 }
 
@@ -470,6 +470,15 @@ h2 {
   overflow: auto;
 }
 
+.action-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(230px, 0.34fr);
+  gap: 10px;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .action-card {
   display: grid;
   grid-template-columns: 34px 1fr;
@@ -520,6 +529,65 @@ h2 {
   color: var(--muted);
   font-size: 10px;
   font-style: normal;
+}
+
+.action-queue {
+  min-width: 0;
+  padding-left: 10px;
+  border-left: 1px solid var(--border-light);
+  overflow: auto;
+}
+
+.queue-heading,
+.queue-job,
+.needs-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border-light);
+  font-size: 11px;
+}
+
+.queue-job > span:first-child {
+  min-width: 0;
+}
+
+.queue-job strong,
+.queue-job small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.queue-job small,
+.empty-queue {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.queue-job button {
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  background: #fff;
+  cursor: pointer;
+}
+
+.queue-controls {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 3px;
+}
+
+.needs-summary {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  align-items: start;
+}
+
+.needs-summary strong {
+  grid-column: 1 / -1;
 }
 
 .side-column {
@@ -1204,6 +1272,17 @@ h2 {
   .action-list {
     grid-template-columns: 1fr;
     overflow: visible;
+  }
+
+  .action-workspace {
+    grid-template-columns: 1fr;
+    overflow: visible;
+  }
+
+  .action-queue {
+    padding: 10px 0 0;
+    border-left: 0;
+    border-top: 1px solid var(--border-light);
   }
 
   .chat-panel {

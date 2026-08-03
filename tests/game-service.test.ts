@@ -93,8 +93,11 @@ describe("GameService", () => {
     const tables = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>).map((row) => row.name));
     expect(requiredTables.every((table) => tables.has(table))).toBe(true);
     expect(db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: MAP_SCHEMA_VERSION });
-    expect(db.prepare("SELECT COUNT(*) AS count FROM action_templates WHERE is_active=1").get()).toEqual({ count: 5 });
-    expect(db.prepare("SELECT COUNT(*) AS count FROM location_action_bindings WHERE is_active=1").get()).toEqual({ count: 5 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM action_templates WHERE is_active=1 AND category='legacy'").get()).toEqual({ count: 5 });
+    expect(db.prepare(`
+      SELECT COUNT(*) AS count FROM location_action_bindings b JOIN action_templates t ON t.id=b.action_template_id
+      WHERE b.is_active=1 AND t.category='legacy'
+    `).get()).toEqual({ count: 5 });
 
     const player = service.createSession().player;
     expect(db.prepare("SELECT controller_kind,adult_status,adult_content_enabled FROM players WHERE id=?").get(player.id))
@@ -105,6 +108,54 @@ describe("GameService", () => {
     expect(db.prepare("SELECT action_template_id FROM action_logs WHERE player_id=? AND kind='action'").get(player.id))
       .toEqual({ action_template_id: "observe-road" });
     expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  });
+
+  it("runs one real-time action with eight reorderable queued actions and settles by server time", () => {
+    const player = service.createSession().player;
+    const initial = service.getActionState(player.id);
+    expect(initial.available.map((action) => action.name)).toEqual(expect.arrayContaining(["整理衣装", "观察四周", "凝神聆听"]));
+    expect(initial.current).toBeNull();
+    expect(initial.maxQueued).toBe(8);
+
+    const started = service.startAction(player.id, "action-observe");
+    expect(started.actionState.current).toMatchObject({ name: "观察四周", status: "running" });
+    service.startAction(player.id, "action-listen");
+    expect(() => service.move(player.id, "home-hall")).toThrow("当前行动尚未完成");
+    for (let index = 0; index < 7; index += 1) service.startAction(player.id, "action-listen");
+    expect(service.getActionState(player.id).queued).toHaveLength(8);
+    expect(() => service.startAction(player.id, "action-listen")).toThrow("等待队列最多只能安排8项行动");
+
+    const reversedIds = service.getActionState(player.id).queued.map((job) => job.id).reverse();
+    expect(service.reorderActionQueue(player.id, reversedIds).actionState.queued.map((job) => job.id)).toEqual(reversedIds);
+    clock = new Date(clock.getTime() + 60_000);
+    expect(service.settleActionQueue(player.id).completed).toBe(1);
+    const after = service.getActionState(player.id);
+    expect(after.current).toMatchObject({ name: "凝神聆听", status: "running", startedAt: clock.toISOString() });
+    expect(service.getPlayer(player.id).skills.find((skill) => skill.id === "perception")?.experience).toBe(8);
+    service.cancelAction(player.id, after.current!.id);
+    expect(service.getActionState(player.id).current).toMatchObject({ name: "凝神聆听" });
+  });
+
+  it("decays needs in real time and applies facility actions after offline completion", () => {
+    const player = service.createSession().player;
+    service.move(player.id, "home-hall");
+    service.move(player.id, "home-main-bedroom");
+    const state = service.getActionState(player.id);
+    expect(state.available.map((action) => action.name)).toEqual(expect.arrayContaining(["睡眠八小时", "休息一小时"]));
+    service.startAction(player.id, "action-sleep");
+
+    clock = new Date(clock.getTime() + 8 * 60 * 60_000);
+    expect(service.settleActionQueue(player.id, true)).toMatchObject({ completed: 1, offline: true });
+    const completed = service.getActionState(player.id);
+    expect(completed.current).toBeNull();
+    expect(completed.needs).toMatchObject({ fatigue: 0, satiety: 48, hydration: 27, hygiene: 84, bladder: 75 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM action_logs WHERE player_id=? AND action_template_id='action-sleep'").get(player.id))
+      .toEqual({ count: 1 });
+
+    db.prepare(`
+      UPDATE player_needs SET satiety=10,hydration=10,hygiene=10,fatigue=90,bladder=90,updated_at=? WHERE player_id=?
+    `).run(clock.toISOString(), player.id);
+    expect(service.getActionState(player.id).needPenalty).toBe(25);
   });
 
   it("upgrades the former public-map hierarchy into one continuous overworld", () => {

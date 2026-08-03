@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEven
 import Link from "next/link";
 import type { ClientMessage, ServerMessage } from "@/lib/game/protocol";
 import type {
-  ActionDefinition,
+  ActionJob,
   BaseAttributes,
   GameSnapshot,
   Location,
@@ -62,15 +62,17 @@ function ChinaClock({ serverTime }: { serverTime: string }) {
   );
 }
 
-function effectText(action: ActionDefinition) {
-  const effects = [
-    ["银两", action.silverDelta],
-    ["气血", action.hpDelta],
-  ] as const;
-  return effects
-    .filter(([, value]) => value !== 0)
-    .map(([label, value]) => `${label} ${value > 0 ? "+" : ""}${value}`)
-    .join("　");
+function durationText(seconds: number) {
+  if (seconds < 60) return `${seconds}秒`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}分钟`;
+  if (seconds < 86400) return `${Number((seconds / 3600).toFixed(seconds % 3600 === 0 ? 0 : 1))}小时`;
+  return `${Number((seconds / 86400).toFixed(seconds % 86400 === 0 ? 0 : 1))}天`;
+}
+
+function remainingText(job: ActionJob, now: number) {
+  if (!job.completesAt) return "等待开始";
+  const seconds = Math.max(0, Math.ceil((new Date(job.completesAt).getTime() - now) / 1000));
+  return seconds === 0 ? "正在结算" : `剩余 ${durationText(seconds)}`;
 }
 
 function StatBar({ label, value, max, tone }: { label: string; value: number; max: number; tone: string }) {
@@ -450,22 +452,41 @@ function VisitedMapDialog({
 }
 
 function ActionsPanel({
-  actions,
+  actionState,
   transitions,
   self,
   locations,
   pending,
   open,
-  onAct,
+  onStart,
+  onCancel,
+  onReorder,
   onTransition,
-}: Pick<GameSnapshot, "actions" | "transitions" | "self" | "locations"> & {
+}: Pick<GameSnapshot, "actionState" | "transitions" | "self" | "locations"> & {
   pending: boolean;
   open: boolean;
-  onAct: (actionId: string) => void;
+  onStart: (actionId: string) => void;
+  onCancel: (jobId: string) => void;
+  onReorder: (jobIds: string[]) => void;
   onTransition: (locationId: string) => void;
 }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
   const currentLocation = locations.find((location) => location.id === self.currentLocation);
-  const availableActions = actions.filter((action) => action.locationId === self.currentLocation);
+  const categoryLabel: Record<string, string> = {
+    life: "生活", perception: "感知", movement: "身法", cultivation: "修炼", production: "生产",
+    farming: "农耕", social: "交往", intimate: "亲密", hostile: "敌对", combat: "战斗", legacy: "原有",
+  };
+  const moveQueued = (index: number, offset: number) => {
+    const next = [...actionState.queued];
+    const target = index + offset;
+    if (target < 0 || target >= next.length) return;
+    [next[index], next[target]] = [next[target], next[index]];
+    onReorder(next.map((job) => job.id));
+  };
   return (
     <section className={`actions-panel paper-panel mobile-drawer ${open ? "drawer-open" : ""}`} aria-label="行动">
       <div className="section-heading">
@@ -475,36 +496,64 @@ function ActionsPanel({
         </div>
         <p>{currentLocation?.description}</p>
       </div>
-      <div className="action-list">
-        {availableActions.map((action) => {
-          const unavailable = self.silver + action.silverDelta < 0;
-          return (
+      <div className="action-workspace">
+        <div className="action-list" aria-label="此地可做">
+          {actionState.available.map((action) => (
             <button
               className="action-card"
               key={action.id}
-              disabled={pending || unavailable}
-              onClick={() => onAct(action.id)}
+              disabled={pending || !action.available || actionState.queued.length >= actionState.maxQueued}
+              onClick={() => onStart(action.id)}
+              title={action.unavailableReason ?? undefined}
             >
-              <span className="action-mark">行</span>
+              <span className="action-mark">{categoryLabel[action.category]?.slice(0, 1) ?? "行"}</span>
               <span>
                 <strong>{action.name}</strong>
                 <small>{action.description}</small>
               </span>
-              <em>{effectText(action)}</em>
+              <em>{categoryLabel[action.category] ?? action.category} · {durationText(action.durationSeconds)} · 成功率 {action.successChance}%</em>
+              <em>{action.unavailableReason ?? action.outcomeSummary}</em>
             </button>
-          );
-        })}
-        {transitions.map((transition: MapTransition) => (
-          <button
-            className="action-card transition-action"
-            key={transition.routeId}
-            disabled={pending}
-            onClick={() => onTransition(transition.destinationId)}
-          >
-            <span className="action-mark">门</span>
-            <span><strong>{transition.label}</strong><small>跨地图层通道</small></span>
-          </button>
-        ))}
+          ))}
+          {transitions.map((transition: MapTransition) => (
+            <button
+              className="action-card transition-action"
+              key={transition.routeId}
+              disabled={pending || actionState.current !== null}
+              onClick={() => onTransition(transition.destinationId)}
+            >
+              <span className="action-mark">门</span>
+              <span><strong>{transition.label}</strong><small>跨地图层通道</small></span>
+            </button>
+          ))}
+        </div>
+        <aside className="action-queue" aria-label="行动队列">
+          <div className="queue-heading"><strong>行动队列</strong><span>{actionState.queued.length} / {actionState.maxQueued}</span></div>
+          {actionState.current ? (
+            <div className="queue-job current-job">
+              <span><strong>{actionState.current.name}</strong><small>{remainingText(actionState.current, now)}</small></span>
+              <button aria-label={`取消${actionState.current.name}`} disabled={pending} onClick={() => onCancel(actionState.current!.id)}>取消</button>
+            </div>
+          ) : <p className="empty-queue">当前没有进行中的行动</p>}
+          {actionState.queued.map((job, index) => (
+            <div className="queue-job" key={job.id}>
+              <span><strong>{index + 1}. {job.name}</strong><small>等待前项完成</small></span>
+              <span className="queue-controls">
+                <button aria-label={`提前${job.name}`} disabled={pending || index === 0} onClick={() => moveQueued(index, -1)}>↑</button>
+                <button aria-label={`延后${job.name}`} disabled={pending || index === actionState.queued.length - 1} onClick={() => moveQueued(index, 1)}>↓</button>
+                <button aria-label={`取消${job.name}`} disabled={pending} onClick={() => onCancel(job.id)}>×</button>
+              </span>
+            </div>
+          ))}
+          <div className="needs-summary" aria-label="生活需求">
+            <span>饱食 {Math.round(actionState.needs.satiety)}</span>
+            <span>饮水 {Math.round(actionState.needs.hydration)}</span>
+            <span>卫生 {Math.round(actionState.needs.hygiene)}</span>
+            <span>疲劳 {Math.round(actionState.needs.fatigue)}</span>
+            <span>如厕 {Math.round(actionState.needs.bladder)}</span>
+            <strong>检定修正 -{actionState.needPenalty}%</strong>
+          </div>
+        </aside>
       </div>
     </section>
   );
@@ -710,6 +759,9 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
         if (message.type === "self.updated") {
           setSnapshot((current) => ({ ...current, self: message.player }));
         }
+        if (message.type === "action.updated") {
+          setSnapshot((current) => ({ ...current, actionState: message.actionState }));
+        }
         if (message.type === "map.visited.snapshot" && message.requestId === visitedMapRequestRef.current) {
           const preferredLayerId = visitedLayerPreferenceRef.current;
           setVisitedMap(message.map);
@@ -848,13 +900,15 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           }}
         />
         <ActionsPanel
-          actions={snapshot.actions}
+          actionState={snapshot.actionState}
           transitions={snapshot.transitions}
           self={snapshot.self}
           locations={snapshot.locations}
           pending={pending !== null || connection !== "online"}
           open={drawer === "actions"}
-          onAct={(actionId) => sendCommand({ type: "act", actionId }, "act")}
+          onStart={(actionId) => sendCommand({ type: "action.start", actionId }, "action")}
+          onCancel={(jobId) => sendCommand({ type: "action.cancel", jobId }, "action")}
+          onReorder={(jobIds) => sendCommand({ type: "action.queue.reorder", jobIds }, "action")}
           onTransition={(locationId) => sendCommand({ type: "move", locationId }, "move")}
         />
       </div>

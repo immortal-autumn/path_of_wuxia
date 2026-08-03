@@ -59,7 +59,7 @@ async function enterOverworld(page: Page) {
 }
 
 async function performAction(page: Page, actionName: string) {
-  await page.getByRole("button", { name: new RegExp(actionName) }).click();
+  await page.locator(".action-card").filter({ has: page.getByText(actionName, { exact: true }) }).click();
   await expect(page.getByRole("status")).toContainText(`${actionName}完成`);
 }
 
@@ -170,6 +170,24 @@ test.describe("game map", () => {
     await expect(dialog.getByLabel("足迹地图信息")).toContainText("(0, 1)");
     await dialog.getByRole("button", { name: "关闭足迹地图" }).click();
     await expect(dialog).toBeHidden();
+  });
+
+  test("runs and reorders the real-time action queue while showing living needs", async ({ page }) => {
+    await enterWorld(page);
+    await expect(page.getByLabel("生活需求")).toContainText("饱食 100");
+    await page.getByRole("button", { name: /观察四周/ }).click();
+    await expect(page.getByRole("status")).toContainText("观察四周已经开始");
+    await expect(page.getByLabel("行动队列")).toContainText("观察四周");
+    await expect(page.getByLabel("行动队列")).toContainText("剩余");
+
+    await page.getByRole("button", { name: /凝神聆听/ }).click();
+    await expect(page.getByRole("status")).toContainText("凝神聆听已加入等待队列");
+    await expect(page.getByLabel("行动队列")).toContainText("1 / 8");
+    await page.getByRole("button", { name: "取消观察四周" }).click();
+    await expect(page.getByRole("status")).toContainText("行动已取消");
+    await expect(page.getByLabel("行动队列")).toContainText("凝神聆听");
+    await page.getByRole("button", { name: "取消凝神聆听" }).click();
+    await expect(page.getByLabel("行动队列")).toContainText("当前没有进行中的行动");
   });
 
   test("executes seed actions and crosses the continuous Song and Palos overworld", async ({ page }) => {
@@ -454,8 +472,8 @@ test.describe("mobile layout", () => {
       ["世界", "世界状态"], ["行动", "行动"], ["角色", "角色状态"], ["聊天", "世界聊天"],
     ] as const) {
       await page.locator(".mobile-dock button").filter({ hasText: buttonLabel }).click();
-      await expect(page.getByLabel(panelLabel)).toHaveClass(/drawer-open/);
-      await expect(page.getByLabel(panelLabel)).toBeInViewport();
+      await expect(page.getByLabel(panelLabel, { exact: true })).toHaveClass(/drawer-open/);
+      await expect(page.getByLabel(panelLabel, { exact: true })).toBeInViewport();
     }
   });
 });

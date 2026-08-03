@@ -2,7 +2,7 @@ import { directionBetween, OPPOSITE_DIRECTION } from "./map";
 import { PALWORLD_MARKER_COORDINATES } from "./palworld-coordinates";
 import type { Direction, RouteType, TransitionKind } from "./types";
 
-export const WORLD_SEED_REVISION = 5;
+export const WORLD_SEED_REVISION = 6;
 export const WORLD_SEED_RETRIEVED_AT = "2026-08-03";
 
 export type WorldSeedSource = {

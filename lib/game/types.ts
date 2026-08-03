@@ -170,6 +170,7 @@ export type LocationFacility = {
 
 export type ActionJob = {
   id: string;
+  name: string;
   playerId: string;
   actionTemplateId: string;
   targetPlayerId: string | null;
@@ -179,6 +180,31 @@ export type ActionJob = {
   startedAt: string | null;
   completesAt: string | null;
   resultText: string | null;
+};
+
+export type AvailableAction = {
+  id: string;
+  bindingId: string;
+  name: string;
+  description: string;
+  category: ActionCategory;
+  targetKind: ActionTargetKind;
+  durationSeconds: number;
+  successChance: number;
+  adult: boolean;
+  visibility: ActionVisibility;
+  available: boolean;
+  unavailableReason: string | null;
+  outcomeSummary: string;
+};
+
+export type ActionSystemState = {
+  available: AvailableAction[];
+  current: ActionJob | null;
+  queued: ActionJob[];
+  maxQueued: number;
+  needs: PlayerNeeds;
+  needPenalty: number;
 };
 
 export type PlayerNeeds = {
@@ -326,6 +352,8 @@ export type PlayerSelf = {
   attributes: BaseAttributes;
   derived: DerivedStats;
   cultivation: CultivationProgress;
+  needs: PlayerNeeds;
+  skills: PlayerSkill[];
 };
 
 export type OnlinePlayer = { id: string; name: string; title: string; currentLocation: string };
@@ -342,6 +370,7 @@ export type GameSnapshot = {
   routes: MapRoute[];
   transitions: MapTransition[];
   actions: ActionDefinition[];
+  actionState: ActionSystemState;
   onlinePlayers: OnlinePlayer[];
   recentEvents: WorldEvent[];
   chatMessages: ChatMessage[];

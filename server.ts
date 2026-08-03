@@ -223,6 +223,18 @@ async function main() {
           return;
         }
 
+        if (command.type === "action.start" || command.type === "action.cancel" || command.type === "action.queue.reorder") {
+          const result = command.type === "action.start"
+            ? service.startAction(context.playerId, command.actionId)
+            : command.type === "action.cancel"
+              ? service.cancelAction(context.playerId, command.jobId)
+              : service.reorderActionQueue(context.playerId, command.jobIds);
+          send(socket, { type: "action.updated", actionState: result.actionState });
+          send(socket, { type: "self.updated", player: service.getPlayer(context.playerId) });
+          send(socket, { type: "ack", requestId: command.requestId, message: result.message });
+          return;
+        }
+
         if (command.type === "attributes.allocate") {
           const result = service.allocateAttributes(context.playerId, command.allocations);
           send(socket, { type: "self.updated", player: result.player });
@@ -322,6 +334,15 @@ async function main() {
     }
   }, 60_000);
 
+  const actionClock = setInterval(() => {
+    for (const playerId of new Set(onlinePlayerIds())) {
+      if (service.settleDueActions(playerId) <= 0) continue;
+      for (const [socket, context] of sockets) {
+        if (context.playerId === playerId) sendSnapshot(socket, context);
+      }
+    }
+  }, 1_000);
+
   httpServer.listen(port, hostname, () => {
     console.log(`> Path of Wuxia ready at http://${hostname}:${port}`);
   });
@@ -332,6 +353,7 @@ async function main() {
     shuttingDown = true;
     clearInterval(heartbeat);
     clearInterval(worldClock);
+    clearInterval(actionClock);
     for (const socket of sockets.keys()) socket.close(1001, "服务器正在关闭");
     wss.close();
     httpServer.close();
