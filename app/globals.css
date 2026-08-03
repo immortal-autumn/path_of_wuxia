@@ -1215,6 +1215,13 @@ h2 {
   font-size: 14px;
 }
 
+.editor-tools-note {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
 .palette-item {
   margin-bottom: 8px;
   padding: 13px 10px;

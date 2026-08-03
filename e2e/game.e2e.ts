@@ -45,6 +45,11 @@ async function transitionTo(page: Page, destinationName: string) {
   await expect(page.getByRole("button", { name: new RegExp(`${destinationName}，当前位置`) })).toBeVisible();
 }
 
+async function enterOverworld(page: Page) {
+  await transitionTo(page, "嬴长嫚与楼夜秋之家·入口");
+  await moveTo(page, "楼门路");
+}
+
 async function performAction(page: Page, actionName: string) {
   await page.getByRole("button", { name: new RegExp(actionName) }).click();
   await expect(page.getByRole("status")).toContainText(`${actionName}完成`);
@@ -113,36 +118,39 @@ test.describe("game map", () => {
     await expect(page.getByLabel("下一步可前往地点")).toContainText("上 · 玄关");
     await expect(page.getByLabel("下一步可前往地点")).toContainText("右 · 嬴长嫚与楼夜秋之家·客厅");
     await moveTo(page, "玄关");
-    await transitionTo(page, "楼门路");
+    await enterOverworld(page);
     await expect(page.getByRole("heading", { name: "八方世界 · 局部地图" })).toBeVisible();
-    await expect(page.locator(".map-node")).toHaveCount(3);
+    await expect(page.locator(".map-node")).toHaveCount(8);
+    await expect(page.getByLabel("下一步可前往地点")).toContainText("上 · 嬴长嫚与楼夜秋之家·入口");
     await expect(page.getByLabel("下一步可前往地点")).toContainText("左 · 大宋入口");
     await expect(page.getByLabel("下一步可前往地点")).toContainText("右 · 帕洛斯入口");
   });
 
-  test("executes seed actions and enters the Northern Song and Palos hierarchies through action-only transitions", async ({ page }) => {
+  test("executes seed actions and crosses the continuous Song and Palos overworld", async ({ page }) => {
     await enterWorld(page);
     await performAction(page, "整理衣装");
-    await transitionTo(page, "楼门路");
+    await enterOverworld(page);
     await performAction(page, "观察街道");
     await moveTo(page, "大宋入口");
     await performAction(page, "眺望大宋");
-    await transitionTo(page, "北宋舆图入口");
-    await expect(page.getByRole("heading", { name: "北宋舆图 · 局部地图" })).toBeVisible();
-    await moveTo(page, "北宋总览·京畿路");
-    await transitionTo(page, "京畿路·路口");
-    await expect(page.getByRole("heading", { name: "北宋·京畿路 · 局部地图" })).toBeVisible();
+    await moveTo(page, "大宋官道");
+    await moveTo(page, "大宋·京畿路");
+    await moveTo(page, "京畿路·驿道");
+    await expect(page.getByRole("heading", { name: "八方世界 · 局部地图" })).toBeVisible();
 
-    await transitionTo(page, "北宋总览·京畿路");
-    await moveTo(page, "北宋舆图入口");
-    await transitionTo(page, "大宋入口");
+    await moveTo(page, "大宋·京畿路");
+    await moveTo(page, "大宋官道");
+    await moveTo(page, "大宋入口");
     await moveTo(page, "楼门路");
     await moveTo(page, "帕洛斯入口");
     await performAction(page, "眺望帕洛斯");
-    await transitionTo(page, "帕洛斯群岛入口");
-    await expect(page.getByRole("heading", { name: "帕洛斯群岛 · 局部地图" })).toBeVisible();
+    await moveTo(page, "帕洛斯群岛海岸");
+    await moveTo(page, "帕洛斯·帕洛斯传送点");
+    await moveTo(page, "帕洛斯传送点·路线起点");
+    await moveTo(page, "帕洛斯传送点·初始台地");
+    await expect(page.getByRole("heading", { name: "八方世界 · 局部地图" })).toBeVisible();
     await page.reload();
-    await expect(page.getByRole("button", { name: /帕洛斯群岛入口，当前位置/ })).toBeVisible();
+    await expect(page.getByRole("button", { name: /帕洛斯传送点·初始台地，当前位置/ })).toBeVisible();
   });
 
   test("moves when crypto.randomUUID is unavailable over plain HTTP", async ({ page }) => {
@@ -204,6 +212,7 @@ test.describe("map editor", () => {
       node.scrollWidth <= node.clientWidth && node.scrollHeight <= node.clientHeight
     )))).toBe(true);
     await expect(page.getByLabel("画布信息")).toContainText("当前地图八方世界");
+    await expect(page.getByLabel("当前地图").locator("option")).toHaveCount(6);
     await page.locator(".editor-location").filter({ hasText: "楼门路" }).click();
     await expect(page.getByLabel("画布信息")).toContainText("已选地点：楼门路 · 网格");
     await expect(page.locator(".editor-selection-summary")).toContainText("楼门路");
@@ -290,7 +299,7 @@ test.describe("map editor", () => {
 
     const game = await page.context().newPage();
     await enterWorld(game);
-    await transitionTo(game, "楼门路");
+    await enterOverworld(game);
     await expect(game.locator(".map-node").filter({ hasText: "新地点" })).toBeVisible();
     await game.close();
     await page.getByRole("button", { name: "完成编辑" }).click();
@@ -310,13 +319,17 @@ test.describe("map editor", () => {
     const homeRegion = first.locator(".editor-region").filter({ hasText: "嬴长嫚与楼夜秋之家" });
     const homeBox = await homeRegion.boundingBox();
     if (!homeBox) throw new Error("Home region has no bounds");
-    await first.mouse.move(homeBox.x + 25, homeBox.y + 25);
+    const dragStart = { x: homeBox.x + 25, y: homeBox.y + homeBox.height - 25 };
+    await first.mouse.move(dragStart.x, dragStart.y);
     await first.mouse.down();
-    await first.mouse.move(homeBox.x + 65, homeBox.y + 45, { steps: 4 });
+    await first.mouse.move(dragStart.x + 40, dragStart.y + 20, { steps: 4 });
     await first.mouse.up();
     await expect(first.getByRole("status")).toContainText("自动保存");
 
-    await second.locator(".editor-region").filter({ hasText: "嬴长嫚与楼夜秋之家" }).click();
+    const secondHomeRegion = second.locator(".editor-region").filter({ hasText: "嬴长嫚与楼夜秋之家" });
+    const secondHomeBox = await secondHomeRegion.boundingBox();
+    if (!secondHomeBox) throw new Error("Second editor home region has no bounds");
+    await second.mouse.click(secondHomeBox.x + 25, secondHomeBox.y + secondHomeBox.height - 25);
     await second.getByRole("button", { name: "保存区域资料" }).click();
     await expect(second.getByRole("status")).toContainText("正由其他玩家编辑");
 

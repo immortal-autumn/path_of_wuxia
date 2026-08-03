@@ -532,7 +532,7 @@ export default function MapEditorShell({
       <header className="editor-header">
         <div>
           <h1>地图设计工具</h1>
-          <p>八方向相邻网格 · 传送门可跨区块 · 所有改动自动保存</p>
+          <p>连续大地图使用八方向道路 · 仅室内或特殊空间使用入口连接 · 所有改动自动保存</p>
         </div>
         <div className="editor-header-actions">
           <span>{player.name} · {connected ? "已连接" : "连接中"}</span>
@@ -544,7 +544,8 @@ export default function MapEditorShell({
       </header>
 
       <aside className="editor-tools bordered-box">
-        <h2>地图层</h2>
+        <h2>地图范围</h2>
+        <p className="editor-tools-note">大宋与帕洛斯都属于“八方世界”；住宅楼层是独立室内地图。</p>
         <label>当前地图
           <select value={layerId} onChange={(event) => {
             const nextLayerId = event.target.value;
