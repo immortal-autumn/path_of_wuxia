@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { openGameDatabase, type GameDatabase } from "../lib/game/database";
+import { MAP_SCHEMA_VERSION, openGameDatabase, type GameDatabase } from "../lib/game/database";
 import { directionBetween } from "../lib/game/map";
 import { conciseLocationName } from "../lib/game/location-label";
 import {
@@ -83,6 +83,30 @@ describe("GameService", () => {
     expect(validateWorldMap(db).ok).toBe(true);
   });
 
+  it("installs schema-v7 action-system storage without breaking legacy actions", () => {
+    const requiredTables = [
+      "action_templates", "location_facilities", "location_action_bindings", "action_jobs", "player_needs",
+      "skill_definitions", "player_skills", "item_definitions", "item_instances", "recipe_definitions",
+      "crop_definitions", "farm_plots", "interaction_requests", "player_relationships", "trade_sessions",
+      "combat_sessions", "loot_piles", "npc_profiles", "agent_credentials",
+    ];
+    const tables = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>).map((row) => row.name));
+    expect(requiredTables.every((table) => tables.has(table))).toBe(true);
+    expect(db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: MAP_SCHEMA_VERSION });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM action_templates WHERE is_active=1").get()).toEqual({ count: 5 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM location_action_bindings WHERE is_active=1").get()).toEqual({ count: 5 });
+
+    const player = service.createSession().player;
+    expect(db.prepare("SELECT controller_kind,adult_status,adult_content_enabled FROM players WHERE id=?").get(player.id))
+      .toEqual({ controller_kind: "human", adult_status: "unknown", adult_content_enabled: 0 });
+    service.move(player.id, "home-exterior");
+    service.move(player.id, "loumen-road");
+    expect(service.act(player.id, "observe-road").message).toContain("观察街道完成");
+    expect(db.prepare("SELECT action_template_id FROM action_logs WHERE player_id=? AND kind='action'").get(player.id))
+      .toEqual({ action_template_id: "observe-road" });
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  });
+
   it("upgrades the former public-map hierarchy into one continuous overworld", () => {
     db.prepare(`INSERT INTO map_layers(id,name,description,parent_layer_id,version,is_active,seed_revision,created_at,updated_at)
       VALUES ('song-legacy-layer','旧大宋层','旧层级。','world-root',1,1,2,?,?)`).run(clock.toISOString(), clock.toISOString());
@@ -146,7 +170,7 @@ describe("GameService", () => {
       const upgradedService = new GameService(upgraded, () => new Date(clock), () => roll);
       expect(upgradedService.getVisitedMap(player.id).locations.map((location) => location.id).sort())
         .toEqual(["home-entrance", "home-exterior", "loumen-road"]);
-      expect(upgraded.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: 6 });
+      expect(upgraded.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: MAP_SCHEMA_VERSION });
       expect(upgraded.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
       upgraded.close();
     } finally {

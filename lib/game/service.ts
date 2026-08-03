@@ -967,8 +967,8 @@ export class GameService {
       const at = this.now().toISOString();
       const content = row.result_template.replace("{name}", player.name);
       this.db.prepare("UPDATE players SET hp=?,silver=?,updated_at=?,last_seen_at=? WHERE id=?").run(hp, player.silver + action.silverDelta, at, at, playerId);
-      this.db.prepare("INSERT INTO action_logs(player_id,kind,action_id,from_location,to_location,result_text,created_at) VALUES (?,'action',?,?,?,?,?)")
-        .run(playerId, action.id, player.currentLocation, player.currentLocation, content, at);
+      this.db.prepare("INSERT INTO action_logs(player_id,kind,action_id,action_template_id,from_location,to_location,result_text,created_at) VALUES (?,'action',?,?,?,?,?,?)")
+        .run(playerId, action.id, action.id, player.currentLocation, player.currentLocation, content, at);
       const result = this.db.prepare("INSERT INTO world_events(player_id,event_type,content,created_at) VALUES (?,'action',?,?)").run(playerId, content, at);
       const event = this.db.prepare("SELECT id,player_id,event_type,content,created_at FROM world_events WHERE id=?").get(result.lastInsertRowid) as EventRow;
       const effect = effectSummary(action);

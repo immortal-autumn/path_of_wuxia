@@ -5,7 +5,7 @@ import { applyWorldSeed } from "./world-seed";
 
 export type GameDatabase = DatabaseSync;
 
-export const MAP_SCHEMA_VERSION = 6;
+export const MAP_SCHEMA_VERSION = 7;
 
 export function openGameDatabase(databasePath = process.env.DATABASE_PATH ?? resolve("data/wuxia.db")) {
   if (databasePath !== ":memory:") mkdirSync(dirname(databasePath), { recursive: true });
@@ -148,6 +148,151 @@ function migrate(db: GameDatabase) {
       operation_type TEXT NOT NULL, forward_json TEXT NOT NULL, inverse_json TEXT NOT NULL,
       undone INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS action_templates(
+      id TEXT PRIMARY KEY,name TEXT NOT NULL,description TEXT NOT NULL,category TEXT NOT NULL,
+      target_kind TEXT NOT NULL DEFAULT 'self',duration_seconds INTEGER NOT NULL DEFAULT 0 CHECK(duration_seconds>=0),
+      requirements_json TEXT NOT NULL DEFAULT '{}',check_json TEXT NOT NULL DEFAULT '{}',
+      costs_json TEXT NOT NULL DEFAULT '{}',outcomes_json TEXT NOT NULL DEFAULT '{}',result_template TEXT NOT NULL,
+      adult INTEGER NOT NULL DEFAULT 0 CHECK(adult IN (0,1)),visibility TEXT NOT NULL DEFAULT 'public',
+      cooldown_seconds INTEGER NOT NULL DEFAULT 0 CHECK(cooldown_seconds>=0),version INTEGER NOT NULL DEFAULT 1,
+      is_active INTEGER NOT NULL DEFAULT 1,seed_revision INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS location_facilities(
+      id TEXT PRIMARY KEY,location_id TEXT NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+      facility_type TEXT NOT NULL,quality INTEGER NOT NULL DEFAULT 1 CHECK(quality BETWEEN 1 AND 5),
+      capacity INTEGER NOT NULL DEFAULT 1 CHECK(capacity>0),config_json TEXT NOT NULL DEFAULT '{}',
+      version INTEGER NOT NULL DEFAULT 1,is_active INTEGER NOT NULL DEFAULT 1,seed_revision INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(location_id,facility_type)
+    );
+    CREATE TABLE IF NOT EXISTS location_action_bindings(
+      id TEXT PRIMARY KEY,location_id TEXT NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+      action_template_id TEXT NOT NULL REFERENCES action_templates(id) ON DELETE CASCADE,
+      facility_id TEXT REFERENCES location_facilities(id) ON DELETE SET NULL,priority INTEGER NOT NULL DEFAULT 0,
+      is_active INTEGER NOT NULL DEFAULT 1,seed_revision INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(location_id,action_template_id)
+    );
+    CREATE TABLE IF NOT EXISTS action_jobs(
+      id TEXT PRIMARY KEY,player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+      action_template_id TEXT NOT NULL REFERENCES action_templates(id),binding_id TEXT REFERENCES location_action_bindings(id),
+      target_player_id TEXT REFERENCES players(id) ON DELETE SET NULL,target_location_id TEXT REFERENCES locations(id),
+      status TEXT NOT NULL,queue_position INTEGER NOT NULL DEFAULT 0,started_at TEXT,completes_at TEXT,
+      reserved_json TEXT NOT NULL DEFAULT '{}',context_json TEXT NOT NULL DEFAULT '{}',result_text TEXT,
+      created_at TEXT NOT NULL,updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS player_needs(
+      player_id TEXT PRIMARY KEY REFERENCES players(id) ON DELETE CASCADE,
+      satiety REAL NOT NULL DEFAULT 100 CHECK(satiety BETWEEN 0 AND 100),
+      hydration REAL NOT NULL DEFAULT 100 CHECK(hydration BETWEEN 0 AND 100),
+      hygiene REAL NOT NULL DEFAULT 100 CHECK(hygiene BETWEEN 0 AND 100),
+      fatigue REAL NOT NULL DEFAULT 0 CHECK(fatigue BETWEEN 0 AND 100),
+      bladder REAL NOT NULL DEFAULT 0 CHECK(bladder BETWEEN 0 AND 100),updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS skill_definitions(
+      id TEXT PRIMARY KEY,name TEXT NOT NULL UNIQUE,description TEXT NOT NULL,attribute_key TEXT NOT NULL,
+      category TEXT NOT NULL,is_active INTEGER NOT NULL DEFAULT 1,seed_revision INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS player_skills(
+      player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+      skill_id TEXT NOT NULL REFERENCES skill_definitions(id),level INTEGER NOT NULL DEFAULT 0 CHECK(level BETWEEN 0 AND 100),
+      experience INTEGER NOT NULL DEFAULT 0 CHECK(experience>=0),updated_at TEXT NOT NULL,
+      PRIMARY KEY(player_id,skill_id)
+    );
+    CREATE TABLE IF NOT EXISTS loot_piles(
+      id TEXT PRIMARY KEY,location_id TEXT NOT NULL REFERENCES locations(id),silver INTEGER NOT NULL DEFAULT 0 CHECK(silver>=0),
+      source_player_id TEXT REFERENCES players(id) ON DELETE SET NULL,expires_at TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS item_definitions(
+      id TEXT PRIMARY KEY,name TEXT NOT NULL,description TEXT NOT NULL,category TEXT NOT NULL,
+      stackable INTEGER NOT NULL DEFAULT 0 CHECK(stackable IN (0,1)),max_stack INTEGER NOT NULL DEFAULT 1 CHECK(max_stack>0),
+      base_value INTEGER NOT NULL DEFAULT 0 CHECK(base_value>=0),max_durability INTEGER NOT NULL DEFAULT 0 CHECK(max_durability>=0),
+      equipment_slot TEXT,tags_json TEXT NOT NULL DEFAULT '[]',effects_json TEXT NOT NULL DEFAULT '{}',
+      version INTEGER NOT NULL DEFAULT 1,is_active INTEGER NOT NULL DEFAULT 1,seed_revision INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS item_instances(
+      id TEXT PRIMARY KEY,definition_id TEXT NOT NULL REFERENCES item_definitions(id),
+      owner_player_id TEXT REFERENCES players(id) ON DELETE CASCADE,loot_pile_id TEXT REFERENCES loot_piles(id) ON DELETE CASCADE,
+      quantity INTEGER NOT NULL DEFAULT 1 CHECK(quantity>0),quality INTEGER NOT NULL DEFAULT 1 CHECK(quality BETWEEN 1 AND 5),
+      durability INTEGER NOT NULL DEFAULT 0 CHECK(durability>=0),affixes_json TEXT NOT NULL DEFAULT '[]',
+      bound INTEGER NOT NULL DEFAULT 0 CHECK(bound IN (0,1)),equipped_slot TEXT,locked_by_job_id TEXT REFERENCES action_jobs(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL,updated_at TEXT NOT NULL,
+      CHECK((owner_player_id IS NOT NULL) <> (loot_pile_id IS NOT NULL))
+    );
+    CREATE TABLE IF NOT EXISTS recipe_definitions(
+      id TEXT PRIMARY KEY,name TEXT NOT NULL,description TEXT NOT NULL,facility_type TEXT NOT NULL,
+      skill_id TEXT REFERENCES skill_definitions(id),duration_seconds INTEGER NOT NULL CHECK(duration_seconds>0),
+      difficulty INTEGER NOT NULL DEFAULT 50,inputs_json TEXT NOT NULL,outputs_json TEXT NOT NULL,
+      version INTEGER NOT NULL DEFAULT 1,is_active INTEGER NOT NULL DEFAULT 1,seed_revision INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS crop_definitions(
+      id TEXT PRIMARY KEY,name TEXT NOT NULL,seed_item_id TEXT NOT NULL REFERENCES item_definitions(id),
+      harvest_item_id TEXT NOT NULL REFERENCES item_definitions(id),growth_seconds INTEGER NOT NULL CHECK(growth_seconds>0),
+      stages_json TEXT NOT NULL DEFAULT '[]',seed_revision INTEGER NOT NULL DEFAULT 0,is_active INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS farm_plots(
+      id TEXT PRIMARY KEY,facility_id TEXT NOT NULL REFERENCES location_facilities(id) ON DELETE CASCADE,
+      owner_player_id TEXT REFERENCES players(id) ON DELETE SET NULL,crop_id TEXT REFERENCES crop_definitions(id),
+      planted_at TEXT,matures_at TEXT,water REAL NOT NULL DEFAULT 100 CHECK(water BETWEEN 0 AND 100),
+      fertility REAL NOT NULL DEFAULT 100 CHECK(fertility BETWEEN 0 AND 100),disease REAL NOT NULL DEFAULT 0 CHECK(disease BETWEEN 0 AND 100),
+      state TEXT NOT NULL DEFAULT 'empty',version INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL,updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS background_jobs(
+      id TEXT PRIMARY KEY,job_type TEXT NOT NULL,owner_player_id TEXT REFERENCES players(id) ON DELETE SET NULL,
+      location_id TEXT REFERENCES locations(id) ON DELETE CASCADE,status TEXT NOT NULL,completes_at TEXT NOT NULL,
+      context_json TEXT NOT NULL DEFAULT '{}',created_at TEXT NOT NULL,updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS private_events(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+      event_type TEXT NOT NULL,content TEXT NOT NULL,created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS interaction_requests(
+      id TEXT PRIMARY KEY,request_type TEXT NOT NULL,from_player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+      to_player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,status TEXT NOT NULL,
+      payload_json TEXT NOT NULL DEFAULT '{}',expires_at TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,
+      CHECK(from_player_id<>to_player_id)
+    );
+    CREATE TABLE IF NOT EXISTS player_relationships(
+      id TEXT PRIMARY KEY,player_a_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+      player_b_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,relation_type TEXT NOT NULL,status TEXT NOT NULL,
+      role_a TEXT,role_b TEXT,affinity INTEGER NOT NULL DEFAULT 0,trust INTEGER NOT NULL DEFAULT 0,
+      intimacy INTEGER NOT NULL DEFAULT 0,hostility INTEGER NOT NULL DEFAULT 0,requested_by TEXT REFERENCES players(id),
+      created_at TEXT NOT NULL,updated_at TEXT NOT NULL,CHECK(player_a_id<player_b_id),
+      UNIQUE(player_a_id,player_b_id,relation_type)
+    );
+    CREATE TABLE IF NOT EXISTS player_blocks(
+      player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+      blocked_player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,created_at TEXT NOT NULL,
+      PRIMARY KEY(player_id,blocked_player_id),CHECK(player_id<>blocked_player_id)
+    );
+    CREATE TABLE IF NOT EXISTS trade_sessions(
+      id TEXT PRIMARY KEY,player_a_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+      player_b_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,status TEXT NOT NULL,
+      offer_a_json TEXT NOT NULL DEFAULT '{}',offer_b_json TEXT NOT NULL DEFAULT '{}',confirmed_a INTEGER NOT NULL DEFAULT 0,
+      confirmed_b INTEGER NOT NULL DEFAULT 0,expires_at TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,
+      CHECK(player_a_id<>player_b_id)
+    );
+    CREATE TABLE IF NOT EXISTS combat_sessions(
+      id TEXT PRIMARY KEY,location_id TEXT NOT NULL REFERENCES locations(id),attacker_id TEXT NOT NULL REFERENCES players(id),
+      defender_id TEXT NOT NULL REFERENCES players(id),status TEXT NOT NULL,round INTEGER NOT NULL DEFAULT 1,
+      acting_player_id TEXT REFERENCES players(id),turn_deadline TEXT,attacker_misses INTEGER NOT NULL DEFAULT 0,
+      defender_misses INTEGER NOT NULL DEFAULT 0,winner_id TEXT REFERENCES players(id),loser_id TEXT REFERENCES players(id),
+      created_at TEXT NOT NULL,updated_at TEXT NOT NULL,ended_at TEXT,CHECK(attacker_id<>defender_id)
+    );
+    CREATE TABLE IF NOT EXISTS combat_turns(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,combat_id TEXT NOT NULL REFERENCES combat_sessions(id) ON DELETE CASCADE,
+      round INTEGER NOT NULL,player_id TEXT NOT NULL REFERENCES players(id),choice TEXT NOT NULL,
+      result_json TEXT NOT NULL DEFAULT '{}',created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS npc_profiles(
+      player_id TEXT PRIMARY KEY REFERENCES players(id) ON DELETE CASCADE,stable_key TEXT NOT NULL UNIQUE,
+      controller_mode TEXT NOT NULL DEFAULT 'utility',personality_json TEXT NOT NULL DEFAULT '{}',
+      goals_json TEXT NOT NULL DEFAULT '[]',profession TEXT NOT NULL DEFAULT '游民',home_location_id TEXT REFERENCES locations(id),
+      next_think_at TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS agent_credentials(
+      token_hash TEXT PRIMARY KEY,player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+      label TEXT NOT NULL,created_at TEXT NOT NULL,expires_at TEXT,revoked_at TEXT
+    );
   `);
 
   const previousVersion = (db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number | null } | undefined)?.version ?? 0;
@@ -175,6 +320,14 @@ function migrate(db: GameDatabase) {
   addColumn(db, "routes", "version INTEGER NOT NULL DEFAULT 1");
   addColumn(db, "routes", "is_active INTEGER NOT NULL DEFAULT 1");
   addColumn(db, "routes", "seed_revision INTEGER NOT NULL DEFAULT 0");
+  addColumn(db, "players", "controller_kind TEXT NOT NULL DEFAULT 'human'");
+  addColumn(db, "players", "adult_status TEXT NOT NULL DEFAULT 'unknown'");
+  addColumn(db, "players", "adult_content_enabled INTEGER NOT NULL DEFAULT 0");
+  addColumn(db, "players", "injury_until TEXT");
+  addColumn(db, "players", "vision_bonus_until TEXT");
+  addColumn(db, "players", "vision_depth_bonus INTEGER NOT NULL DEFAULT 0");
+  addColumn(db, "action_logs", "action_template_id TEXT REFERENCES action_templates(id)");
+  addColumn(db, "action_logs", "action_job_id TEXT REFERENCES action_jobs(id)");
 
   if (previousVersion < 2) db.exec("UPDATE routes SET is_active=0; UPDATE locations SET is_active=0;");
   if (previousVersion < 3) {
@@ -256,6 +409,30 @@ function migrate(db: GameDatabase) {
       SELECT id,current_location,created_at,created_at FROM players;
     `);
   }
+  if (previousVersion < 7) {
+    db.prepare(`
+      INSERT OR IGNORE INTO player_needs(player_id,updated_at)
+      SELECT id,? FROM players
+    `).run(now);
+    db.prepare(`
+      INSERT OR IGNORE INTO action_templates(
+        id,name,description,category,target_kind,duration_seconds,requirements_json,check_json,
+        costs_json,outcomes_json,result_template,adult,visibility,cooldown_seconds,version,is_active,seed_revision,created_at,updated_at
+      )
+      SELECT id,name,description,'legacy','self',0,'{}','{}','{}',
+        printf('{"success":{"silverDelta":%d,"hpDelta":%d}}',silver_delta,hp_delta),
+        result_template,0,'public',0,1,1,0,?,? FROM action_definitions
+    `).run(now, now);
+    db.prepare(`
+      INSERT OR IGNORE INTO location_action_bindings(
+        id,location_id,action_template_id,priority,is_active,seed_revision,created_at,updated_at
+      ) SELECT 'action-binding-'||id,location_id,id,0,1,0,?,? FROM action_definitions
+    `).run(now, now);
+    db.exec(`
+      UPDATE action_logs SET action_template_id=action_id
+      WHERE action_id IS NOT NULL AND action_template_id IS NULL;
+    `);
+  }
 
   db.exec(`
     DROP INDEX IF EXISTS idx_active_grid;
@@ -275,6 +452,18 @@ function migrate(db: GameDatabase) {
     CREATE INDEX IF NOT EXISTS idx_locks_session ON map_edit_locks(session_id);
     CREATE INDEX IF NOT EXISTS idx_operations_session ON map_edit_operations(session_id,id DESC);
     CREATE INDEX IF NOT EXISTS idx_visited_location ON player_visited_locations(location_id,player_id);
+    CREATE INDEX IF NOT EXISTS idx_action_bindings_location ON location_action_bindings(location_id,is_active,priority);
+    CREATE INDEX IF NOT EXISTS idx_action_jobs_player ON action_jobs(player_id,status,queue_position);
+    CREATE INDEX IF NOT EXISTS idx_action_jobs_completion ON action_jobs(status,completes_at);
+    CREATE INDEX IF NOT EXISTS idx_items_owner ON item_instances(owner_player_id,equipped_slot,definition_id);
+    CREATE INDEX IF NOT EXISTS idx_items_loot ON item_instances(loot_pile_id,definition_id);
+    CREATE INDEX IF NOT EXISTS idx_background_jobs_completion ON background_jobs(status,completes_at);
+    CREATE INDEX IF NOT EXISTS idx_interactions_target ON interaction_requests(to_player_id,status,expires_at);
+    CREATE INDEX IF NOT EXISTS idx_relationships_a ON player_relationships(player_a_id,status);
+    CREATE INDEX IF NOT EXISTS idx_relationships_b ON player_relationships(player_b_id,status);
+    CREATE INDEX IF NOT EXISTS idx_combat_participants ON combat_sessions(attacker_id,defender_id,status);
+    CREATE INDEX IF NOT EXISTS idx_private_events_player ON private_events(player_id,id DESC);
+    CREATE INDEX IF NOT EXISTS idx_npc_think ON npc_profiles(next_think_at,player_id);
   `);
   db.prepare("INSERT OR REPLACE INTO schema_migrations(version,applied_at) VALUES (?,?)").run(MAP_SCHEMA_VERSION, now);
 }

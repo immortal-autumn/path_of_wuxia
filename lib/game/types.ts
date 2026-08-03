@@ -99,6 +99,170 @@ export type MapEditOperation =
   | { type: "route.create"; fromLocation: string; toLocation: string; routeType: RouteType; transitionKind?: TransitionKind; routeId?: string }
   | { type: "route.delete"; routeId: string };
 
+export const ACTION_CATEGORIES = [
+  "life", "perception", "movement", "cultivation", "production", "farming",
+  "social", "intimate", "hostile", "combat", "legacy",
+] as const;
+export type ActionCategory = (typeof ACTION_CATEGORIES)[number];
+export type ActionTargetKind = "self" | "location" | "player" | "item" | "plot";
+export type ActionVisibility = "public" | "participants" | "private";
+export type ActionJobStatus = "queued" | "running" | "paused" | "completed" | "cancelled" | "interrupted";
+export type NeedKey = "satiety" | "hydration" | "hygiene" | "fatigue" | "bladder";
+
+export type ActionRequirement = {
+  facilityType?: string;
+  minimumFacilityQuality?: number;
+  attribute?: keyof BaseAttributes;
+  minimumAttribute?: number;
+  skillId?: string;
+  minimumSkillLevel?: number;
+  itemCosts?: Array<{ definitionId: string; quantity: number }>;
+  relationshipTypes?: string[];
+  sameLocation?: boolean;
+  targetOnline?: boolean;
+};
+
+export type ActionCheck = {
+  attribute?: keyof BaseAttributes;
+  skillId?: string;
+  difficulty?: number;
+};
+
+export type ActionOutcome = {
+  silverDelta?: number;
+  hpDelta?: number;
+  cultivationDelta?: number;
+  skillExperience?: number;
+  needDeltas?: Partial<Record<NeedKey, number>>;
+  items?: Array<{ definitionId: string; quantity: number; quality?: number; bound?: boolean }>;
+  statusId?: string;
+  statusDurationSeconds?: number;
+};
+
+export type ActionTemplate = {
+  id: string;
+  name: string;
+  description: string;
+  category: ActionCategory;
+  targetKind: ActionTargetKind;
+  durationSeconds: number;
+  requirements: ActionRequirement;
+  check: ActionCheck;
+  costs: ActionOutcome;
+  success: ActionOutcome;
+  failure: ActionOutcome;
+  resultTemplate: string;
+  adult: boolean;
+  visibility: ActionVisibility;
+  cooldownSeconds: number;
+  version: number;
+};
+
+export type LocationFacility = {
+  id: string;
+  locationId: string;
+  facilityType: string;
+  quality: number;
+  capacity: number;
+  config: Record<string, unknown>;
+  version: number;
+};
+
+export type ActionJob = {
+  id: string;
+  playerId: string;
+  actionTemplateId: string;
+  targetPlayerId: string | null;
+  targetLocationId: string | null;
+  status: ActionJobStatus;
+  queuePosition: number;
+  startedAt: string | null;
+  completesAt: string | null;
+  resultText: string | null;
+};
+
+export type PlayerNeeds = {
+  satiety: number;
+  hydration: number;
+  hygiene: number;
+  fatigue: number;
+  bladder: number;
+  updatedAt: string;
+};
+
+export type PlayerSkill = {
+  id: string;
+  name: string;
+  description: string;
+  attributeKey: keyof BaseAttributes;
+  category: string;
+  level: number;
+  experience: number;
+};
+
+export type ItemDefinition = {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  stackable: boolean;
+  maxStack: number;
+  baseValue: number;
+  maxDurability: number;
+  equipmentSlot: string | null;
+  tags: string[];
+  effects: Record<string, unknown>;
+};
+
+export type ItemInstance = {
+  id: string;
+  definitionId: string;
+  name: string;
+  quantity: number;
+  quality: number;
+  durability: number;
+  maxDurability: number;
+  affixes: Array<Record<string, unknown>>;
+  bound: boolean;
+  equippedSlot: string | null;
+};
+
+export type Relationship = {
+  id: string;
+  otherPlayerId: string;
+  otherPlayerName: string;
+  relationType: string;
+  status: string;
+  role: string | null;
+  affinity: number;
+  trust: number;
+  intimacy: number;
+  hostility: number;
+};
+
+export type InteractionRequest = {
+  id: string;
+  requestType: string;
+  fromPlayerId: string;
+  fromPlayerName: string;
+  toPlayerId: string;
+  status: string;
+  expiresAt: string;
+};
+
+export type CombatState = {
+  id: string;
+  locationId: string;
+  attackerId: string;
+  defenderId: string;
+  status: string;
+  round: number;
+  actingPlayerId: string | null;
+  turnDeadline: string | null;
+  winnerId: string | null;
+  loserId: string | null;
+};
+
 export type ActionDefinition = {
   id: string;
   locationId: string;

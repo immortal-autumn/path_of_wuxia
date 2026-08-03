@@ -137,8 +137,43 @@ export function applyWorldSeed(db: DatabaseSync): WorldSeedReport {
       description=excluded.description,stamina_delta=0,silver_delta=excluded.silver_delta,
       cultivation_delta=0,hp_delta=excluded.hp_delta,result_template=excluded.result_template
   `);
+  const actionTemplateInsert = db.prepare(`
+    INSERT INTO action_templates(
+      id,name,description,category,target_kind,duration_seconds,requirements_json,check_json,
+      costs_json,outcomes_json,result_template,adult,visibility,cooldown_seconds,version,is_active,
+      seed_revision,created_at,updated_at
+    ) VALUES (?,?,?,'legacy','self',0,'{}','{}','{}',?,?,0,'public',0,1,1,?,?,?)
+    ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description,
+      outcomes_json=excluded.outcomes_json,result_template=excluded.result_template,
+      is_active=1,seed_revision=excluded.seed_revision,updated_at=excluded.updated_at
+  `);
+  const actionBindingInsert = db.prepare(`
+    INSERT INTO location_action_bindings(
+      id,location_id,action_template_id,priority,is_active,seed_revision,created_at,updated_at
+    ) VALUES (?,?,?,0,1,?,?,?)
+    ON CONFLICT(location_id,action_template_id) DO UPDATE SET is_active=1,
+      seed_revision=excluded.seed_revision,updated_at=excluded.updated_at
+  `);
   for (const action of seed.actions) {
     actionInsert.run(action.id, action.locationId, action.name, action.description, action.silverDelta, action.hpDelta, action.resultTemplate);
+    actionTemplateInsert.run(
+      action.id,
+      action.name,
+      action.description,
+      JSON.stringify({ success: { silverDelta: action.silverDelta, hpDelta: action.hpDelta } }),
+      action.resultTemplate,
+      WORLD_SEED_REVISION,
+      now,
+      now,
+    );
+    actionBindingInsert.run(
+      `action-binding-${action.id}`,
+      action.locationId,
+      action.id,
+      WORLD_SEED_REVISION,
+      now,
+      now,
+    );
   }
 
   const effectInsert = db.prepare(`
