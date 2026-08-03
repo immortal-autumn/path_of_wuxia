@@ -743,7 +743,7 @@ h2 {
 
 .character-tabs {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   margin-bottom: 10px;
 }
 
@@ -774,8 +774,96 @@ h2 {
 .attribute-panel,
 .derived-grid,
 .cultivation-panel,
-.inventory-panel {
+.inventory-panel,
+.social-panel {
   margin-bottom: 10px;
+}
+
+.social-panel {
+  display: grid;
+  gap: 8px;
+}
+
+.social-panel > section,
+.social-player,
+.social-request,
+.trade-card {
+  padding: 8px;
+  border: 1px solid var(--border-light);
+}
+
+.social-panel h3 {
+  margin: 0 0 7px;
+  font-size: 12px;
+}
+
+.social-panel p {
+  margin: 5px 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.social-player,
+.social-request {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: 5px;
+}
+
+.social-player > small,
+.social-request small,
+.trade-card small {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.social-player > div,
+.social-request > div,
+.trade-card > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.social-panel button,
+.social-panel select,
+.social-panel input {
+  min-height: 27px;
+  border: 1px solid var(--border);
+  background: #fff;
+  font-size: 10px;
+}
+
+.social-panel button {
+  padding: 4px 6px;
+  cursor: pointer;
+}
+
+.social-panel button:disabled {
+  background: var(--disabled);
+  cursor: not-allowed;
+}
+
+.adult-settings label,
+.trade-card label {
+  display: grid;
+  gap: 3px;
+  margin: 5px 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.adult-settings .adult-checkbox {
+  display: flex;
+  align-items: center;
+}
+
+.adult-checkbox input {
+  min-height: 0;
 }
 
 .inventory-panel {

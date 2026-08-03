@@ -18,6 +18,7 @@ type CatalogAction = {
   failure?: ActionOutcome;
   resultTemplate: string;
   visibility?: ActionVisibility;
+  adult?: boolean;
 };
 
 export const ACTION_SKILLS = [
@@ -132,6 +133,13 @@ export const ACTION_CATALOG: CatalogAction[] = [
     failure: { skillExperience: 6, hpDelta: -5, needDeltas: { fatigue: 5 } },
     resultTemplate: "{name}施展轻功越过数格。",
   },
+  {
+    id: "action-private-intimacy", name: "私密亲昵", description: "仅在双方确认成年、开启成人内容并逐次同意后进行。", category: "intimate",
+    targetKind: "player", durationSeconds: 900, facilityTypes: [], adult: true, visibility: "participants",
+    requirements: { sameLocation: true, targetOnline: true },
+    success: { needDeltas: { fatigue: 2 }, skillExperience: 1 },
+    resultTemplate: "{name}与受邀者完成了一次双方同意的私密互动。",
+  },
 ];
 
 const HOME_FACILITIES: Record<string, string[]> = {
@@ -200,7 +208,7 @@ export function seedActionCatalog(db: DatabaseSync, locations: CatalogLocation[]
     INSERT INTO action_templates(
       id,name,description,category,target_kind,duration_seconds,requirements_json,check_json,costs_json,
       outcomes_json,result_template,adult,visibility,cooldown_seconds,version,is_active,seed_revision,created_at,updated_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,0,?,0,1,1,?,?,?)
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,1,1,?,?,?)
     ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description,category=excluded.category,
       target_kind=excluded.target_kind,duration_seconds=excluded.duration_seconds,requirements_json=excluded.requirements_json,
       check_json=excluded.check_json,costs_json=excluded.costs_json,outcomes_json=excluded.outcomes_json,
@@ -220,7 +228,7 @@ export function seedActionCatalog(db: DatabaseSync, locations: CatalogLocation[]
       action.id, action.name, action.description, action.category, action.targetKind ?? "self", action.durationSeconds,
       JSON.stringify(requirements), JSON.stringify(action.check ?? {}), JSON.stringify(action.costs ?? {}),
       JSON.stringify({ success: action.success ?? {}, failure: action.failure ?? {} }),action.resultTemplate,
-      action.visibility ?? "public", revision, now, now,
+      action.adult ? 1 : 0, action.visibility ?? "public", revision, now, now,
     );
     for (const location of locations) {
       const facility = facilities.get(location.id)?.find((item) => action.facilityTypes.includes(item.type));

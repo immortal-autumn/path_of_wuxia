@@ -103,6 +103,28 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("act"), requestId, actionId: id }),
   z.object({ type: z.literal("action.start"), requestId, actionId: id }),
   z.object({ type: z.literal("qinggong.start"), requestId, destinationId: id }),
+  z.object({
+    type: z.literal("profile.adult.update"), requestId,
+    adultStatus: z.enum(["unknown", "adult", "minor"]), adultContentEnabled: z.boolean(),
+  }),
+  z.object({ type: z.literal("interaction.greet"), requestId, targetPlayerId: id }),
+  z.object({
+    type: z.literal("interaction.request"), requestId, targetPlayerId: id,
+    requestType: z.enum(["relationship.friend", "relationship.sworn", "relationship.mentor", "relationship.lover", "relationship.spouse", "intimate"]),
+    actionId: id.optional(),
+  }),
+  z.object({ type: z.literal("interaction.respond"), requestId, interactionRequestId: id, accept: z.boolean() }),
+  z.object({ type: z.literal("relationship.end"), requestId, relationshipId: id }),
+  z.object({ type: z.literal("player.block"), requestId, targetPlayerId: id, blocked: z.boolean() }),
+  z.object({ type: z.literal("trade.request"), requestId, targetPlayerId: id }),
+  z.object({ type: z.literal("trade.respond"), requestId, tradeId: id, accept: z.boolean() }),
+  z.object({
+    type: z.literal("trade.offer"), requestId, tradeId: id,
+    silver: z.number().int().min(0).max(1_000_000_000),
+    items: z.array(z.object({ itemId: id, quantity: z.number().int().min(1).max(1_000_000) })).max(16),
+  }),
+  z.object({ type: z.literal("trade.confirm"), requestId, tradeId: id }),
+  z.object({ type: z.literal("trade.cancel"), requestId, tradeId: id }),
   z.object({ type: z.literal("action.cancel"), requestId, jobId: id }),
   z.object({ type: z.literal("action.queue.reorder"), requestId, jobIds: z.array(id).max(8) }),
   z.object({ type: z.literal("inventory.equip"), requestId, itemId: id }),
@@ -142,6 +164,7 @@ export type ServerMessage =
   | { type: "self.updated"; player: PlayerSelf }
   | { type: "action.updated"; actionState: ActionSystemState }
   | { type: "inventory.updated"; inventory: InventoryState }
+  | { type: "social.updated"; social: GameSnapshot["social"] }
   | { type: "cultivation.updated"; player: PlayerSelf; delta: number; offline: boolean; message: string }
   | { type: "players.updated"; players: OnlinePlayer[] }
   | { type: "world.event"; event: WorldEvent }

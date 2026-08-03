@@ -297,6 +297,87 @@ describe("GameService", () => {
     expect(service.getVisitedMap(failedPlayer.id).locations).toHaveLength(1);
   });
 
+  it("requires confirmed adult opt-in and fresh mutual consent for every private adult action", () => {
+    const first = service.createSession().player;
+    const second = service.createSession().player;
+    expect(() => service.requestInteraction(first.id, second.id, "intimate", "action-private-intimacy"))
+      .toThrow("双方确认成年并开启成人内容");
+
+    service.updateAdultProfile(first.id, "adult", true);
+    service.updateAdultProfile(second.id, "adult", true);
+    service.requestInteraction(first.id, second.id, "intimate", "action-private-intimacy");
+    const request = service.getSocialState(second.id).incomingRequests[0];
+    service.respondInteraction(second.id, request.id, true, [first.id, second.id]);
+    expect(service.getActionState(first.id).current).toMatchObject({
+      actionTemplateId: "action-private-intimacy", targetPlayerId: second.id, durationSeconds: 900,
+    });
+    expect(service.getSocialState(second.id).incomingRequests).toHaveLength(0);
+
+    clock = new Date(clock.getTime() + 900_000);
+    service.settleActionQueue(first.id);
+    expect(service.getPrivateEvents(first.id)[0].content).toContain("双方同意的私密互动");
+    expect(service.getPrivateEvents(second.id)[0].content).toContain("双方同意的私密互动");
+    expect(db.prepare("SELECT COUNT(*) AS count FROM world_events WHERE event_type='action' AND player_id=?").get(first.id)).toEqual({ count: 0 });
+    expect(() => service.startAction(first.id, "action-private-intimacy")).toThrow("这里无法进行这项行动");
+
+    service.requestInteraction(first.id, second.id, "intimate", "action-private-intimacy");
+    service.updateAdultProfile(second.id, "minor", true);
+    expect(service.getSocialState(second.id).adultProfile).toEqual({ status: "minor", contentEnabled: false });
+    expect(service.getSocialState(first.id).outgoingRequests).toHaveLength(0);
+  });
+
+  it("creates mutual formal relationships and enforces direct-interaction blocks", () => {
+    const first = service.createSession().player;
+    const second = service.createSession().player;
+    service.requestInteraction(first.id, second.id, "relationship.mentor");
+    const request = service.getSocialState(second.id).incomingRequests[0];
+    service.respondInteraction(second.id, request.id, true, [first.id, second.id]);
+    expect(service.getSocialState(first.id).relationships[0]).toMatchObject({
+      otherPlayerId: second.id, relationType: "mentor", role: "mentor",
+    });
+    expect(service.getSocialState(second.id).relationships[0]).toMatchObject({
+      otherPlayerId: first.id, relationType: "mentor", role: "disciple",
+    });
+    service.endRelationship(second.id, service.getSocialState(second.id).relationships[0].id);
+    expect(service.getSocialState(first.id).relationships).toHaveLength(0);
+
+    service.setPlayerBlocked(second.id, first.id, true);
+    expect(() => service.greetPlayer(first.id, second.id)).toThrow("当前无法与对方互动");
+    service.setPlayerBlocked(second.id, first.id, false);
+    expect(service.greetPlayer(first.id, second.id).event.eventType).toBe("social");
+  });
+
+  it("atomically exchanges unbound items and silver after both trade confirmations", () => {
+    const first = service.createSession().player;
+    const second = service.createSession().player;
+    db.prepare(`
+      INSERT INTO item_instances(id,definition_id,owner_player_id,quantity,quality,durability,affixes_json,bound,created_at,updated_at)
+      VALUES ('trade-rice','rice',?,3,2,0,'[]',0,?,?)
+    `).run(first.id, clock.toISOString(), clock.toISOString());
+    service.requestTrade(first.id, second.id);
+    const tradeId = service.getSocialState(second.id).trades[0].id;
+    service.respondTrade(second.id, tradeId, true, [first.id, second.id]);
+    service.offerTrade(first.id, tradeId, 5, [{ itemId: "trade-rice", quantity: 2 }]);
+    service.offerTrade(second.id, tradeId, 3, []);
+    expect(service.confirmTrade(first.id, tradeId).message).toContain("等待对方");
+    expect(service.getSocialState(first.id).trades[0]).toMatchObject({ ownConfirmed: true, otherConfirmed: false });
+    expect(service.confirmTrade(second.id, tradeId).message).toBe("交易完成。");
+
+    expect(service.getPlayer(first.id).silver).toBe(18);
+    expect(service.getPlayer(second.id).silver).toBe(22);
+    expect(db.prepare("SELECT quantity,owner_player_id FROM item_instances WHERE id='trade-rice'").get()).toEqual({ quantity: 1, owner_player_id: first.id });
+    expect((db.prepare("SELECT SUM(quantity) AS quantity FROM item_instances WHERE owner_player_id=? AND definition_id='rice'").get(second.id) as { quantity: number }).quantity).toBe(2);
+    expect(service.getSocialState(first.id).trades).toHaveLength(0);
+    expect(service.getPrivateEvents(second.id)[0].content).toContain("交易已经由双方确认并完成");
+
+    const bound = service.getInventoryState(first.id).items.find((item) => item.bound)!;
+    service.requestTrade(first.id, second.id);
+    const nextTradeId = service.getSocialState(second.id).trades[0].id;
+    service.respondTrade(second.id, nextTradeId, true, [first.id, second.id]);
+    expect(() => service.offerTrade(first.id, nextTradeId, 0, [{ itemId: bound.id, quantity: 1 }]))
+      .toThrow("绑定或已装备物品不能交易");
+  });
+
   it("upgrades the former public-map hierarchy into one continuous overworld", () => {
     db.prepare(`INSERT INTO map_layers(id,name,description,parent_layer_id,version,is_active,seed_revision,created_at,updated_at)
       VALUES ('song-legacy-layer','旧大宋层','旧层级。','world-root',1,1,2,?,?)`).run(clock.toISOString(), clock.toISOString());

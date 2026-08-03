@@ -632,9 +632,26 @@ const ATTRIBUTE_LABELS: Array<[keyof BaseAttributes, string]> = [
   ["root", "根骨"], ["comprehension", "悟性"], ["spirit", "精神"],
 ];
 
+const INTERACTION_LABELS: Record<string, string> = {
+  "relationship.friend": "结交请求",
+  "relationship.sworn": "结义请求",
+  "relationship.mentor": "师徒请求",
+  "relationship.lover": "恋人请求",
+  "relationship.spouse": "婚配请求",
+  intimate: "本次私密亲昵请求",
+};
+
+const RELATIONSHIP_LABELS: Record<string, string> = {
+  friend: "朋友", sworn: "结义", mentor: "师徒", lover: "恋人", spouse: "婚配",
+};
+
+const ROLE_LABELS: Record<string, string> = { mentor: "师父", disciple: "弟子" };
+
 function CharacterPanel({
   self,
   inventory,
+  social,
+  nearbyPlayers,
   location,
   open,
   pending,
@@ -643,9 +660,22 @@ function CharacterPanel({
   onEquip,
   onUnequip,
   onUseItem,
+  onAdultUpdate,
+  onGreet,
+  onInteractionRequest,
+  onInteractionRespond,
+  onRelationshipEnd,
+  onBlock,
+  onTradeRequest,
+  onTradeRespond,
+  onTradeOffer,
+  onTradeConfirm,
+  onTradeCancel,
 }: {
   self: GameSnapshot["self"];
   inventory: GameSnapshot["inventory"];
+  social: GameSnapshot["social"];
+  nearbyPlayers: GameSnapshot["onlinePlayers"];
   location?: Location;
   open: boolean;
   pending: boolean;
@@ -654,11 +684,26 @@ function CharacterPanel({
   onEquip: (itemId: string) => void;
   onUnequip: (itemId: string) => void;
   onUseItem: (itemId: string) => void;
+  onAdultUpdate: (status: "unknown" | "adult" | "minor", enabled: boolean) => void;
+  onGreet: (targetPlayerId: string) => void;
+  onInteractionRequest: (targetPlayerId: string, requestType: "relationship.friend" | "relationship.sworn" | "relationship.mentor" | "relationship.lover" | "relationship.spouse" | "intimate") => void;
+  onInteractionRespond: (requestId: string, accept: boolean) => void;
+  onRelationshipEnd: (relationshipId: string) => void;
+  onBlock: (targetPlayerId: string, blocked: boolean) => void;
+  onTradeRequest: (targetPlayerId: string) => void;
+  onTradeRespond: (tradeId: string, accept: boolean) => void;
+  onTradeOffer: (tradeId: string, silver: number, items: Array<{ itemId: string; quantity: number }>) => void;
+  onTradeConfirm: (tradeId: string) => void;
+  onTradeCancel: (tradeId: string) => void;
 }) {
-  const [tab, setTab] = useState<"base" | "combat" | "cultivation" | "inventory">("base");
+  const [tab, setTab] = useState<"base" | "combat" | "cultivation" | "inventory" | "social">("base");
   const [draft, setDraft] = useState<BaseAttributes>({ strength: 0, agility: 0, constitution: 0, root: 0, comprehension: 0, spirit: 0 });
+  const [adultStatus, setAdultStatus] = useState(social.adultProfile.status);
+  const [adultEnabled, setAdultEnabled] = useState(social.adultProfile.contentEnabled);
+  const [tradeDrafts, setTradeDrafts] = useState<Record<string, { silver: string; itemId: string; quantity: string }>>({});
   const allocated = Object.values(draft).reduce((sum, value) => sum + value, 0);
   const progress = Math.min(100, (self.cultivation.progress / Math.max(1, self.cultivation.nextLevelCost)) * 100);
+  const tradableItems = inventory.items.filter((item) => !item.bound && !item.equippedSlot && item.quantity > item.reservedQuantity);
 
   return (
     <section className={`character-panel side-section mobile-drawer ${open ? "drawer-open" : ""}`} aria-label="角色状态">
@@ -679,6 +724,7 @@ function CharacterPanel({
         <button className={tab === "combat" ? "active" : ""} onClick={() => setTab("combat")}>战斗属性</button>
         <button className={tab === "cultivation" ? "active" : ""} onClick={() => setTab("cultivation")}>修炼突破</button>
         <button className={tab === "inventory" ? "active" : ""} onClick={() => setTab("inventory")}>物品装备</button>
+        <button className={tab === "social" ? "active" : ""} onClick={() => setTab("social")}>交往交易</button>
       </div>
       {tab === "base" && (
         <div className="attribute-panel">
@@ -734,6 +780,113 @@ function CharacterPanel({
               </span>
             </div>
           ))}
+        </div>
+      )}
+      {tab === "social" && (
+        <div className="social-panel" aria-label="交往交易">
+          <section className="adult-settings" aria-label="成人内容设置">
+            <h3>年龄与成人内容</h3>
+            <label>角色年龄状态
+              <select value={adultStatus} onChange={(event) => {
+                const value = event.target.value as typeof adultStatus;
+                setAdultStatus(value);
+                if (value !== "adult") setAdultEnabled(false);
+              }}>
+                <option value="unknown">未知</option>
+                <option value="adult">确认成年</option>
+                <option value="minor">未成年</option>
+              </select>
+            </label>
+            <label className="adult-checkbox">
+              <input type="checkbox" checked={adultEnabled} disabled={adultStatus !== "adult"} onChange={(event) => setAdultEnabled(event.target.checked)} />
+              开启成人内容（仍需每次单独同意）
+            </label>
+            <button disabled={pending} onClick={() => onAdultUpdate(adultStatus, adultEnabled)}>保存设置</button>
+          </section>
+
+          <section aria-label="同地点角色">
+            <h3>同地点在线角色</h3>
+            {nearbyPlayers.length === 0 && <p>此处没有其他在线角色。</p>}
+            {nearbyPlayers.map((player) => (
+              <article className="social-player" key={player.id}>
+                <strong>{player.name}</strong><small>{player.title}</small>
+                <div>
+                  <button disabled={pending} onClick={() => onGreet(player.id)}>问候</button>
+                  <button disabled={pending} onClick={() => onInteractionRequest(player.id, "relationship.friend")}>结交</button>
+                  <button disabled={pending} onClick={() => onInteractionRequest(player.id, "relationship.sworn")}>结义</button>
+                  <button disabled={pending} onClick={() => onInteractionRequest(player.id, "relationship.mentor")}>收徒</button>
+                  <button disabled={pending} onClick={() => onInteractionRequest(player.id, "relationship.lover")}>恋人</button>
+                  <button disabled={pending} onClick={() => onInteractionRequest(player.id, "relationship.spouse")}>婚配</button>
+                  <button disabled={pending || !social.adultProfile.contentEnabled} onClick={() => onInteractionRequest(player.id, "intimate")}>私密亲昵</button>
+                  <button disabled={pending} onClick={() => onTradeRequest(player.id)}>交易</button>
+                  <button disabled={pending} onClick={() => onBlock(player.id, true)}>屏蔽</button>
+                </div>
+              </article>
+            ))}
+          </section>
+
+          <section aria-label="互动请求">
+            <h3>互动请求</h3>
+            {social.incomingRequests.map((request) => (
+              <article className="social-request" key={request.id}>
+                <span><strong>{request.fromPlayerName}</strong><small>{INTERACTION_LABELS[request.requestType] ?? request.requestType}</small></span>
+                <div><button disabled={pending} onClick={() => onInteractionRespond(request.id, true)}>接受</button><button disabled={pending} onClick={() => onInteractionRespond(request.id, false)}>拒绝</button></div>
+              </article>
+            ))}
+            {social.outgoingRequests.map((request) => <p key={request.id}>等待 {request.toPlayerName} 回应：{INTERACTION_LABELS[request.requestType] ?? request.requestType}</p>)}
+            {social.incomingRequests.length + social.outgoingRequests.length === 0 && <p>没有待处理请求。</p>}
+          </section>
+
+          <section aria-label="角色关系">
+            <h3>已建立关系</h3>
+            {social.relationships.map((relationship) => (
+              <article className="social-request" key={relationship.id}>
+                <span><strong>{relationship.otherPlayerName}</strong><small>{RELATIONSHIP_LABELS[relationship.relationType] ?? relationship.relationType}{relationship.role ? ` · ${ROLE_LABELS[relationship.role] ?? relationship.role}` : ""}</small></span>
+                <button disabled={pending} onClick={() => onRelationshipEnd(relationship.id)}>结束</button>
+              </article>
+            ))}
+            {social.relationships.length === 0 && <p>尚未建立正式关系。</p>}
+          </section>
+
+          <section aria-label="交易会话">
+            <h3>交易</h3>
+            {social.trades.map((trade) => {
+              const tradeDraft = tradeDrafts[trade.id] ?? { silver: String(trade.ownOffer.silver), itemId: "", quantity: "1" };
+              if (trade.status === "pending") return (
+                <article className="trade-card" key={trade.id}>
+                  <strong>与 {trade.otherPlayerName} 的交易请求</strong>
+                  {trade.requestedBySelf
+                    ? <p>等待对方接受。</p>
+                    : <div><button disabled={pending} onClick={() => onTradeRespond(trade.id, true)}>接受交易</button><button disabled={pending} onClick={() => onTradeRespond(trade.id, false)}>拒绝</button></div>}
+                  <button disabled={pending} onClick={() => onTradeCancel(trade.id)}>取消</button>
+                </article>
+              );
+              return (
+                <article className="trade-card" key={trade.id}>
+                  <strong>与 {trade.otherPlayerName} 交易</strong>
+                  <p>我的报价：{trade.ownOffer.silver} 银 · {trade.ownOffer.items.map((item) => `${item.name}×${item.quantity}`).join("、") || "无物品"}</p>
+                  <p>对方报价：{trade.otherOffer.silver} 银 · {trade.otherOffer.items.map((item) => `${item.name}×${item.quantity}`).join("、") || "无物品"}</p>
+                  <label>银两<input type="number" min="0" value={tradeDraft.silver} onChange={(event) => setTradeDrafts((current) => ({ ...current, [trade.id]: { ...tradeDraft, silver: event.target.value } }))} /></label>
+                  <label>物品<select value={tradeDraft.itemId} onChange={(event) => setTradeDrafts((current) => ({ ...current, [trade.id]: { ...tradeDraft, itemId: event.target.value } }))}>
+                    <option value="">不提供物品</option>
+                    {tradableItems.map((item) => <option value={item.id} key={item.id}>{item.name} · 可用 {item.quantity - item.reservedQuantity}</option>)}
+                  </select></label>
+                  <label>数量<input type="number" min="1" value={tradeDraft.quantity} onChange={(event) => setTradeDrafts((current) => ({ ...current, [trade.id]: { ...tradeDraft, quantity: event.target.value } }))} /></label>
+                  <div>
+                    <button disabled={pending} onClick={() => onTradeOffer(
+                      trade.id,
+                      Math.max(0, Number.parseInt(tradeDraft.silver || "0", 10) || 0),
+                      tradeDraft.itemId ? [{ itemId: tradeDraft.itemId, quantity: Math.max(1, Number.parseInt(tradeDraft.quantity || "1", 10) || 1) }] : [],
+                    )}>更新报价</button>
+                    <button disabled={pending || trade.ownConfirmed} onClick={() => onTradeConfirm(trade.id)}>{trade.ownConfirmed ? "已确认" : "确认报价"}</button>
+                    <button disabled={pending} onClick={() => onTradeCancel(trade.id)}>取消</button>
+                  </div>
+                  <small>{trade.otherConfirmed ? "对方已确认" : "等待对方确认"}</small>
+                </article>
+              );
+            })}
+            {social.trades.length === 0 && <p>没有交易会话。</p>}
+          </section>
         </div>
       )}
       <div className="character-numbers"><div><span>银两</span><strong>{self.silver}</strong><small>枚</small></div></div>
@@ -862,6 +1015,9 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
         if (message.type === "inventory.updated") {
           setSnapshot((current) => ({ ...current, inventory: message.inventory }));
         }
+        if (message.type === "social.updated") {
+          setSnapshot((current) => ({ ...current, social: message.social }));
+        }
         if (message.type === "map.visited.snapshot" && message.requestId === visitedMapRequestRef.current) {
           const preferredLayerId = visitedLayerPreferenceRef.current;
           setVisitedMap(message.map);
@@ -964,6 +1120,9 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
   };
 
   const currentLocation = snapshot.locations.find((location) => location.id === snapshot.self.currentLocation);
+  const nearbyPlayers = snapshot.onlinePlayers.filter((player) => (
+    player.id !== snapshot.self.id && player.currentLocation === snapshot.self.currentLocation
+  ));
   const drawerOpen = drawer !== null;
   const openVisitedMap = () => {
     setDrawer(null);
@@ -1026,6 +1185,8 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
         <CharacterPanel
           self={snapshot.self}
           inventory={snapshot.inventory}
+          social={snapshot.social}
+          nearbyPlayers={nearbyPlayers}
           location={currentLocation}
           open={drawer === "character"}
           pending={pending !== null || connection !== "online"}
@@ -1034,6 +1195,17 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           onEquip={(itemId) => sendCommand({ type: "inventory.equip", itemId }, "inventory")}
           onUnequip={(itemId) => sendCommand({ type: "inventory.unequip", itemId }, "inventory")}
           onUseItem={(itemId) => sendCommand({ type: "inventory.use", itemId }, "inventory")}
+          onAdultUpdate={(adultStatus, adultContentEnabled) => sendCommand({ type: "profile.adult.update", adultStatus, adultContentEnabled }, "social")}
+          onGreet={(targetPlayerId) => sendCommand({ type: "interaction.greet", targetPlayerId }, "social")}
+          onInteractionRequest={(targetPlayerId, requestType) => sendCommand({ type: "interaction.request", targetPlayerId, requestType }, "social")}
+          onInteractionRespond={(interactionRequestId, accept) => sendCommand({ type: "interaction.respond", interactionRequestId, accept }, "social")}
+          onRelationshipEnd={(relationshipId) => sendCommand({ type: "relationship.end", relationshipId }, "social")}
+          onBlock={(targetPlayerId, blocked) => sendCommand({ type: "player.block", targetPlayerId, blocked }, "social")}
+          onTradeRequest={(targetPlayerId) => sendCommand({ type: "trade.request", targetPlayerId }, "trade")}
+          onTradeRespond={(tradeId, accept) => sendCommand({ type: "trade.respond", tradeId, accept }, "trade")}
+          onTradeOffer={(tradeId, silver, items) => sendCommand({ type: "trade.offer", tradeId, silver, items }, "trade")}
+          onTradeConfirm={(tradeId) => sendCommand({ type: "trade.confirm", tradeId }, "trade")}
+          onTradeCancel={(tradeId) => sendCommand({ type: "trade.cancel", tradeId }, "trade")}
         />
         <ChatPanel
           messages={snapshot.chatMessages}

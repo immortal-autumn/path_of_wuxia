@@ -80,6 +80,13 @@ async function main() {
     send(socket, { type: "snapshot", snapshot });
   };
 
+  const refreshPlayers = (playerIds: string[]) => {
+    const targets = new Set(playerIds);
+    for (const [socket, socketContext] of sockets) {
+      if (targets.has(socketContext.playerId)) sendSnapshot(socket, socketContext);
+    }
+  };
+
   wss.on("connection", (socket, request) => {
     const token = readCookie(request, SESSION_COOKIE);
     const player = service.getPlayerBySessionToken(token);
@@ -239,6 +246,76 @@ async function main() {
         if (command.type === "qinggong.start") {
           const result = service.startQinggong(context.playerId, command.destinationId);
           send(socket, { type: "action.updated", actionState: result.actionState });
+          send(socket, { type: "ack", requestId: command.requestId, message: result.message });
+          return;
+        }
+
+        if (command.type === "profile.adult.update") {
+          const result = service.updateAdultProfile(context.playerId, command.adultStatus, command.adultContentEnabled);
+          send(socket, { type: "social.updated", social: result.social });
+          send(socket, { type: "ack", requestId: command.requestId, message: result.message });
+          return;
+        }
+
+        if (command.type === "interaction.greet") {
+          if (!onlinePlayerIds().includes(command.targetPlayerId)) throw new Error("互动目标当前不在线。");
+          const result = service.greetPlayer(context.playerId, command.targetPlayerId);
+          broadcast({ type: "world.event", event: result.event });
+          refreshPlayers(result.affectedPlayerIds);
+          send(socket, { type: "ack", requestId: command.requestId, message: result.message });
+          return;
+        }
+
+        if (command.type === "interaction.request") {
+          if (!onlinePlayerIds().includes(command.targetPlayerId)) throw new Error("互动目标当前不在线。");
+          const result = service.requestInteraction(
+            context.playerId, command.targetPlayerId, command.requestType, command.actionId,
+          );
+          refreshPlayers(result.affectedPlayerIds);
+          send(socket, { type: "ack", requestId: command.requestId, message: result.message });
+          return;
+        }
+
+        if (command.type === "interaction.respond") {
+          const result = service.respondInteraction(
+            context.playerId, command.interactionRequestId, command.accept, onlinePlayerIds(),
+          );
+          refreshPlayers(result.affectedPlayerIds);
+          send(socket, { type: "ack", requestId: command.requestId, message: result.message });
+          return;
+        }
+
+        if (command.type === "relationship.end") {
+          const result = service.endRelationship(context.playerId, command.relationshipId);
+          refreshPlayers(result.affectedPlayerIds);
+          send(socket, { type: "ack", requestId: command.requestId, message: result.message });
+          return;
+        }
+
+        if (command.type === "player.block") {
+          const result = service.setPlayerBlocked(context.playerId, command.targetPlayerId, command.blocked);
+          refreshPlayers(result.affectedPlayerIds);
+          send(socket, { type: "ack", requestId: command.requestId, message: result.message });
+          return;
+        }
+
+        if (command.type === "trade.request") {
+          if (!onlinePlayerIds().includes(command.targetPlayerId)) throw new Error("交易目标当前不在线。");
+          const result = service.requestTrade(context.playerId, command.targetPlayerId);
+          refreshPlayers(result.affectedPlayerIds);
+          send(socket, { type: "ack", requestId: command.requestId, message: result.message });
+          return;
+        }
+
+        if (command.type === "trade.respond" || command.type === "trade.offer" || command.type === "trade.confirm" || command.type === "trade.cancel") {
+          const result = command.type === "trade.respond"
+            ? service.respondTrade(context.playerId, command.tradeId, command.accept, onlinePlayerIds())
+            : command.type === "trade.offer"
+              ? service.offerTrade(context.playerId, command.tradeId, command.silver, command.items)
+              : command.type === "trade.confirm"
+                ? service.confirmTrade(context.playerId, command.tradeId)
+                : service.cancelTrade(context.playerId, command.tradeId);
+          refreshPlayers(result.affectedPlayerIds);
           send(socket, { type: "ack", requestId: command.requestId, message: result.message });
           return;
         }

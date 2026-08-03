@@ -36,6 +36,7 @@ import type {
   GameMutation,
   GameSnapshot,
   InventoryState,
+  InteractionRequest,
   ItemInstance,
   Location,
   MapEditOperation,
@@ -53,8 +54,11 @@ import type {
   PlayerNeeds,
   PlayerSkill,
   QinggongTarget,
+  Relationship,
   RouteType,
   SessionIdentity,
+  SocialState,
+  TradeOffer,
   TransitionKind,
   VisitedMap,
   WorldEvent,
@@ -202,6 +206,22 @@ function straightDirection(dx: number, dy: number): Direction | null {
   return (Object.entries(DIRECTION_DELTAS).find(([, [stepX, stepY]]) => (
     stepX * distance === dx && stepY * distance === dy
   ))?.[0] ?? null) as Direction | null;
+}
+
+type StoredTradeOffer = { silver: number; items: Array<{ itemId: string; quantity: number }> };
+
+function parseStoredTradeOffer(value: string): StoredTradeOffer {
+  const parsed = JSON.parse(value) as Partial<StoredTradeOffer>;
+  return {
+    silver: Number.isInteger(parsed.silver) && (parsed.silver ?? 0) >= 0 ? parsed.silver! : 0,
+    items: Array.isArray(parsed.items)
+      ? parsed.items.flatMap((item) => (
+        item && typeof item.itemId === "string" && Number.isInteger(item.quantity) && item.quantity > 0
+          ? [{ itemId: item.itemId, quantity: item.quantity }]
+          : []
+      ))
+      : [],
+  };
 }
 
 export class GameService {
@@ -480,12 +500,14 @@ export class GameService {
     templateId,
     durationSeconds,
     context,
+    targetPlayerId = null,
     inputs = {},
   }: {
     playerId: string;
     templateId: string;
     durationSeconds: number;
     context: Record<string, unknown>;
+    targetPlayerId?: string | null;
     inputs?: Record<string, number>;
   }) {
     const now = this.now();
@@ -500,11 +522,11 @@ export class GameService {
     const timestamp = now.toISOString();
     this.db.prepare(`
       INSERT INTO action_jobs(
-        id,player_id,action_template_id,target_location_id,status,queue_position,started_at,completes_at,
+        id,player_id,action_template_id,target_player_id,target_location_id,status,queue_position,started_at,completes_at,
         duration_seconds,reserved_json,context_json,created_at,updated_at
-      ) VALUES (?,?,?,?,?,?,?,?,?,'{}',?,?,?)
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,'{}',?,?,?)
     `).run(
-      id, playerId, templateId, player.current_location, running ? "queued" : "running", running ? queuedCount + 1 : 0,
+      id, playerId, templateId, targetPlayerId, player.current_location, running ? "queued" : "running", running ? queuedCount + 1 : 0,
       running ? null : timestamp,
       running ? null : new Date(now.getTime() + durationSeconds * 1000).toISOString(),
       durationSeconds, JSON.stringify(context), timestamp, timestamp,
@@ -991,6 +1013,19 @@ export class GameService {
     const skillId = check.skillId ?? requirements.skillId;
     const chance = actionSuccessChance({ attributes, skillLevel: this.skillLevel(playerId, skillId), needs, check });
     let success = chance >= 100 || this.randomPercent() < chance;
+    if (template.target_kind === "player") {
+      const target = job.target_player_id
+        ? this.db.prepare("SELECT current_location,adult_status,adult_content_enabled FROM players WHERE id=?").get(job.target_player_id) as {
+            current_location: string; adult_status: string; adult_content_enabled: number;
+          } | undefined
+        : undefined;
+      if (!target || (requirements.sameLocation && target.current_location !== row.current_location)) success = false;
+      if (template.adult === 1 && (
+        !target || target.adult_status !== "adult" || target.adult_content_enabled !== 1
+        || (this.db.prepare("SELECT adult_status,adult_content_enabled FROM players WHERE id=?").get(playerId) as { adult_status: string; adult_content_enabled: number }).adult_status !== "adult"
+        || (this.db.prepare("SELECT adult_content_enabled FROM players WHERE id=?").get(playerId) as { adult_content_enabled: number }).adult_content_enabled !== 1
+      )) success = false;
+    }
     let qinggongDestination: Location | null = null;
     if (template.id === "action-qinggong") {
       const destinationId = typeof context.destinationId === "string" ? context.destinationId : "";
@@ -1112,6 +1147,10 @@ export class GameService {
     } else {
       this.db.prepare("INSERT INTO private_events(player_id,event_type,content,created_at) VALUES (?,'action',?,?)")
         .run(playerId, content, timestamp);
+      if (template.visibility === "participants" && job.target_player_id && job.target_player_id !== playerId) {
+        this.db.prepare("INSERT INTO private_events(player_id,event_type,content,created_at) VALUES (?,'action',?,?)")
+          .run(job.target_player_id, content, timestamp);
+      }
     }
     this.db.prepare("UPDATE action_jobs SET status='completed',result_text=?,updated_at=? WHERE id=?")
       .run(`${success ? "成功" : "失败"}（${chance}%） · ${content}`, timestamp, job.id);
@@ -1421,6 +1460,444 @@ export class GameService {
     }));
   }
 
+  private cleanupExpiredSocial(at = this.now()) {
+    const timestamp = at.toISOString();
+    this.db.prepare("UPDATE interaction_requests SET status='expired',updated_at=? WHERE status='pending' AND expires_at<=?")
+      .run(timestamp, timestamp);
+    this.db.prepare("UPDATE trade_sessions SET status='expired',updated_at=? WHERE status IN ('pending','active') AND expires_at<=?")
+      .run(timestamp, timestamp);
+  }
+
+  private assertDirectInteraction(playerId: string, targetPlayerId: string) {
+    if (playerId === targetPlayerId) throw new Error("不能把自己作为互动目标。");
+    const rows = this.db.prepare("SELECT id,name,current_location FROM players WHERE id IN (?,?)").all(playerId, targetPlayerId) as Array<{
+      id: string; name: string; current_location: string;
+    }>;
+    const player = rows.find((row) => row.id === playerId);
+    const target = rows.find((row) => row.id === targetPlayerId);
+    if (!player || !target) throw new Error("互动目标不存在。");
+    if (player.current_location !== target.current_location) throw new Error("双方必须在同一地点才能直接互动。");
+    if (this.db.prepare(`
+      SELECT 1 FROM player_blocks WHERE (player_id=? AND blocked_player_id=?) OR (player_id=? AND blocked_player_id=?)
+    `).get(playerId, targetPlayerId, targetPlayerId, playerId)) throw new Error("当前无法与对方互动。");
+    return { player, target };
+  }
+
+  private assertAdultConsentReady(playerId: string, targetPlayerId: string) {
+    const rows = this.db.prepare("SELECT id,adult_status,adult_content_enabled FROM players WHERE id IN (?,?)").all(playerId, targetPlayerId) as Array<{
+      id: string; adult_status: string; adult_content_enabled: number;
+    }>;
+    if (rows.length !== 2 || rows.some((row) => row.adult_status !== "adult" || row.adult_content_enabled !== 1)) {
+      throw new Error("成人互动要求双方确认成年并开启成人内容。");
+    }
+  }
+
+  updateAdultProfile(playerId: string, adultStatus: "unknown" | "adult" | "minor", adultContentEnabled: boolean) {
+    return inTransaction(this.db, () => {
+      this.getPlayerRow(playerId);
+      const enabled = adultStatus === "adult" && adultContentEnabled;
+      const timestamp = this.now().toISOString();
+      this.db.prepare("UPDATE players SET adult_status=?,adult_content_enabled=?,updated_at=? WHERE id=?")
+        .run(adultStatus, enabled ? 1 : 0, timestamp, playerId);
+      if (!enabled) {
+        this.db.prepare(`
+          UPDATE interaction_requests SET status='cancelled',updated_at=?
+          WHERE status='pending' AND request_type='intimate' AND (from_player_id=? OR to_player_id=?)
+        `).run(timestamp, playerId, playerId);
+      }
+      return {
+        social: this.getSocialState(playerId),
+        message: adultStatus === "adult"
+          ? `成年状态已确认，成人内容${enabled ? "已开启" : "未开启"}。`
+          : adultStatus === "minor" ? "已标记为未成年，成人内容已强制关闭。" : "成年状态已重置为未知。",
+      };
+    });
+  }
+
+  greetPlayer(playerId: string, targetPlayerId: string) {
+    return inTransaction(this.db, () => {
+      const { player, target } = this.assertDirectInteraction(playerId, targetPlayerId);
+      const timestamp = this.now().toISOString();
+      const content = `${player.name}向${target.name}抱拳问候。`;
+      const result = this.db.prepare("INSERT INTO world_events(player_id,event_type,content,created_at) VALUES (?,'social',?,?)")
+        .run(playerId, content, timestamp);
+      const event = this.db.prepare("SELECT id,player_id,event_type,content,created_at FROM world_events WHERE id=?")
+        .get(result.lastInsertRowid) as EventRow;
+      return { event: mapEvent(event), affectedPlayerIds: [playerId, targetPlayerId], message: content };
+    });
+  }
+
+  requestInteraction(playerId: string, targetPlayerId: string, requestType: string, actionId?: string) {
+    return inTransaction(this.db, () => {
+      this.cleanupExpiredSocial();
+      const { target } = this.assertDirectInteraction(playerId, targetPlayerId);
+      const relationshipType = requestType.startsWith("relationship.") ? requestType.slice("relationship.".length) : null;
+      const allowedRelationships = new Set(["friend", "sworn", "mentor", "lover", "spouse"]);
+      if (relationshipType && !allowedRelationships.has(relationshipType)) throw new Error("不支持这种关系请求。");
+      const payload: Record<string, unknown> = {};
+      if (requestType === "intimate") {
+        this.assertAdultConsentReady(playerId, targetPlayerId);
+        const templateId = actionId ?? "action-private-intimacy";
+        const template = this.db.prepare(`
+          SELECT id FROM action_templates WHERE id=? AND is_active=1 AND adult=1
+            AND target_kind='player' AND visibility='participants'
+        `).get(templateId) as { id: string } | undefined;
+        if (!template) throw new Error("成人互动规则不存在或隐私设置不安全。");
+        payload.actionId = template.id;
+      } else if (!relationshipType) {
+        throw new Error("不支持这种互动请求。");
+      }
+      if (this.db.prepare(`
+        SELECT 1 FROM interaction_requests WHERE status='pending' AND request_type=?
+          AND ((from_player_id=? AND to_player_id=?) OR (from_player_id=? AND to_player_id=?))
+      `).get(requestType, playerId, targetPlayerId, targetPlayerId, playerId)) throw new Error("双方已有相同的待处理请求。");
+      if (relationshipType) {
+        const [a, b] = [playerId, targetPlayerId].sort();
+        if (this.db.prepare("SELECT 1 FROM player_relationships WHERE player_a_id=? AND player_b_id=? AND relation_type=? AND status='active'").get(a, b, relationshipType)) {
+          throw new Error("双方已经建立了这种关系。");
+        }
+      }
+      const now = this.now();
+      const id = randomUUID();
+      this.db.prepare(`
+        INSERT INTO interaction_requests(id,request_type,from_player_id,to_player_id,status,payload_json,expires_at,created_at,updated_at)
+        VALUES (?,?,?,?,'pending',?,?,?,?)
+      `).run(id, requestType, playerId, targetPlayerId, JSON.stringify(payload), new Date(now.getTime() + 5 * 60_000).toISOString(), now.toISOString(), now.toISOString());
+      return { affectedPlayerIds: [playerId, targetPlayerId], message: `已向${target.name}发送请求。` };
+    });
+  }
+
+  respondInteraction(playerId: string, requestId: string, accept: boolean, onlinePlayerIds: string[] = []) {
+    return inTransaction(this.db, () => {
+      this.cleanupExpiredSocial();
+      const request = this.db.prepare(`
+        SELECT id,request_type,from_player_id,to_player_id,payload_json FROM interaction_requests
+        WHERE id=? AND to_player_id=? AND status='pending' AND expires_at>?
+      `).get(requestId, playerId, this.now().toISOString()) as {
+        id: string; request_type: string; from_player_id: string; to_player_id: string; payload_json: string;
+      } | undefined;
+      if (!request) throw new Error("请求不存在、已处理或已过期。");
+      const timestamp = this.now().toISOString();
+      if (!accept) {
+        this.db.prepare("UPDATE interaction_requests SET status='declined',updated_at=? WHERE id=?").run(timestamp, request.id);
+        return { affectedPlayerIds: [request.from_player_id, request.to_player_id], message: "已拒绝请求。" };
+      }
+      this.assertDirectInteraction(playerId, request.from_player_id);
+      if (onlinePlayerIds.length > 0 && !onlinePlayerIds.includes(request.from_player_id)) throw new Error("请求方当前不在线。");
+      if (request.request_type.startsWith("relationship.")) {
+        const relationType = request.request_type.slice("relationship.".length);
+        const [a, b] = [request.from_player_id, request.to_player_id].sort();
+        let roleA: string | null = null;
+        let roleB: string | null = null;
+        if (relationType === "mentor") {
+          if (request.from_player_id === a) { roleA = "mentor"; roleB = "disciple"; }
+          else { roleA = "disciple"; roleB = "mentor"; }
+        }
+        this.db.prepare(`
+          INSERT INTO player_relationships(
+            id,player_a_id,player_b_id,relation_type,status,role_a,role_b,requested_by,created_at,updated_at
+          ) VALUES (?,?,?,?,'active',?,?,?,?,?)
+          ON CONFLICT(player_a_id,player_b_id,relation_type) DO UPDATE SET
+            status='active',role_a=excluded.role_a,role_b=excluded.role_b,requested_by=excluded.requested_by,updated_at=excluded.updated_at
+        `).run(randomUUID(), a, b, relationType, roleA, roleB, request.from_player_id, timestamp, timestamp);
+      } else if (request.request_type === "intimate") {
+        this.assertAdultConsentReady(request.from_player_id, request.to_player_id);
+        const payload = JSON.parse(request.payload_json) as { actionId?: unknown };
+        if (typeof payload.actionId !== "string") throw new Error("私密行动请求缺少规则。");
+        const template = this.getTemplateRow(payload.actionId);
+        if (template.adult !== 1 || template.visibility !== "participants" || template.target_kind !== "player") {
+          throw new Error("私密行动规则不再满足安全条件。");
+        }
+        this.enqueueSystemJob({
+          playerId: request.from_player_id,
+          templateId: template.id,
+          targetPlayerId: request.to_player_id,
+          durationSeconds: template.duration_seconds,
+          context: { interactionRequestId: request.id },
+        });
+      } else {
+        throw new Error("不支持这种互动请求。");
+      }
+      this.db.prepare("UPDATE interaction_requests SET status='accepted',updated_at=? WHERE id=?").run(timestamp, request.id);
+      return { affectedPlayerIds: [request.from_player_id, request.to_player_id], message: "已接受请求。" };
+    });
+  }
+
+  endRelationship(playerId: string, relationshipId: string) {
+    return inTransaction(this.db, () => {
+      const row = this.db.prepare(`
+        SELECT player_a_id,player_b_id FROM player_relationships
+        WHERE id=? AND status='active' AND (player_a_id=? OR player_b_id=?)
+      `).get(relationshipId, playerId, playerId) as { player_a_id: string; player_b_id: string } | undefined;
+      if (!row) throw new Error("关系不存在或已经结束。");
+      this.db.prepare("UPDATE player_relationships SET status='ended',updated_at=? WHERE id=?").run(this.now().toISOString(), relationshipId);
+      return { affectedPlayerIds: [row.player_a_id, row.player_b_id], message: "关系已结束。" };
+    });
+  }
+
+  setPlayerBlocked(playerId: string, targetPlayerId: string, blocked: boolean) {
+    return inTransaction(this.db, () => {
+      this.getPlayerRow(playerId);
+      this.getPlayerRow(targetPlayerId);
+      if (playerId === targetPlayerId) throw new Error("不能屏蔽自己。");
+      const timestamp = this.now().toISOString();
+      if (blocked) {
+        this.db.prepare("INSERT OR IGNORE INTO player_blocks(player_id,blocked_player_id,created_at) VALUES (?,?,?)")
+          .run(playerId, targetPlayerId, timestamp);
+        this.db.prepare(`
+          UPDATE interaction_requests SET status='cancelled',updated_at=? WHERE status='pending'
+            AND ((from_player_id=? AND to_player_id=?) OR (from_player_id=? AND to_player_id=?))
+        `).run(timestamp, playerId, targetPlayerId, targetPlayerId, playerId);
+        this.db.prepare(`
+          UPDATE trade_sessions SET status='cancelled',updated_at=? WHERE status IN ('pending','active')
+            AND ((player_a_id=? AND player_b_id=?) OR (player_a_id=? AND player_b_id=?))
+        `).run(timestamp, playerId, targetPlayerId, targetPlayerId, playerId);
+      } else {
+        this.db.prepare("DELETE FROM player_blocks WHERE player_id=? AND blocked_player_id=?").run(playerId, targetPlayerId);
+      }
+      return { affectedPlayerIds: [playerId, targetPlayerId], message: blocked ? "已屏蔽对方。" : "已取消屏蔽。" };
+    });
+  }
+
+  requestTrade(playerId: string, targetPlayerId: string) {
+    return inTransaction(this.db, () => {
+      this.cleanupExpiredSocial();
+      const { target } = this.assertDirectInteraction(playerId, targetPlayerId);
+      if (this.db.prepare(`
+        SELECT 1 FROM trade_sessions WHERE status IN ('pending','active')
+          AND ((player_a_id=? AND player_b_id=?) OR (player_a_id=? AND player_b_id=?))
+      `).get(playerId, targetPlayerId, targetPlayerId, playerId)) throw new Error("双方已有待处理或进行中的交易。");
+      const now = this.now();
+      this.db.prepare(`
+        INSERT INTO trade_sessions(
+          id,player_a_id,player_b_id,status,offer_a_json,offer_b_json,confirmed_a,confirmed_b,expires_at,created_at,updated_at
+        ) VALUES (?,?,?,'pending','{"silver":0,"items":[]}','{"silver":0,"items":[]}',0,0,?,?,?)
+      `).run(randomUUID(), playerId, targetPlayerId, new Date(now.getTime() + 5 * 60_000).toISOString(), now.toISOString(), now.toISOString());
+      return { affectedPlayerIds: [playerId, targetPlayerId], message: `已向${target.name}发出交易请求。` };
+    });
+  }
+
+  respondTrade(playerId: string, tradeId: string, accept: boolean, onlinePlayerIds: string[] = []) {
+    return inTransaction(this.db, () => {
+      this.cleanupExpiredSocial();
+      const row = this.db.prepare(`
+        SELECT player_a_id,player_b_id FROM trade_sessions
+        WHERE id=? AND player_b_id=? AND status='pending' AND expires_at>?
+      `).get(tradeId, playerId, this.now().toISOString()) as { player_a_id: string; player_b_id: string } | undefined;
+      if (!row) throw new Error("交易请求不存在、已处理或已过期。");
+      const timestamp = this.now().toISOString();
+      if (accept) {
+        this.assertDirectInteraction(playerId, row.player_a_id);
+        if (onlinePlayerIds.length > 0 && !onlinePlayerIds.includes(row.player_a_id)) throw new Error("交易发起方当前不在线。");
+        this.db.prepare("UPDATE trade_sessions SET status='active',expires_at=?,updated_at=? WHERE id=?")
+          .run(new Date(this.now().getTime() + 30 * 60_000).toISOString(), timestamp, tradeId);
+      } else {
+        this.db.prepare("UPDATE trade_sessions SET status='declined',updated_at=? WHERE id=?").run(timestamp, tradeId);
+      }
+      return { affectedPlayerIds: [row.player_a_id, row.player_b_id], message: accept ? "交易已开始。" : "已拒绝交易。" };
+    });
+  }
+
+  private validateTradeOffer(playerId: string, offer: StoredTradeOffer) {
+    const player = this.getPlayerRow(playerId);
+    if (offer.silver > player.silver) throw new Error("交易报价中的银两不足。");
+    if (offer.items.length > 16 || new Set(offer.items.map((item) => item.itemId)).size !== offer.items.length) {
+      throw new Error("交易物品报价不合法。");
+    }
+    const result: Array<{
+      id: string; definition_id: string; quantity: number; quality: number; durability: number;
+      affixes_json: string; bound: number; equipped_slot: string | null; reserved: number;
+    }> = [];
+    for (const offered of offer.items) {
+      const item = this.db.prepare(`
+        SELECT i.id,i.definition_id,i.quantity,i.quality,i.durability,i.affixes_json,i.bound,i.equipped_slot,
+          COALESCE((SELECT SUM(quantity) FROM item_reservations WHERE item_instance_id=i.id),0) AS reserved
+        FROM item_instances i WHERE i.id=? AND i.owner_player_id=?
+      `).get(offered.itemId, playerId) as typeof result[number] | undefined;
+      if (!item) throw new Error("交易物品已经不存在。");
+      if (item.bound || item.equipped_slot) throw new Error("绑定或已装备物品不能交易。");
+      if (offered.quantity > item.quantity - item.reserved) throw new Error("交易物品数量不足或已经被行动预留。");
+      result.push(item);
+    }
+    return result;
+  }
+
+  offerTrade(playerId: string, tradeId: string, silver: number, items: Array<{ itemId: string; quantity: number }>) {
+    return inTransaction(this.db, () => {
+      this.cleanupExpiredSocial();
+      const row = this.db.prepare(`
+        SELECT player_a_id,player_b_id FROM trade_sessions
+        WHERE id=? AND status='active' AND expires_at>? AND (player_a_id=? OR player_b_id=?)
+      `).get(tradeId, this.now().toISOString(), playerId, playerId) as { player_a_id: string; player_b_id: string } | undefined;
+      if (!row) throw new Error("交易不存在、未开始或已过期。");
+      this.assertDirectInteraction(row.player_a_id, row.player_b_id);
+      const offer = { silver, items } satisfies StoredTradeOffer;
+      this.validateTradeOffer(playerId, offer);
+      const side = row.player_a_id === playerId ? "a" : "b";
+      this.db.prepare(`UPDATE trade_sessions SET offer_${side}_json=?,confirmed_a=0,confirmed_b=0,updated_at=? WHERE id=?`)
+        .run(JSON.stringify(offer), this.now().toISOString(), tradeId);
+      return { affectedPlayerIds: [row.player_a_id, row.player_b_id], message: "交易报价已更新，双方确认已重置。" };
+    });
+  }
+
+  private transferTradeItems(fromPlayerId: string, toPlayerId: string, offer: StoredTradeOffer, at: string) {
+    const validated = new Map(this.validateTradeOffer(fromPlayerId, offer).map((item) => [item.id, item]));
+    for (const offered of offer.items) {
+      const item = validated.get(offered.itemId)!;
+      if (offered.quantity === item.quantity) {
+        this.db.prepare("UPDATE item_instances SET owner_player_id=?,equipped_slot=NULL,updated_at=? WHERE id=?")
+          .run(toPlayerId, at, item.id);
+      } else {
+        this.db.prepare("UPDATE item_instances SET quantity=quantity-?,updated_at=? WHERE id=?")
+          .run(offered.quantity, at, item.id);
+        this.db.prepare(`
+          INSERT INTO item_instances(
+            id,definition_id,owner_player_id,quantity,quality,durability,affixes_json,bound,equipped_slot,created_at,updated_at
+          ) VALUES (?,?,?,?,?,?,?,0,NULL,?,?)
+        `).run(randomUUID(), item.definition_id, toPlayerId, offered.quantity, item.quality, item.durability, item.affixes_json, at, at);
+      }
+    }
+  }
+
+  confirmTrade(playerId: string, tradeId: string) {
+    return inTransaction(this.db, () => {
+      this.cleanupExpiredSocial();
+      let row = this.db.prepare(`
+        SELECT player_a_id,player_b_id,offer_a_json,offer_b_json,confirmed_a,confirmed_b FROM trade_sessions
+        WHERE id=? AND status='active' AND expires_at>? AND (player_a_id=? OR player_b_id=?)
+      `).get(tradeId, this.now().toISOString(), playerId, playerId) as {
+        player_a_id: string; player_b_id: string; offer_a_json: string; offer_b_json: string;
+        confirmed_a: number; confirmed_b: number;
+      } | undefined;
+      if (!row) throw new Error("交易不存在、未开始或已过期。");
+      this.assertDirectInteraction(row.player_a_id, row.player_b_id);
+      const offerA = parseStoredTradeOffer(row.offer_a_json);
+      const offerB = parseStoredTradeOffer(row.offer_b_json);
+      this.validateTradeOffer(row.player_a_id, offerA);
+      this.validateTradeOffer(row.player_b_id, offerB);
+      const side = row.player_a_id === playerId ? "a" : "b";
+      this.db.prepare(`UPDATE trade_sessions SET confirmed_${side}=1,updated_at=? WHERE id=?`)
+        .run(this.now().toISOString(), tradeId);
+      row = this.db.prepare(`
+        SELECT player_a_id,player_b_id,offer_a_json,offer_b_json,confirmed_a,confirmed_b FROM trade_sessions WHERE id=?
+      `).get(tradeId) as typeof row;
+      if (!row || !row.confirmed_a || !row.confirmed_b) {
+        return { affectedPlayerIds: row ? [row.player_a_id, row.player_b_id] : [playerId], message: "已确认报价，等待对方确认。" };
+      }
+      const timestamp = this.now().toISOString();
+      const finalA = parseStoredTradeOffer(row.offer_a_json);
+      const finalB = parseStoredTradeOffer(row.offer_b_json);
+      this.validateTradeOffer(row.player_a_id, finalA);
+      this.validateTradeOffer(row.player_b_id, finalB);
+      this.db.prepare("UPDATE players SET silver=silver-?+?,updated_at=? WHERE id=?")
+        .run(finalA.silver, finalB.silver, timestamp, row.player_a_id);
+      this.db.prepare("UPDATE players SET silver=silver-?+?,updated_at=? WHERE id=?")
+        .run(finalB.silver, finalA.silver, timestamp, row.player_b_id);
+      this.transferTradeItems(row.player_a_id, row.player_b_id, finalA, timestamp);
+      this.transferTradeItems(row.player_b_id, row.player_a_id, finalB, timestamp);
+      this.db.prepare("UPDATE trade_sessions SET status='completed',updated_at=? WHERE id=?").run(timestamp, tradeId);
+      for (const participant of [row.player_a_id, row.player_b_id]) {
+        this.db.prepare("INSERT INTO private_events(player_id,event_type,content,created_at) VALUES (?,'trade','交易已经由双方确认并完成。',?)")
+          .run(participant, timestamp);
+      }
+      return { affectedPlayerIds: [row.player_a_id, row.player_b_id], message: "交易完成。" };
+    });
+  }
+
+  cancelTrade(playerId: string, tradeId: string) {
+    return inTransaction(this.db, () => {
+      const row = this.db.prepare(`
+        SELECT player_a_id,player_b_id FROM trade_sessions
+        WHERE id=? AND status IN ('pending','active') AND (player_a_id=? OR player_b_id=?)
+      `).get(tradeId, playerId, playerId) as { player_a_id: string; player_b_id: string } | undefined;
+      if (!row) throw new Error("交易已经无法取消。");
+      this.db.prepare("UPDATE trade_sessions SET status='cancelled',updated_at=? WHERE id=?").run(this.now().toISOString(), tradeId);
+      return { affectedPlayerIds: [row.player_a_id, row.player_b_id], message: "交易已取消。" };
+    });
+  }
+
+  private displayTradeOffer(value: string): TradeOffer {
+    const offer = parseStoredTradeOffer(value);
+    return {
+      silver: offer.silver,
+      items: offer.items.map((offered) => {
+        const row = this.db.prepare(`
+          SELECT i.definition_id,d.name FROM item_instances i JOIN item_definitions d ON d.id=i.definition_id WHERE i.id=?
+        `).get(offered.itemId) as { definition_id: string; name: string } | undefined;
+        return {
+          itemId: offered.itemId,
+          definitionId: row?.definition_id ?? "missing",
+          name: row?.name ?? "已不存在的物品",
+          quantity: offered.quantity,
+        };
+      }),
+    };
+  }
+
+  getSocialState(playerId: string): SocialState {
+    this.getPlayerRow(playerId);
+    this.cleanupExpiredSocial();
+    const profile = this.db.prepare("SELECT adult_status,adult_content_enabled FROM players WHERE id=?").get(playerId) as {
+      adult_status: SocialState["adultProfile"]["status"]; adult_content_enabled: number;
+    };
+    const relationships = (this.db.prepare(`
+      SELECT r.id,r.relation_type,r.status,r.affinity,r.trust,r.intimacy,r.hostility,
+        CASE WHEN r.player_a_id=? THEN r.player_b_id ELSE r.player_a_id END AS other_player_id,
+        CASE WHEN r.player_a_id=? THEN pb.name ELSE pa.name END AS other_player_name,
+        CASE WHEN r.player_a_id=? THEN r.role_a ELSE r.role_b END AS own_role
+      FROM player_relationships r JOIN players pa ON pa.id=r.player_a_id JOIN players pb ON pb.id=r.player_b_id
+      WHERE r.status='active' AND (r.player_a_id=? OR r.player_b_id=?) ORDER BY r.updated_at DESC
+    `).all(playerId, playerId, playerId, playerId, playerId) as Array<{
+      id: string; relation_type: string; status: string; affinity: number; trust: number; intimacy: number; hostility: number;
+      other_player_id: string; other_player_name: string; own_role: string | null;
+    }>).map((row): Relationship => ({
+      id: row.id, otherPlayerId: row.other_player_id, otherPlayerName: row.other_player_name,
+      relationType: row.relation_type, status: row.status, role: row.own_role,
+      affinity: row.affinity, trust: row.trust, intimacy: row.intimacy, hostility: row.hostility,
+    }));
+    const requests = (this.db.prepare(`
+      SELECT r.id,r.request_type,r.from_player_id,pf.name AS from_player_name,r.to_player_id,pt.name AS to_player_name,
+        r.status,r.payload_json,r.expires_at FROM interaction_requests r
+      JOIN players pf ON pf.id=r.from_player_id JOIN players pt ON pt.id=r.to_player_id
+      WHERE r.status='pending' AND (r.from_player_id=? OR r.to_player_id=?) ORDER BY r.created_at DESC
+    `).all(playerId, playerId) as Array<{
+      id: string; request_type: string; from_player_id: string; from_player_name: string; to_player_id: string;
+      to_player_name: string; status: string; payload_json: string; expires_at: string;
+    }>).map((row): InteractionRequest => ({
+      id: row.id, requestType: row.request_type, fromPlayerId: row.from_player_id, fromPlayerName: row.from_player_name,
+      toPlayerId: row.to_player_id, toPlayerName: row.to_player_name, status: row.status,
+      payload: JSON.parse(row.payload_json) as Record<string, unknown>, expiresAt: row.expires_at,
+    }));
+    const trades = (this.db.prepare(`
+      SELECT t.*,pa.name AS player_a_name,pb.name AS player_b_name FROM trade_sessions t
+      JOIN players pa ON pa.id=t.player_a_id JOIN players pb ON pb.id=t.player_b_id
+      WHERE t.status IN ('pending','active') AND (t.player_a_id=? OR t.player_b_id=?) ORDER BY t.created_at DESC
+    `).all(playerId, playerId) as Array<{
+      id: string; player_a_id: string; player_b_id: string; player_a_name: string; player_b_name: string; status: string;
+      offer_a_json: string; offer_b_json: string; confirmed_a: number; confirmed_b: number; expires_at: string;
+    }>).map((row) => {
+      const ownIsA = row.player_a_id === playerId;
+      return {
+        id: row.id, status: row.status,
+        otherPlayerId: ownIsA ? row.player_b_id : row.player_a_id,
+        otherPlayerName: ownIsA ? row.player_b_name : row.player_a_name,
+        requestedBySelf: ownIsA,
+        ownOffer: this.displayTradeOffer(ownIsA ? row.offer_a_json : row.offer_b_json),
+        otherOffer: this.displayTradeOffer(ownIsA ? row.offer_b_json : row.offer_a_json),
+        ownConfirmed: (ownIsA ? row.confirmed_a : row.confirmed_b) === 1,
+        otherConfirmed: (ownIsA ? row.confirmed_b : row.confirmed_a) === 1,
+        expiresAt: row.expires_at,
+      };
+    });
+    return {
+      adultProfile: { status: profile.adult_status, contentEnabled: profile.adult_content_enabled === 1 },
+      relationships,
+      incomingRequests: requests.filter((request) => request.toPlayerId === playerId),
+      outgoingRequests: requests.filter((request) => request.fromPlayerId === playerId),
+      trades,
+    };
+  }
+
   getRecentChat(limit = 50) {
     const rows = this.db.prepare(`
       SELECT c.id,c.player_id,p.name AS player_name,c.content,c.created_at
@@ -1444,6 +1921,7 @@ export class GameService {
       transitions: this.getTransitions(self.currentLocation), actions: this.getActions([self.currentLocation]),
       actionState: this.readActionState(playerId),
       inventory: this.getInventoryState(playerId),
+      social: this.getSocialState(playerId),
       qinggongTargets: this.getQinggongTargets(playerId),
       onlinePlayers, recentEvents: this.getRecentEvents(), privateEvents: this.getPrivateEvents(playerId), chatMessages: this.getRecentChat(),
     };

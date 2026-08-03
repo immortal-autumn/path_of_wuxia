@@ -490,6 +490,52 @@ test.describe("real-time multiplayer", () => {
     await expect(second.getByLabel("世界状态")).toContainText("1 位侠客在线");
     await secondContext.close();
   });
+
+  test("negotiates relationships, adult consent, and an atomic direct trade", async ({ browser }) => {
+    const firstContext = await browser.newContext();
+    const secondContext = await browser.newContext();
+    const first = await newPlayer(firstContext);
+    const second = await newPlayer(secondContext);
+    const firstName = await first.locator(".character-heading h2").innerText();
+    const secondName = await second.locator(".character-heading h2").innerText();
+
+    for (const page of [first, second]) {
+      await page.getByRole("button", { name: "交往交易" }).click();
+      await page.getByLabel("角色年龄状态").selectOption("adult");
+      await page.getByLabel("开启成人内容（仍需每次单独同意）").check();
+      await page.getByRole("button", { name: "保存设置" }).click();
+      await expect(page.getByRole("status")).toContainText("成人内容已开启");
+    }
+
+    const secondCardOnFirst = first.locator(".social-player").filter({ hasText: secondName });
+    await secondCardOnFirst.getByRole("button", { name: "结交" }).click();
+    const firstRequestOnSecond = second.getByLabel("互动请求").locator(".social-request").filter({ hasText: firstName });
+    await firstRequestOnSecond.getByRole("button", { name: "接受" }).click();
+    await expect(first.getByLabel("角色关系")).toContainText(secondName);
+    await expect(second.getByLabel("角色关系")).toContainText(firstName);
+
+    await secondCardOnFirst.getByRole("button", { name: "交易" }).click();
+    const pendingTrade = second.getByLabel("交易会话").locator(".trade-card");
+    await pendingTrade.getByRole("button", { name: "接受交易" }).click();
+    const firstTrade = first.getByLabel("交易会话").locator(".trade-card");
+    await firstTrade.getByLabel("银两").fill("1");
+    await firstTrade.getByRole("button", { name: "更新报价" }).click();
+    await firstTrade.getByRole("button", { name: "确认报价" }).click();
+    const secondTrade = second.getByLabel("交易会话").locator(".trade-card");
+    await expect(secondTrade).toContainText("对方已确认");
+    await secondTrade.getByRole("button", { name: "确认报价" }).click();
+    await expect(second.getByRole("status")).toContainText("交易完成");
+    await expect(first.getByLabel("交易会话")).toContainText("没有交易会话");
+
+    await secondCardOnFirst.getByRole("button", { name: "私密亲昵" }).click();
+    const intimateRequest = second.getByLabel("互动请求").locator(".social-request").filter({ hasText: firstName });
+    await intimateRequest.getByRole("button", { name: "接受" }).click();
+    await expect(first.getByLabel("行动队列")).toContainText("私密亲昵");
+    await first.getByRole("button", { name: "取消私密亲昵" }).click();
+
+    await firstContext.close();
+    await secondContext.close();
+  });
 });
 
 test.describe("mobile layout", () => {

@@ -312,8 +312,45 @@ export type InteractionRequest = {
   fromPlayerId: string;
   fromPlayerName: string;
   toPlayerId: string;
+  toPlayerName: string;
   status: string;
+  payload: Record<string, unknown>;
   expiresAt: string;
+};
+
+export type AdultProfile = {
+  status: "unknown" | "adult" | "minor";
+  contentEnabled: boolean;
+};
+
+export type TradeOfferItem = {
+  itemId: string;
+  definitionId: string;
+  name: string;
+  quantity: number;
+};
+
+export type TradeOffer = { silver: number; items: TradeOfferItem[] };
+
+export type TradeSession = {
+  id: string;
+  status: string;
+  otherPlayerId: string;
+  otherPlayerName: string;
+  requestedBySelf: boolean;
+  ownOffer: TradeOffer;
+  otherOffer: TradeOffer;
+  ownConfirmed: boolean;
+  otherConfirmed: boolean;
+  expiresAt: string;
+};
+
+export type SocialState = {
+  adultProfile: AdultProfile;
+  relationships: Relationship[];
+  incomingRequests: InteractionRequest[];
+  outgoingRequests: InteractionRequest[];
+  trades: TradeSession[];
 };
 
 export type CombatState = {
@@ -422,6 +459,7 @@ export type GameSnapshot = {
   actions: ActionDefinition[];
   actionState: ActionSystemState;
   inventory: InventoryState;
+  social: SocialState;
   qinggongTargets: QinggongTarget[];
   onlinePlayers: OnlinePlayer[];
   recentEvents: WorldEvent[];
