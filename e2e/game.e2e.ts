@@ -91,17 +91,24 @@ test.describe("game map", () => {
   test("shows only the current layer's three-step square-node neighborhood and free direction controls", async ({ page }) => {
     await enterWorld(page);
     await expect(page.getByLabel("世界地图")).toBeVisible();
-    await expect(page.locator(".map-region")).toHaveCount(1);
     await expect(page.locator(".map-node")).toHaveCount(4);
+    await expect(page.locator(".map-node .node-name")).toHaveCount(4);
+    await expect(page.locator(".map-node .node-distance, .map-node .node-players")).toHaveCount(0);
     await expect(page.locator(".map-node.reachable")).toHaveCount(1);
     await expect(page.locator(".map-node.current")).toContainText("玄关");
-    await expect(page.locator(".map-node.current .node-box")).toHaveAttribute("width", "100");
-    await expect(page.locator(".map-node.current .node-box")).toHaveAttribute("height", "100");
+    await expect(page.locator(".map-node.current .node-box")).toHaveAttribute("width", "120");
+    await expect(page.locator(".map-node.current .node-box")).toHaveAttribute("height", "120");
+    await expect(page.getByLabel("地图信息")).toContainText("当前位置玄关");
+    await expect(page.getByLabel("地图信息")).toContainText("可见地点4 处");
+    expect(await page.locator(".node-name").evaluateAll((nodes) => nodes.every((node) => (
+      node.scrollWidth <= node.clientWidth && node.scrollHeight <= node.clientHeight
+    )))).toBe(true);
     await expect(page.getByLabel("下一步可前往地点")).toContainText("下 · 嬴长嫚与楼夜秋之家·门厅");
     const endurance = await page.getByLabel(/耐力 \d+\/\d+/).getAttribute("aria-label");
     await expect(page.getByLabel("世界状态")).toContainText("中国标准时间");
     await expect(page.getByLabel("角色状态")).toContainText("嬴长嫚与楼夜秋之家");
     await moveTo(page, "嬴长嫚与楼夜秋之家·门厅");
+    await expect(page.getByLabel("地图信息")).toContainText("当前位置嬴长嫚与楼夜秋之家·门厅");
     await expect(page.getByLabel(/耐力 \d+\/\d+/)).toHaveAttribute("aria-label", endurance!);
     await expect(page.getByLabel("下一步可前往地点")).toContainText("上 · 玄关");
     await expect(page.getByLabel("下一步可前往地点")).toContainText("右 · 嬴长嫚与楼夜秋之家·客厅");
@@ -313,7 +320,8 @@ test.describe("real-time multiplayer", () => {
     await first.getByRole("button", { name: "传音" }).click();
     await expect(second.getByLabel("世界聊天")).toContainText(message);
     await moveTo(first, "嬴长嫚与楼夜秋之家·门厅");
-    await expect(second.locator(".map-node").filter({ hasText: "嬴长嫚与楼夜秋之家·门厅" })).toContainText("在线 1");
+    await expect(second.locator(".map-node").filter({ hasText: "嬴长嫚与楼夜秋之家·门厅" })).not.toContainText("在线");
+    await expect(second.getByLabel("地图信息")).toContainText("三步内侠客2 人");
     await firstContext.close();
     await expect(second.getByLabel("世界状态")).toContainText("1 位侠客在线");
     await secondContext.close();
@@ -325,6 +333,8 @@ test.describe("mobile layout", () => {
   test("keeps the map primary and opens all drawers", async ({ page }) => {
     await enterWorld(page);
     await expect(page.getByLabel("世界地图")).toBeInViewport();
+    await expect(page.getByLabel("地图信息")).toBeInViewport();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     await expect(page.locator(".mobile-dock button")).toHaveCount(5);
     for (const [buttonLabel, panelLabel] of [
       ["世界", "世界状态"], ["行动", "行动"], ["角色", "角色状态"], ["聊天", "世界聊天"],

@@ -6,7 +6,7 @@ This is the canonical inventory of implemented project behavior. Update it in th
 
 | Entry | Function | Persistence / real-time | Automated coverage |
 | --- | --- | --- | --- |
-| `/` | Loads the shared-world game from玄关 and renders China time, a layer-local square-node map, actions, attribute/combat/cultivation status, and chat. | Reads a local SQLite neighborhood from the 500+ location source-tracked world and authoritative progression; opens `/ws`. | Unit world validation/progression tests and Playwright game, direction-control, multiplayer, and mobile tests. |
+| `/` | Loads the shared-world game from玄关 and renders China time, a text-only square-node map with an external location summary, actions, attribute/combat/cultivation status, and chat. | Reads a local SQLite neighborhood from the 500+ location source-tracked world and authoritative progression; opens `/ws`. | Unit world validation/progression tests and Playwright game, direction-control, multiplayer, responsive-layout, and mobile-drawer tests. |
 | `/map-editor` | Loads the collaborative drag/drop map designer with chunk controls, inspector, locks, and history. | Reads bounded map viewports and writes through authenticated WebSocket commands. | Playwright drop, route, undo/redo, region-drag, and lock-contention tests. |
 | `/api/session` | Restores or creates a random player and HttpOnly browser session, then performs a same-origin redirect. | Writes `players`, `sessions`, and an arrival event. | Unit identity test and Playwright entry test. |
 | `/ws` | Authenticates the session and runs game, chat, presence, map viewport, lock, editing, and history protocols. | Uses SQLite transactions and broadcasts incremental invalidations. | Live smoke and Playwright real-time/editor tests. |
@@ -17,9 +17,9 @@ This is the canonical inventory of implemented project behavior. Update it in th
 | --- | --- | --- | --- |
 | Automatic identity | First browser visit | Creates a collision-safe random identity at `home-entrance`; browser contexts remain distinct. | Unit 2,000-name test and Playwright identity test. |
 | China-standard time | World panel / `world.updated` | Displays an `Asia/Shanghai` `YYYY-MM-DD HH:mm:ss` clock synchronized from server time. | Unit deterministic-time and Playwright world tests. |
-| Three-step neighborhood | Game map | Queries only current-layer ordinary-route graph depth ≤3; cross-layer connections remain action-only and the response includes only relevant regions/routes/actions. | Unit seed/neighborhood and Playwright layer-local map tests. |
+| Three-step neighborhood | Game map | Queries only current-layer ordinary-route graph depth ≤3; the fitted viewport is calculated from those locations alone, and each wrapping square node displays only its location name while current area, visible count and nearby presence appear in an external map-information strip. Cross-layer connections remain action-only. | Unit seed/neighborhood and Playwright text-only node, overflow, layer-local map and external-status tests. |
 | Eight-direction movement | Map box / `move` | Ordinary routes connect one adjacent grid cell in eight directions; movement and ordinary actions never check or consume endurance. | Unit free-movement/direction tests and Playwright seed-tour tests. |
-| Explicit direction controls | Boxed “下一步” buttons | Lists each currently adjacent direction and destination, disables movement while offline or pending, and sends the same validated `move` command as a square map node. | Playwright square-node and direction-control test. |
+| Explicit direction controls | Boxed “下一步” footer | Lists each currently adjacent direction and destination outside the SVG, disables movement while offline or pending, and sends the same validated `move` command as a square map node. | Playwright square-node and direction-control test. |
 | Plain-HTTP browser compatibility | Game and map-editor commands | Generates collision-resistant client request/entity IDs with `crypto.getRandomValues` and a legacy fallback, so movement and editing work when `crypto.randomUUID` is unavailable. | Playwright no-`randomUUID` movement and editor tests. |
 | Layer transitions and portals | Action panel / `move` | Doors, stairs, gates and portals connect map layers without consuming direction slots; only normal routes appear in the local SVG. | Unit cross-layer transition tests and Playwright house/Song/Palos tour. |
 | Six-attribute progression | Character tabs / `attributes.allocate` | Stores strength, agility, constitution, root, comprehension and spirit; atomically spends permanent points and recalculates transparent combat values. | Unit formulas/scaling/atomic-allocation tests and Playwright allocation test. |
@@ -28,7 +28,7 @@ This is the canonical inventory of implemented project behavior. Update it in th
 | Location actions | Action button / `act` | Applies validated HP/silver effects atomically without endurance costs or observation cultivation rewards. | Unit free-action and Playwright seed-tour tests. |
 | World chat | Chat form / `chat.send` | Normalizes, rate-limits, persists, and broadcasts 1–120 character messages. | Unit chat, live smoke, and Playwright multiplayer tests. |
 | Online presence | WebSocket lifecycle | Deduplicates players, broadcasts online count, and shows local player positions. | Live smoke and Playwright multiplayer tests. |
-| Mobile drawers | Mobile navigation | Keeps the map primary and opens world, action, character, and chat drawers. | Playwright 390×844 test. |
+| Responsive game workspace | Desktop panels / mobile navigation | Keeps headings, external map status, a pannable map stage and direction footer in document flow; wraps action text, scrolls dense character/chat content internally, prevents page-level horizontal overflow, and opens world/action/character/chat drawers on mobile. | Playwright desktop map-layout and 390×844 overflow/drawer tests. |
 
 ## Map design functions
 

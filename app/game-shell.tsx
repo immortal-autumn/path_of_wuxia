@@ -117,17 +117,15 @@ function WorldPanel({ world, recentEvents: events, open }: Pick<GameSnapshot, "w
 function MapPanel({
   locations,
   routes,
-  regions,
   self,
   onlinePlayers,
   pending,
   onMove,
   currentLayer,
-}: Pick<GameSnapshot, "locations" | "routes" | "regions" | "self" | "onlinePlayers" | "currentLayer"> & {
+}: Pick<GameSnapshot, "locations" | "routes" | "self" | "onlinePlayers" | "currentLayer"> & {
   pending: boolean;
   onMove: (locationId: string) => void;
 }) {
-  const panelRef = useRef<HTMLElement>(null);
   const locationMap = useMemo(() => new Map(locations.map((location) => [location.id, location])), [locations]);
   const distances = useMemo(() => {
     const result = new Map<string, number>([[self.currentLocation, 0]]);
@@ -195,19 +193,23 @@ function MapPanel({
     ),
     [routes, visibleLocationIds],
   );
+  const currentLocation = locationMap.get(self.currentLocation);
+  const nearbyPlayers = onlinePlayers.filter((player) => visibleLocationIds.has(player.currentLocation));
 
   const viewBox = useMemo(() => {
-    const boxes = [
-      ...visibleLocations.map((location) => ({ x: location.x - 60, y: location.y - 60, width: 120, height: 120 })),
-      ...regions.map((region) => ({ x: region.x, y: region.y, width: region.width, height: region.height })),
-    ];
-    if (boxes.length === 0) return "0 0 1000 620";
-    const minX = Math.min(...boxes.map((item) => item.x)) - 80;
-    const minY = Math.min(...boxes.map((item) => item.y)) - 80;
-    const maxX = Math.max(...boxes.map((item) => item.x + item.width)) + 80;
-    const maxY = Math.max(...boxes.map((item) => item.y + item.height)) + 80;
-    return `${minX} ${minY} ${Math.max(600, maxX - minX)} ${Math.max(420, maxY - minY)}`;
-  }, [regions, visibleLocations]);
+    if (visibleLocations.length === 0) return "-260 -160 520 320";
+    const minX = Math.min(...visibleLocations.map((location) => location.x)) - 90;
+    const minY = Math.min(...visibleLocations.map((location) => location.y)) - 90;
+    const maxX = Math.max(...visibleLocations.map((location) => location.x)) + 90;
+    const maxY = Math.max(...visibleLocations.map((location) => location.y)) + 90;
+    const contentWidth = maxX - minX;
+    const contentHeight = maxY - minY;
+    const width = Math.max(520, contentWidth);
+    const height = Math.max(320, contentHeight);
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
+    return `${centerX - width / 2} ${centerY - height / 2} ${width} ${height}`;
+  }, [visibleLocations]);
 
   const activateLocation = (location: Location) => {
     if (adjacent.has(location.id) && !pending) onMove(location.id);
@@ -221,86 +223,86 @@ function MapPanel({
   };
 
   return (
-    <section className="map-panel" aria-label="世界地图" ref={panelRef}>
-      <div className="map-title">
+    <section className="map-panel" aria-label="世界地图">
+      <header className="map-title">
         <div>
           <p className="eyebrow">八方向移动</p>
           <h2>{currentLayer.name} · 局部地图</h2>
         </div>
-        <p>显示当前位置三步内可达地点 · 仅相邻地点可直接前往</p>
+        <p>地图仅显示地点名称；可直接点击实线方框移动。</p>
+      </header>
+      <dl className="map-status" aria-label="地图信息">
+        <div><dt>当前位置</dt><dd>{currentLocation?.name ?? "未知之地"}</dd></div>
+        <div><dt>所属区域</dt><dd>{currentLocation?.region ?? "无名区域"}</dd></div>
+        <div><dt>可见地点</dt><dd>{visibleLocations.length} 处</dd></div>
+        <div><dt>三步内侠客</dt><dd>{nearbyPlayers.length} 人</dd></div>
+      </dl>
+      <div className="map-stage">
+        <svg className="wuxia-map" viewBox={viewBox} role="img" aria-label="当前位置三步内的八方向地图">
+          {visibleRoutes.map((route) => {
+            const from = locationMap.get(route.fromLocation);
+            const to = locationMap.get(route.toLocation);
+            if (!from || !to) return null;
+            return (
+              <line
+                key={`${route.fromLocation}-${route.toLocation}`}
+                className={`map-route ${route.routeType}`}
+                x1={from.x}
+                y1={from.y}
+                x2={to.x}
+                y2={to.y}
+              >
+                <title>{route.routeType === "portal" ? "传送门" : route.fromDirection ? DIRECTION_LABEL[route.fromDirection] : "路线"}</title>
+              </line>
+            );
+          })}
+          {visibleLocations.map((location) => {
+            const current = location.id === self.currentLocation;
+            const reachable = adjacent.has(location.id);
+            const canMove = reachable && !pending;
+            const distance = distances.get(location.id) ?? 0;
+            return (
+              <g
+                key={location.id}
+                className={`map-node distance-${distance} ${current ? "current" : ""} ${reachable ? "reachable" : ""}`}
+                data-distance={distance}
+                transform={`translate(${location.x} ${location.y})`}
+                role="button"
+                tabIndex={canMove ? 0 : -1}
+                aria-label={`${location.name}${current ? "，当前位置" : reachable ? "，可前往" : ""}`}
+                aria-disabled={!canMove}
+                onClick={() => activateLocation(location)}
+                onKeyDown={(event) => handleKey(event, location)}
+              >
+                <rect className="node-box" x="-60" y="-60" width="120" height="120" />
+                <foreignObject x="-56" y="-56" width="112" height="112" pointerEvents="none">
+                  <div className="node-name">{location.name}</div>
+                </foreignObject>
+              </g>
+            );
+          })}
+        </svg>
       </div>
-      <svg className="wuxia-map" viewBox={viewBox} role="img" aria-label="当前位置三步内的八方向地图">
-        {regions.map((region) => (
-          <g className="map-region" key={region.id}>
-            <rect x={region.x} y={region.y} width={region.width} height={region.height} />
-            <text x={region.x + 10} y={region.y + 22}>{region.name}</text>
-          </g>
-        ))}
-        {visibleRoutes.map((route) => {
-          const from = locationMap.get(route.fromLocation);
-          const to = locationMap.get(route.toLocation);
-          if (!from || !to) return null;
-          return (
-            <line
-              key={`${route.fromLocation}-${route.toLocation}`}
-              className={`map-route ${route.routeType}`}
-              x1={from.x}
-              y1={from.y}
-              x2={to.x}
-              y2={to.y}
+      <footer className="map-footer">
+        <div className="map-move-controls" aria-label="下一步可前往地点">
+          <strong>下一步</strong>
+          {moveOptions.map((option) => (
+            <button
+              key={option.routeId}
+              disabled={pending}
+              aria-label={`${option.directionLabel}，前往${option.location.name}`}
+              onClick={() => onMove(option.location.id)}
             >
-              <title>{route.routeType === "portal" ? "传送门" : route.fromDirection ? DIRECTION_LABEL[route.fromDirection] : "路线"}</title>
-            </line>
-          );
-        })}
-        {visibleLocations.map((location) => {
-          const current = location.id === self.currentLocation;
-          const reachable = adjacent.has(location.id);
-          const canMove = reachable && !pending;
-          const distance = distances.get(location.id) ?? 0;
-          const playersHere = onlinePlayers.filter((player) => player.currentLocation === location.id);
-          return (
-            <g
-              key={location.id}
-              className={`map-node ${current ? "current" : ""} ${reachable ? "reachable" : ""}`}
-              transform={`translate(${location.x} ${location.y})`}
-              role="button"
-              tabIndex={canMove ? 0 : -1}
-              aria-label={`${location.name}${current ? "，当前位置" : reachable ? "，可前往" : ""}`}
-              aria-disabled={!canMove}
-              onClick={() => activateLocation(location)}
-              onKeyDown={(event) => handleKey(event, location)}
-            >
-              <rect className="node-box" x="-50" y="-50" width="100" height="100" />
-              <text className="node-name" y="-10" textAnchor="middle">{location.name}</text>
-              <text className="node-distance" y="14" textAnchor="middle">
-                {current ? "当前位置" : `${distance} 步可达`}
-              </text>
-              {playersHere.length > 0 && (
-                <text className="node-players" y="34" textAnchor="middle">在线 {playersHere.length}</text>
-              )}
-            </g>
-          );
-        })}
-      </svg>
-      <div className="map-move-controls" aria-label="下一步可前往地点">
-        <strong>下一步</strong>
-        {moveOptions.map((option) => (
-          <button
-            key={option.routeId}
-            disabled={pending}
-            aria-label={`${option.directionLabel}，前往${option.location.name}`}
-            onClick={() => onMove(option.location.id)}
-          >
-            {option.directionLabel} · {option.location.name}
-          </button>
-        ))}
-      </div>
-      <div className="map-legend">
-        <span>粗框：当前位置</span>
-        <span>实线框：下一步可达</span>
-        <span>虚线框：两至三步可达</span>
-      </div>
+              <span>{option.directionLabel}</span> · {option.location.name}
+            </button>
+          ))}
+        </div>
+        <div className="map-legend" aria-label="地图图例">
+          <span><i className="legend-current" />当前位置</span>
+          <span><i className="legend-next" />下一步</span>
+          <span><i className="legend-later" />二至三步</span>
+        </div>
+      </footer>
     </section>
   );
 }
@@ -656,7 +658,6 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
         <MapPanel
           locations={snapshot.locations}
           routes={snapshot.routes}
-          regions={snapshot.regions}
           self={snapshot.self}
           onlinePlayers={snapshot.onlinePlayers}
           currentLayer={snapshot.currentLayer}
