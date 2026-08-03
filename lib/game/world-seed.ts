@@ -69,6 +69,10 @@ export function applyWorldSeed(db: DatabaseSync): WorldSeedReport {
   }
 
   deactivateMissing("locations", new Set(seed.locations.map((location) => location.id)));
+  // Release old seeded grid cells before revisioned locations move between
+  // layers or exchange coordinates. User-created locations have revision 0 and
+  // remain untouched; a genuine custom collision therefore fails safely.
+  db.prepare("UPDATE locations SET is_active=0 WHERE seed_revision>0 AND seed_revision<?").run(WORLD_SEED_REVISION);
 
   const regionNames = new Map((db.prepare("SELECT id,name FROM map_regions").all() as Array<{ id: string; name: string }>).map((row) => [row.id, row.name]));
   const locationInsert = db.prepare(`

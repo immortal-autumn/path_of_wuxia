@@ -5,7 +5,7 @@ import { applyWorldSeed } from "./world-seed";
 
 export type GameDatabase = DatabaseSync;
 
-export const MAP_SCHEMA_VERSION = 4;
+export const MAP_SCHEMA_VERSION = 5;
 
 export function openGameDatabase(databasePath = process.env.DATABASE_PATH ?? resolve("data/wuxia.db")) {
   if (databasePath !== ":memory:") mkdirSync(dirname(databasePath), { recursive: true });
@@ -49,7 +49,7 @@ function migrate(db: GameDatabase) {
       is_active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS locations(
-      id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, region TEXT NOT NULL DEFAULT '',
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, region TEXT NOT NULL DEFAULT '',
       description TEXT NOT NULL, x INTEGER NOT NULL, y INTEGER NOT NULL,
       region_id TEXT REFERENCES map_regions(id), grid_x INTEGER NOT NULL DEFAULT 0,
       grid_y INTEGER NOT NULL DEFAULT 0, chunk_x INTEGER NOT NULL DEFAULT 0,
@@ -193,6 +193,46 @@ function migrate(db: GameDatabase) {
       ) SELECT id,10,10,10,10,10,10,0,0,1,MAX(0,cultivation),120,? FROM players
     `).run(now);
   }
+  if (previousVersion < 5) {
+    // A table rebuild is required because SQLite cannot drop the inline UNIQUE
+    // constraint that older schemas placed on locations.name. Foreign keys must
+    // be disabled outside the replacement transaction so dependent game data is
+    // preserved while the table keeps the same name and primary key.
+    db.exec("PRAGMA foreign_keys = OFF");
+    try {
+      db.exec(`
+        BEGIN IMMEDIATE;
+        DROP TABLE IF EXISTS locations_v5;
+        CREATE TABLE locations_v5(
+          id TEXT PRIMARY KEY, name TEXT NOT NULL, region TEXT NOT NULL DEFAULT '',
+          description TEXT NOT NULL, x INTEGER NOT NULL, y INTEGER NOT NULL,
+          region_id TEXT REFERENCES map_regions(id), grid_x INTEGER NOT NULL DEFAULT 0,
+          grid_y INTEGER NOT NULL DEFAULT 0, chunk_x INTEGER NOT NULL DEFAULT 0,
+          chunk_y INTEGER NOT NULL DEFAULT 0, version INTEGER NOT NULL DEFAULT 1,
+          is_active INTEGER NOT NULL DEFAULT 1,
+          layer_id TEXT NOT NULL DEFAULT 'world-root', seed_revision INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT INTO locations_v5(
+          id,name,region,description,x,y,region_id,grid_x,grid_y,chunk_x,chunk_y,
+          version,is_active,layer_id,seed_revision
+        )
+        SELECT id,name,region,description,x,y,region_id,grid_x,grid_y,chunk_x,chunk_y,
+          version,is_active,layer_id,seed_revision FROM locations;
+        DROP TABLE locations;
+        ALTER TABLE locations_v5 RENAME TO locations;
+        COMMIT;
+      `);
+    } catch (error) {
+      try {
+        db.exec("ROLLBACK");
+      } catch {
+        // The multi-statement migration may have failed before BEGIN.
+      }
+      throw error;
+    } finally {
+      db.exec("PRAGMA foreign_keys = ON");
+    }
+  }
 
   db.exec(`
     DROP INDEX IF EXISTS idx_active_grid;
@@ -220,7 +260,7 @@ function seed(db: GameDatabase) {
     const now = new Date().toISOString();
     db.prepare(`
       INSERT INTO world_state(id,era,seed,announcement,updated_at)
-      VALUES (1,'北宋大观四年与帕洛斯世界','path-of-wuxia-world-v3','玄关之外是一张连续大地图：楼门路向左通往北宋，向右通往帕洛斯。',?)
+      VALUES (1,'北宋大观四年与帕洛斯世界','path-of-wuxia-world-v4','单层住宅之外是一张连续大地图：楼门路向左通往北宋，向右通往帕洛斯。',?)
       ON CONFLICT(id) DO UPDATE SET era=excluded.era,seed=excluded.seed,announcement=excluded.announcement,updated_at=excluded.updated_at
     `).run(now);
 

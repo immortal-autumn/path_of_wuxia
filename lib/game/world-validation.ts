@@ -56,10 +56,13 @@ export function validateWorldMap(db: DatabaseSync): MapValidationReport {
       cursor = parents.get(cursor) ?? null;
     }
   }
-  const canonicalLayers = new Set(["world-root", "home-ground", "home-upper", "home-basement", "home-yard", "home-roof"]);
+  const canonicalLayers = new Set(["world-root", "home-ground"]);
   const obsoleteSeedLayers = db.prepare("SELECT id FROM map_layers WHERE is_active=1 AND (seed_revision>0 OR id IN ('song-overview','palos-overview'))").all() as Array<{ id: string }>;
   for (const layer of obsoleteSeedLayers) {
     if (!canonicalLayers.has(layer.id)) errors.push(`种子地图层 ${layer.id} 不应在连续大地图中保持活动。`);
+  }
+  for (const layerId of canonicalLayers) {
+    if (!layerIds.has(layerId)) errors.push(`标准地图层 ${layerId} 不存在或未启用。`);
   }
   const publicLocationsOutsideOverworld = db.prepare(`
     SELECT l.id,l.layer_id FROM locations l JOIN location_sources s ON s.location_id=l.id
@@ -168,10 +171,10 @@ export function validateWorldMap(db: DatabaseSync): MapValidationReport {
     regions: scalar("SELECT COUNT(*) AS count FROM map_regions WHERE is_active=1"),
     locations: allLocations.length,
     routes: routes.length,
-    sourcedLocations: scalar("SELECT COUNT(DISTINCT location_id) AS count FROM location_sources"),
-    songLocations: scalar("SELECT COUNT(DISTINCT location_id) AS count FROM location_sources WHERE source_id='source-song-wikipedia'"),
-    palosLocations: scalar("SELECT COUNT(DISTINCT location_id) AS count FROM location_sources WHERE source_id='source-palworld-map'"),
-    homeLocations: scalar("SELECT COUNT(DISTINCT location_id) AS count FROM location_sources WHERE source_id='source-home-design'"),
+    sourcedLocations: scalar("SELECT COUNT(DISTINCT s.location_id) AS count FROM location_sources s JOIN locations l ON l.id=s.location_id AND l.is_active=1"),
+    songLocations: scalar("SELECT COUNT(DISTINCT s.location_id) AS count FROM location_sources s JOIN locations l ON l.id=s.location_id AND l.is_active=1 WHERE s.source_id='source-song-wikipedia'"),
+    palosLocations: scalar("SELECT COUNT(DISTINCT s.location_id) AS count FROM location_sources s JOIN locations l ON l.id=s.location_id AND l.is_active=1 WHERE s.source_id='source-palworld-map'"),
+    homeLocations: scalar("SELECT COUNT(DISTINCT s.location_id) AS count FROM location_sources s JOIN locations l ON l.id=s.location_id AND l.is_active=1 WHERE s.source_id='source-home-design'"),
     overworldLocations: scalar("SELECT COUNT(*) AS count FROM locations WHERE is_active=1 AND layer_id='world-root'"),
     reachableLocations: reachable.size,
   };

@@ -1,7 +1,7 @@
 import { directionBetween, OPPOSITE_DIRECTION } from "./map";
 import type { Direction, RouteType, TransitionKind } from "./types";
 
-export const WORLD_SEED_REVISION = 3;
+export const WORLD_SEED_REVISION = 4;
 export const WORLD_SEED_RETRIEVED_AT = "2026-08-03";
 
 export type WorldSeedSource = {
@@ -128,12 +128,6 @@ const PAL_CATEGORIES = [
   ["memos", "帕洛斯手记", "漂流者与高塔首领留下的39份手记。"],
 ] as const;
 
-function serpentine(index: number, width: number) {
-  const row = Math.floor(index / width);
-  const column = index % width;
-  return { gridX: row % 2 === 0 ? column : width - 1 - column, gridY: row };
-}
-
 function westwardSerpentine(index: number, width: number, startX: number, startY: number) {
   const row = Math.floor(index / width);
   const column = index % width;
@@ -162,9 +156,9 @@ export function buildWorldSeed(): WorldSeedData {
       id: "source-home-design",
       title: "嬴长嫚与楼夜秋之家设计稿",
       url: "project://path-of-wuxia/home-v1",
-      contentVersion: "home-v1",
+      contentVersion: "home-v2",
       retrievedAt: WORLD_SEED_RETRIEVED_AT,
-      notes: "项目原创现代多层住宅结构。",
+      notes: "项目原创现代单层住宅结构；庭院、起居、卧室与修炼功能位于同一平面。",
     },
     {
       id: "source-song-wikipedia",
@@ -186,14 +180,10 @@ export function buildWorldSeed(): WorldSeedData {
 
   const layers: WorldSeedLayer[] = [
     { id: "world-root", name: "八方世界", description: "楼门路、大宋与帕洛斯相连的连续大地图。", parentLayerId: null },
-    { id: "home-ground", name: "住宅一层", description: "嬴长嫚与楼夜秋之家的主要起居层。", parentLayerId: "world-root" },
-    { id: "home-upper", name: "住宅二层", description: "卧室、书房和客房所在楼层。", parentLayerId: "home-ground" },
-    { id: "home-basement", name: "住宅地下层", description: "修炼、健身、工坊和储藏空间。", parentLayerId: "home-ground" },
-    { id: "home-yard", name: "住宅庭院", description: "住宅外围的前后花园和附属空间。", parentLayerId: "home-ground" },
-    { id: "home-roof", name: "住宅屋顶", description: "屋顶露台、花园与设备区。", parentLayerId: "home-ground" },
+    { id: "home-ground", name: "嬴长嫚与楼夜秋之家", description: "庭院、起居、卧室、书房与修炼空间相连的单层住宅。", parentLayerId: "world-root" },
   ];
   const regions: WorldSeedRegion[] = [
-    { id: "home", layerId: "home-ground", name: "嬴长嫚与楼夜秋之家·室内", description: "两人共同生活的现代多层住宅。", x: 400, y: 80, width: 640, height: 400 },
+    { id: "home", layerId: "home-ground", name: "嬴长嫚与楼夜秋之家·单层平面", description: "两人共同生活、修炼与工作的现代单层住宅。", x: -240, y: -80, width: 960, height: 800 },
     { id: "world-home", layerId: "world-root", name: "嬴长嫚与楼夜秋之家", description: "楼门路旁住宅的外部入口。", x: 400, y: 80, width: 160, height: 160 },
   ];
   const locations: WorldSeedLocation[] = [];
@@ -225,71 +215,57 @@ export function buildWorldSeed(): WorldSeedData {
   const addTransition = (id: string, fromLocation: string, toLocation: string, transitionKind: TransitionKind) => {
     routes.push({ id, fromLocation, toLocation, routeType: "transition", transitionKind, fromDirection: null, toDirection: null });
   };
-  const addChain = (prefix: string, ids: string[]) => {
-    for (let index = 1; index < ids.length; index += 1) addNormal(`${prefix}-${index}`, ids[index - 1], ids[index]);
-  };
-
-  addLocation({ id: "home-entrance", layerId: "home-ground", name: "玄关", description: "嬴长嫚与楼夜秋之家的内外分界。", regionId: "home", gridX: 3, gridY: 1, sourceId: "source-home-design", sourceKey: "home/ground/entrance" });
+  addLocation({ id: "home-entrance", layerId: "home-ground", name: "玄关", description: "嬴长嫚与楼夜秋之家的内外分界。", regionId: "home", gridX: 0, gridY: 0, sourceId: "source-home-design", sourceKey: "home/ground/entrance" });
   addLocation({ id: "home-exterior", layerId: "world-root", name: "嬴长嫚与楼夜秋之家·入口", description: "从楼门路进入住宅的门前。", regionId: "world-home", gridX: 3, gridY: 1, sourceId: "source-home-design", sourceKey: "outside/home-entrance" });
-  addLocation({ id: "loumen-road", layerId: "world-root", name: "楼门路", description: "屋外横贯东西的街道，左通大宋，右往帕洛斯。", regionId: null, gridX: 3, gridY: 2, sourceId: "source-home-design", sourceKey: "outside/loumen-road" });
-  addLocation({ id: "song-gate", layerId: "world-root", name: "大宋入口", description: "由楼门路进入大宋连续舆图的入口。", regionId: "song", gridX: 2, gridY: 2, sourceId: "source-song-wikipedia", sourceKey: "song/gate" });
-  addLocation({ id: "palos-gate", layerId: "world-root", name: "帕洛斯入口", description: "由楼门路进入帕洛斯连续群岛地图的入口。", regionId: "palos", gridX: 4, gridY: 2, sourceId: "source-palworld-map", sourceKey: "palos/gate" });
+  addLocation({ id: "loumen-road-west", layerId: "world-root", name: "楼门路", description: "楼门路西段，沿街向西接入大宋官道。", regionId: null, gridX: 2, gridY: 2, sourceId: "source-home-design", sourceKey: "outside/loumen-road/west" });
+  addLocation({ id: "loumen-road", layerId: "world-root", name: "楼门路", description: "住宅门前的楼门路中段。", regionId: null, gridX: 3, gridY: 2, sourceId: "source-home-design", sourceKey: "outside/loumen-road/center" });
+  addLocation({ id: "loumen-road-east", layerId: "world-root", name: "楼门路", description: "楼门路东段，沿街向东接入帕洛斯海岸。", regionId: null, gridX: 4, gridY: 2, sourceId: "source-home-design", sourceKey: "outside/loumen-road/east" });
+  addLocation({ id: "song-gate", layerId: "world-root", name: "大宋入口", description: "由楼门路进入大宋连续舆图的入口。", regionId: "song", gridX: 1, gridY: 2, sourceId: "source-song-wikipedia", sourceKey: "song/gate" });
+  addLocation({ id: "palos-gate", layerId: "world-root", name: "帕洛斯入口", description: "由楼门路进入帕洛斯连续群岛地图的入口。", regionId: "palos", gridX: 5, gridY: 2, sourceId: "source-palworld-map", sourceKey: "palos/gate" });
 
-  addTransition("route-home-door-v3", "home-entrance", "home-exterior", "door");
-  addNormal("route-home-road-v3", "home-exterior", "loumen-road");
-  addNormal("route-road-song-v3", "loumen-road", "song-gate");
-  addNormal("route-road-palos-v3", "loumen-road", "palos-gate");
+  addTransition("route-home-door-v4", "home-entrance", "home-exterior", "door");
+  addNormal("route-home-road-v4", "home-exterior", "loumen-road");
+  addNormal("route-loumen-west-v4", "loumen-road", "loumen-road-west");
+  addNormal("route-loumen-east-v4", "loumen-road", "loumen-road-east");
+  addNormal("route-road-song-v4", "loumen-road-west", "song-gate");
+  addNormal("route-road-palos-v4", "loumen-road-east", "palos-gate");
 
-  const homeFloors = [
-    ["home-ground", "住宅一层", [
-      ["home-hall", "门厅"], ["home-living-room", "客厅"], ["home-dining-room", "餐厅"],
-      ["home-kitchen", "厨房"], ["home-guest-bathroom", "客用卫生间"], ["home-garage", "车库"],
-    ]],
-    ["home-upper", "住宅二层", [
-      ["home-upper-landing", "二层平台"], ["home-main-bedroom", "主卧"], ["home-main-bathroom", "主卫"],
-      ["home-ying-study", "嬴长嫚书房"], ["home-lou-study", "楼夜秋书房"], ["home-guest-bedroom", "客卧"],
-    ]],
-    ["home-basement", "住宅地下层", [
-      ["home-basement-landing", "地下层平台"], ["home-training-room", "修炼房"], ["home-gym", "健身房"],
-      ["home-workshop", "工坊"], ["home-storage", "储藏室"], ["home-utility-room", "设备间"],
-    ]],
-    ["home-yard", "住宅庭院", [
-      ["home-front-garden", "前庭"], ["home-driveway", "车道"], ["home-side-garden", "侧庭"],
-      ["home-back-garden", "后庭"], ["home-greenhouse", "温室"], ["home-pavilion", "庭院亭"],
-    ]],
-    ["home-roof", "住宅屋顶", [
-      ["home-roof-landing", "屋顶平台"], ["home-roof-terrace", "屋顶露台"],
-      ["home-roof-garden", "屋顶花园"], ["home-solar-area", "屋顶设备区"],
-    ]],
+  const homeLocations = [
+    ["home-front-garden", "前庭", -1, 0], ["home-hall", "门厅", 0, 1],
+    ["home-guest-bathroom", "客用卫生间", -1, 1], ["home-living-room", "客厅", 1, 1],
+    ["home-dining-room", "餐厅", 2, 1], ["home-kitchen", "厨房", 3, 1], ["home-garage", "车库", 3, 0],
+    ["home-main-bathroom", "主卫", -1, 2], ["home-main-bedroom", "主卧", 0, 2],
+    ["home-ying-study", "嬴长嫚书房", 1, 2], ["home-lou-study", "楼夜秋书房", 2, 2],
+    ["home-guest-bedroom", "客卧", 3, 2], ["home-training-room", "修炼房", 0, 3],
+    ["home-gym", "健身房", 1, 3], ["home-workshop", "工坊", 2, 3],
+    ["home-storage", "储藏室", 3, 3], ["home-utility-room", "设备间", 4, 3],
+    ["home-back-garden", "后庭", 0, 4], ["home-greenhouse", "温室", 1, 4],
+    ["home-pavilion", "庭院亭", 2, 4],
   ] as const;
-
-  for (const [layerId, layerName, floorLocations] of homeFloors) {
-    const regionId = `region-${layerId}`;
-    if (layerId !== "home-ground") {
-      regions.push({ id: regionId, layerId, name: `嬴长嫚与楼夜秋之家·${layerName}`, description: `${layerName}的完整房间结构。`, x: -80, y: -80, width: 1120, height: 480 });
-    }
-    const chain = layerId === "home-ground" ? ["home-entrance"] : [];
-    floorLocations.forEach(([id, name], index) => {
-      const groundPoints = [
-        { gridX: 3, gridY: 2 }, { gridX: 4, gridY: 2 }, { gridX: 5, gridY: 2 },
-        { gridX: 5, gridY: 1 }, { gridX: 6, gridY: 1 }, { gridX: 6, gridY: 2 },
-      ];
-      const point = layerId === "home-ground" ? groundPoints[index] : serpentine(index, 4);
-      if (!point) throw new Error(`住宅地点 ${id} 缺少坐标。`);
-      addLocation({
-        id, layerId, name: `嬴长嫚与楼夜秋之家·${name}`, description: `${layerName}的${name}。`,
-        regionId: layerId === "home-ground" ? "home" : regionId, ...point,
-        sourceId: "source-home-design", sourceKey: `home/${layerId}/${id}`,
-        trainingMultiplier: id === "home-training-room" ? 1.5 : undefined,
-      });
-      chain.push(id);
+  for (const [id, name, gridX, gridY] of homeLocations) {
+    addLocation({
+      id, layerId: "home-ground", name: `嬴长嫚与楼夜秋之家·${name}`, description: `单层住宅的${name}。`,
+      regionId: "home", gridX, gridY, sourceId: "source-home-design", sourceKey: `home/ground/${id}`,
+      trainingMultiplier: id === "home-training-room" ? 1.5 : undefined,
     });
-    addChain(`route-${layerId}`, chain);
   }
-  addTransition("route-home-upstairs", "home-hall", "home-upper-landing", "stairs");
-  addTransition("route-home-basement", "home-hall", "home-basement-landing", "stairs");
-  addTransition("route-home-yard", "home-entrance", "home-front-garden", "door");
-  addTransition("route-home-roof", "home-upper-landing", "home-roof-landing", "stairs");
+  const homeRoutes = [
+    ["home-front-garden", "home-entrance"], ["home-entrance", "home-hall"],
+    ["home-hall", "home-guest-bathroom"], ["home-hall", "home-living-room"], ["home-hall", "home-main-bedroom"],
+    ["home-living-room", "home-dining-room"], ["home-living-room", "home-ying-study"],
+    ["home-dining-room", "home-kitchen"], ["home-dining-room", "home-lou-study"],
+    ["home-kitchen", "home-garage"], ["home-kitchen", "home-guest-bedroom"],
+    ["home-guest-bathroom", "home-main-bathroom"], ["home-main-bathroom", "home-main-bedroom"],
+    ["home-main-bedroom", "home-ying-study"], ["home-main-bedroom", "home-training-room"],
+    ["home-ying-study", "home-lou-study"], ["home-ying-study", "home-gym"],
+    ["home-lou-study", "home-guest-bedroom"], ["home-lou-study", "home-workshop"],
+    ["home-guest-bedroom", "home-storage"], ["home-training-room", "home-gym"],
+    ["home-training-room", "home-back-garden"], ["home-gym", "home-workshop"],
+    ["home-gym", "home-greenhouse"], ["home-workshop", "home-storage"],
+    ["home-workshop", "home-pavilion"], ["home-storage", "home-utility-room"],
+    ["home-back-garden", "home-greenhouse"], ["home-greenhouse", "home-pavilion"],
+  ] as const;
+  homeRoutes.forEach(([fromLocation, toLocation], index) => addNormal(`route-home-ground-${index + 1}-v4`, fromLocation, toLocation));
   actions.push({
     id: "action-training-room-focus", locationId: "home-training-room", name: "静心修炼",
     description: "停留在修炼房中，修为会按服务器时间自动增长。", silverDelta: 0, hpDelta: 0,
@@ -299,7 +275,7 @@ export function buildWorldSeed(): WorldSeedData {
   let songIndex = 0;
   addLocation({
     id: "song-overview-entry", layerId: "world-root", name: "大宋官道", description: "通往北宋二十四路的连续官道。",
-    regionId: "song", ...westwardSerpentine(songIndex, 36, 1, 2), sourceId: "source-song-wikipedia", sourceKey: "song/overview",
+    regionId: "song", ...westwardSerpentine(songIndex, 36, 0, 2), sourceId: "source-song-wikipedia", sourceKey: "song/overview",
   });
   songIndex += 1;
   addNormal("route-world-song-v3", "song-gate", "song-overview-entry");
@@ -307,20 +283,20 @@ export function buildWorldSeed(): WorldSeedData {
   SONG_CIRCUITS.forEach(([circuitSlug, circuitName, prefectures], circuitIndex) => {
     const hubId = `song-hub-${circuitSlug}`;
     const entryId = `song-entry-${circuitSlug}`;
-    addLocation({ id: hubId, layerId: "world-root", name: `大宋·${circuitName}`, description: `${circuitName}在大宋官道上的界标。`, regionId: "song", ...westwardSerpentine(songIndex, 36, 1, 2), sourceId: "source-song-wikipedia", sourceKey: `route/${circuitName}` });
+    addLocation({ id: hubId, layerId: "world-root", name: `${circuitName}官道`, description: `${circuitName}官道的东段界标。`, regionId: "song", ...westwardSerpentine(songIndex, 36, 0, 2), sourceId: "source-song-wikipedia", sourceKey: `route/${circuitName}` });
     songIndex += 1;
     addNormal(`route-song-circuit-${circuitIndex + 1}-v3`, songTail, hubId);
-    addLocation({ id: entryId, layerId: "world-root", name: `${circuitName}·驿道`, description: `${circuitName}府、州、军之间的驿道起点。`, regionId: "song", ...westwardSerpentine(songIndex, 36, 1, 2), sourceId: "source-song-wikipedia", sourceKey: `route/${circuitName}/entry` });
+    addLocation({ id: entryId, layerId: "world-root", name: `${circuitName}官道`, description: `${circuitName}官道的西段，串联府、州、军。`, regionId: "song", ...westwardSerpentine(songIndex, 36, 0, 2), sourceId: "source-song-wikipedia", sourceKey: `route/${circuitName}/entry` });
     songIndex += 1;
     addNormal(`route-song-entry-${circuitSlug}-v3`, hubId, entryId);
     songTail = entryId;
     prefectures.forEach((prefecture, prefectureIndex) => {
       const cityId = `song-${circuitSlug}-${prefectureIndex + 1}-seat`;
       const marketId = `song-${circuitSlug}-${prefectureIndex + 1}-post`;
-      addLocation({ id: cityId, layerId: "world-root", name: `${circuitName}·${prefecture}治所`, description: `${prefecture}的行政治所。`, regionId: "song", ...westwardSerpentine(songIndex, 36, 1, 2), sourceId: "source-song-wikipedia", sourceKey: `${circuitName}/${prefecture}` });
+      addLocation({ id: cityId, layerId: "world-root", name: `${circuitName}·${prefecture}治所`, description: `${prefecture}的行政治所。`, regionId: "song", ...westwardSerpentine(songIndex, 36, 0, 2), sourceId: "source-song-wikipedia", sourceKey: `${circuitName}/${prefecture}` });
       songIndex += 1;
       addNormal(`route-song-${circuitSlug}-${prefectureIndex + 1}-seat-v3`, songTail, cityId);
-      addLocation({ id: marketId, layerId: "world-root", name: `${circuitName}·${prefecture}驿市`, description: `连接${prefecture}治所与下一处州府的驿路市集。`, regionId: "song", ...westwardSerpentine(songIndex, 36, 1, 2), sourceId: "source-song-wikipedia", sourceKey: `${circuitName}/${prefecture}/game-post` });
+      addLocation({ id: marketId, layerId: "world-root", name: `${circuitName}·${prefecture}驿市`, description: `连接${prefecture}治所与下一处州府的驿路市集。`, regionId: "song", ...westwardSerpentine(songIndex, 36, 0, 2), sourceId: "source-song-wikipedia", sourceKey: `${circuitName}/${prefecture}/game-post` });
       songIndex += 1;
       addNormal(`route-song-${circuitSlug}-${prefectureIndex + 1}-post-v3`, cityId, marketId);
       songTail = marketId;
@@ -330,7 +306,7 @@ export function buildWorldSeed(): WorldSeedData {
   let palosIndex = 0;
   addLocation({
     id: "palos-overview-entry", layerId: "world-root", name: "帕洛斯群岛海岸", description: "通往帕洛斯各处地标的连续海岸路线。",
-    regionId: "palos", ...eastwardSerpentine(palosIndex, 36, 5, 2), sourceId: "source-palworld-map", sourceKey: "palos/overview",
+    regionId: "palos", ...eastwardSerpentine(palosIndex, 36, 6, 2), sourceId: "source-palworld-map", sourceKey: "palos/overview",
   });
   palosIndex += 1;
   addNormal("route-world-palos-v3", "palos-gate", "palos-overview-entry");
@@ -338,10 +314,10 @@ export function buildWorldSeed(): WorldSeedData {
   PAL_CATEGORIES.forEach(([category, name, description], categoryIndex) => {
     const hubId = `palos-hub-${category}`;
     const entryId = `palos-entry-${category}`;
-    addLocation({ id: hubId, layerId: "world-root", name: `帕洛斯·${name}`, description: `${name}在群岛路线上的区域界标。`, regionId: "palos", ...eastwardSerpentine(palosIndex, 36, 5, 2), sourceId: "source-palworld-map", sourceKey: `category/${category}` });
+    addLocation({ id: hubId, layerId: "world-root", name: `${name}道路`, description: `${name}道路的西段界标。`, regionId: "palos", ...eastwardSerpentine(palosIndex, 36, 6, 2), sourceId: "source-palworld-map", sourceKey: `category/${category}` });
     palosIndex += 1;
     addNormal(`route-palos-category-${categoryIndex + 1}-v3`, palosTail, hubId);
-    addLocation({ id: entryId, layerId: "world-root", name: `${name}·路线起点`, description, regionId: "palos", ...eastwardSerpentine(palosIndex, 36, 5, 2), sourceId: "source-palworld-map", sourceKey: `category/${category}/entry` });
+    addLocation({ id: entryId, layerId: "world-root", name: `${name}道路`, description: `${description}这里是道路东段。`, regionId: "palos", ...eastwardSerpentine(palosIndex, 36, 6, 2), sourceId: "source-palworld-map", sourceKey: `category/${category}/entry` });
     palosIndex += 1;
     addNormal(`route-palos-entry-${category}-v3`, hubId, entryId);
     palosTail = entryId;
@@ -360,7 +336,7 @@ export function buildWorldSeed(): WorldSeedData {
     markers.forEach((marker, index) => {
       addLocation({
         id: marker.id, layerId: "world-root", name: `${name}·${marker.name}`, description: marker.description,
-        regionId: "palos", ...eastwardSerpentine(palosIndex, 36, 5, 2), sourceId: "source-palworld-map", sourceKey: marker.sourceKey,
+        regionId: "palos", ...eastwardSerpentine(palosIndex, 36, 6, 2), sourceId: "source-palworld-map", sourceKey: marker.sourceKey,
       });
       palosIndex += 1;
       addNormal(`route-palos-${slug(category)}-${index + 1}-v3`, palosTail, marker.id);

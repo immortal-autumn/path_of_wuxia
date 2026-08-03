@@ -40,15 +40,15 @@ describe("GameService", () => {
   });
 
   it("seeds a source-tracked 500+ location world and preserves all ordinary direction slots", () => {
-    expect(service.getLayers().map((layer) => layer.id).sort()).toEqual([
-      "home-basement", "home-ground", "home-roof", "home-upper", "home-yard", "world-root",
-    ]);
+    expect(service.getLayers().map((layer) => layer.id).sort()).toEqual(["home-ground", "world-root"]);
     expect(service.getLocation("home-entrance")).toMatchObject({ layerId: "home-ground", name: "玄关" });
     expect(service.getLocation("home-exterior")).toMatchObject({ layerId: "world-root", name: "嬴长嫚与楼夜秋之家·入口" });
     expect(service.getLocation("loumen-road")).toMatchObject({ layerId: "world-root", name: "楼门路" });
     expect(service.getLocation("song-jingji-1-seat")).toMatchObject({ layerId: "world-root", regionId: "song" });
     expect(service.getLocation("palos-fasttravel-1001")).toMatchObject({ layerId: "world-root", regionId: "palos" });
-    expect(service.getLocation("home-training-room")).toMatchObject({ layerId: "home-basement" });
+    expect(service.getLocation("home-training-room")).toMatchObject({ layerId: "home-ground" });
+    expect(service.searchMapLocations("world-root", "楼门路", 10)).toHaveLength(3);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM locations WHERE name='楼门路' AND is_active=1").get()).toEqual({ count: 3 });
     const validation = validateWorldMap(db);
     expect(validation.errors).toEqual([]);
     expect(validation.counts).toMatchObject({ songLocations: expect.any(Number), palosLocations: 279 });
@@ -58,7 +58,7 @@ describe("GameService", () => {
     expect(validation.counts.overworldLocations).toBeGreaterThanOrEqual(890);
     expect((db.prepare("SELECT COUNT(*) AS count FROM location_direction_slots").get() as { count: number }).count).toBeGreaterThan(500);
     expect((db.prepare("SELECT COUNT(*) AS count FROM routes r JOIN locations f ON f.id=r.from_location JOIN locations t ON t.id=r.to_location WHERE r.is_active=1 AND r.route_type<>'normal' AND f.layer_id='world-root' AND t.layer_id='world-root'").get() as { count: number }).count).toBe(0);
-    expect(validation.counts.layers).toBe(6);
+    expect(validation.counts.layers).toBe(2);
     expect(service.getTransitions("home-entrance")[0]).toMatchObject({ destinationName: "嬴长嫚与楼夜秋之家·入口", transitionKind: "door" });
   });
 
@@ -92,12 +92,12 @@ describe("GameService", () => {
     expect(db.prepare("SELECT COUNT(*) AS count FROM map_layers WHERE id IN ('song-overview','palos-overview') AND is_active=1").get()).toEqual({ count: 0 });
     expect(db.prepare("SELECT is_active FROM routes WHERE id='route-entrance-road'").get()).toEqual({ is_active: 0 });
     expect(service.getLocation("song-jingji-1-seat")).toMatchObject({ layerId: "world-root", regionId: "song" });
-    expect(service.getLayers()).toHaveLength(6);
+    expect(service.getLayers()).toHaveLength(2);
     expect(validateWorldMap(db).errors).toEqual([]);
   });
 
-  it("preserves active locations and routes while upgrading a version-3 database", () => {
-    const directory = mkdtempSync(join(tmpdir(), "wuxia-v4-migration-"));
+  it("preserves active locations and routes while upgrading older schema metadata", () => {
+    const directory = mkdtempSync(join(tmpdir(), "wuxia-v5-migration-"));
     const databasePath = join(directory, "game.db");
     try {
       const versionThree = openGameDatabase(databasePath);
@@ -109,7 +109,7 @@ describe("GameService", () => {
       const upgraded = openGameDatabase(databasePath);
       expect(upgraded.prepare("SELECT COUNT(*) AS count FROM locations WHERE is_active=1").get()).toEqual(expectedLocations);
       expect(upgraded.prepare("SELECT COUNT(*) AS count FROM routes WHERE is_active=1").get()).toEqual(expectedRoutes);
-      expect(upgraded.prepare("SELECT route_type FROM routes WHERE id='route-home-door-v3'").get()).toEqual({ route_type: "transition" });
+      expect(upgraded.prepare("SELECT route_type FROM routes WHERE id='route-home-door-v4'").get()).toEqual({ route_type: "transition" });
       upgraded.close();
     } finally {
       rmSync(directory, { recursive: true, force: true });
@@ -136,6 +136,13 @@ describe("GameService", () => {
         .toEqual({ id: "legacy-place", layer_id: "world-root", is_active: 0 });
       expect(upgraded.prepare("SELECT COUNT(*) AS count FROM locations WHERE is_active=1").get())
         .toMatchObject({ count: expect.any(Number) });
+      upgraded.exec(`
+        INSERT INTO locations(id,name,region,description,x,y,layer_id,grid_x,grid_y,chunk_x,chunk_y)
+        VALUES ('duplicate-road-a','同名街道','测试区域','同名街道西段。',160000,160000,'world-root',1000,1000,160,160),
+               ('duplicate-road-b','同名街道','测试区域','同名街道东段。',160160,160000,'world-root',1001,1000,160,160);
+      `);
+      expect(upgraded.prepare("SELECT COUNT(*) AS count FROM locations WHERE name='同名街道'").get()).toEqual({ count: 2 });
+      expect(upgraded.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
       upgraded.close();
     } finally {
       rmSync(directory, { recursive: true, force: true });
@@ -210,6 +217,7 @@ describe("GameService", () => {
     const acted = service.act(player.id, "observe-road");
     expect(acted.self.endurance).toBe(endurance);
     expect(acted.self.cultivation.progress).toBe(0);
+    expect(() => service.move(player.id, "loumen-road-east")).not.toThrow();
     expect(() => service.move(player.id, "palos-gate")).not.toThrow();
   });
 
