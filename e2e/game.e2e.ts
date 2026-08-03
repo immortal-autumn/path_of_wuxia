@@ -193,6 +193,29 @@ test.describe("game map", () => {
 });
 
 test.describe("map editor", () => {
+  test("keeps editor node text concise and reflows the workspace without page-level overflow", async ({ page }) => {
+    await enterEditor(page);
+    const locationCount = await page.locator(".editor-location").count();
+    await expect(page.locator(".editor-location-name")).toHaveCount(locationCount);
+    await expect(page.locator(".editor-location text, .editor-location-grid")).toHaveCount(0);
+    await expect(page.locator(".editor-location rect").first()).toHaveAttribute("width", "140");
+    await expect(page.locator(".editor-location rect").first()).toHaveAttribute("height", "140");
+    expect(await page.locator(".editor-location-name").evaluateAll((nodes) => nodes.every((node) => (
+      node.scrollWidth <= node.clientWidth && node.scrollHeight <= node.clientHeight
+    )))).toBe(true);
+    await expect(page.getByLabel("画布信息")).toContainText("当前地图八方世界");
+    await page.locator(".editor-location").filter({ hasText: "楼门路" }).click();
+    await expect(page.getByLabel("画布信息")).toContainText("已选地点：楼门路 · 网格");
+    await expect(page.locator(".editor-selection-summary")).toContainText("楼门路");
+    await expect(page.getByRole("button", { name: "完成编辑" })).toBeDisabled();
+
+    await page.setViewportSize({ width: 768, height: 900 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await expect(page.getByLabel("地图编辑画布")).toBeVisible();
+    await page.locator(".editor-inspector").scrollIntoViewIfNeeded();
+    await expect(page.locator(".editor-inspector")).toBeVisible();
+  });
+
   test("creates, updates and deletes layers, then builds a typed cross-layer connection", async ({ page }) => {
     await enterEditor(page);
     const suffix = Date.now();
@@ -335,6 +358,10 @@ test.describe("mobile layout", () => {
     await expect(page.getByLabel("世界地图")).toBeInViewport();
     await expect(page.getByLabel("地图信息")).toBeInViewport();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    expect(await page.locator(".map-node").evaluateAll((nodes) => nodes.filter((node) => {
+      const box = node.getBoundingClientRect();
+      return box.right > 0 && box.left < window.innerWidth && box.bottom > 0 && box.top < window.innerHeight;
+    }).length)).toBeGreaterThanOrEqual(3);
     await expect(page.locator(".mobile-dock button")).toHaveCount(5);
     for (const [buttonLabel, panelLabel] of [
       ["世界", "世界状态"], ["行动", "行动"], ["角色", "角色状态"], ["聊天", "世界聊天"],

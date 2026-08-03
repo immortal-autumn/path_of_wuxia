@@ -7,7 +7,7 @@ This is the canonical inventory of implemented project behavior. Update it in th
 | Entry | Function | Persistence / real-time | Automated coverage |
 | --- | --- | --- | --- |
 | `/` | Loads the shared-world game from玄关 and renders China time, a text-only square-node map with an external location summary, actions, attribute/combat/cultivation status, and chat. | Reads a local SQLite neighborhood from the 500+ location source-tracked world and authoritative progression; opens `/ws`. | Unit world validation/progression tests and Playwright game, direction-control, multiplayer, responsive-layout, and mobile-drawer tests. |
-| `/map-editor` | Loads the collaborative drag/drop map designer with chunk controls, inspector, locks, and history. | Reads bounded map viewports and writes through authenticated WebSocket commands. | Playwright drop, route, undo/redo, region-drag, and lock-contention tests. |
+| `/map-editor` | Loads the responsive collaborative drag/drop map designer with a concise canvas-status bar, text-only square locations, chunk controls, inspector, locks, and history. | Reads bounded map viewports and writes through authenticated WebSocket commands. | Playwright responsive layout, drop, route, undo/redo, region-drag, and lock-contention tests. |
 | `/api/session` | Restores or creates a random player and HttpOnly browser session, then performs a same-origin redirect. | Writes `players`, `sessions`, and an arrival event. | Unit identity test and Playwright entry test. |
 | `/ws` | Authenticates the session and runs game, chat, presence, map viewport, lock, editing, and history protocols. | Uses SQLite transactions and broadcasts incremental invalidations. | Live smoke and Playwright real-time/editor tests. |
 
@@ -37,7 +37,7 @@ This is the canonical inventory of implemented project behavior. Update it in th
 | Region editing | Drag palette, canvas, inspector | Creates, drags, resizes, updates, and safely soft-deletes large region boxes. | Unit operation tests and Playwright region-drag test. |
 | Grid location editing | Drag palette and location boxes | Snaps to the nearest unique grid cell, assigns a containing region, auto-adds an Observe action, and auto-saves. | Unit collision test and Playwright HTML5-drop test. |
 | Direction slots | Normal-route editor | Atomically reserves reciprocal direction slots; each location has at most one route per direction. | Unit direction-slot test and Playwright route test. |
-| Edit leases | Automatic scope acquisition / Finish Editing | Locks regions or public chunks, renews every30 seconds, expires after two minutes, and blocks other players. | Unit expiry/exclusion and Playwright contention tests. |
+| Edit leases | Automatic scope acquisition / Finish Editing | Locks regions or public chunks only when a drag changes coordinates or a save mutates data; selection-only clicks remain lock-free. Leases renew every30 seconds, expire after two minutes, and block other players. | Unit expiry/exclusion and Playwright selection-without-lock/contention tests. |
 | Undo/redo | Editor toolbar / map history protocol | Stores the latest50 inverse operations within the active edit lease. | Unit save/undo/redo and Playwright history test. |
 | Chunk loading | Viewport controls / `map.viewport.subscribe` | Loads9/25/49 chunks, returns aggregates at low zoom, and caps detailed responses at1200 locations. | Unit payload-cap test and 50k benchmark. |
 | Incremental synchronization | `map.chunks.invalidated` | Broadcasts affected chunk keys; clients reload only bounded local data. | Playwright editor-to-game visibility test. |
@@ -45,6 +45,7 @@ This is the canonical inventory of implemented project behavior. Update it in th
 | Layered map storage | `map_layers`, layer-scoped chunks and editor layer selector | Separates world, house, Northern Song and Palos maps; ordinary grid occupancy is unique within a layer. | Unit v3→v4 migration, viewport and transition tests. |
 | Layer hierarchy editing | Editor layer forms / `map.edit` | Creates, renames, reparents and deletes empty custom layers under edit leases; rejects self/descendant cycles and protects initial layers. | Unit layer lifecycle/cycle test and Playwright layer-create/update/delete test. |
 | Cross-layer target search | Editor connection form / `map.locations.search` | Searches at most 200 active locations in a selected layer, then creates typed door/stairs/elevator/gate/road/ferry/dungeon/fast-travel/portal connections without using direction slots. | Unit bounded location-search/transition test and Playwright cross-layer connection test. |
+| Responsive editor workspace | Editor tools / canvas / inspector | Uses internally scrolling side panels on wide screens and a single-column, page-contained workspace at 1050px and below; its map canvas pans internally on narrow screens. Enlarged 140-unit square editor locations contain only wrapping names while selection type, grid coordinates, loaded chunks and zoom appear outside the SVG. | Playwright node-size/text-only editor-node, selection-summary and 768px overflow test. |
 | Source-tracked complete demo world | SQLite startup / `npm run map:seed` | Idempotently installs a 29-location modern house, 250+ Northern Song nodes and 267 public Palworld markers with stable IDs, source URL/version/retrieval date, hierarchical layers and full reachability from玄关. | Unit idempotent-import and `validateWorldMap` topology/source/count tests. |
 | Map integrity validation | `npm run map:validate` | Checks layer cycles, source records, eight-direction adjacency, reciprocal direction slots, cross-layer transitions, training-room effect, 500+/per-world minimums and full reachability. | Unit source-tracked seed validation test; command exits non-zero on errors. |
 
@@ -62,7 +63,7 @@ This is the canonical inventory of implemented project behavior. Update it in th
 | `npm run dev` | Runs the custom Next.js and WebSocket development server. |
 | `npm run build` | Builds the Next.js application and custom server. |
 | `npm start` | Runs the production custom server. |
-| `npm run lint` | Runs ESLint. |
+| `npm run lint` | Runs ESLint across project source, configuration, scripts and tests while excluding generated Next.js, server-build and Playwright-report artifacts. |
 | `npm test` | Runs SQLite, game, direction, editor, lock, history, and chunk unit tests. |
 | `npm run test:e2e` | Builds and runs the production-backed Playwright game/editor suite. |
 | `npm run test:all` | Runs unit and Playwright suites. |

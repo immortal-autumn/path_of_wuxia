@@ -959,8 +959,8 @@ h2 {
 
   .wuxia-map {
     display: block;
-    width: 640px;
-    min-width: 640px;
+    width: 540px;
+    min-width: 540px;
     max-width: none;
     height: 100%;
     min-height: 0;
@@ -1131,7 +1131,7 @@ h2 {
 /* Map editor: intentionally plain and boxed for reliable interaction testing. */
 .map-editor-shell {
   display: grid;
-  grid-template-columns: 210px minmax(0, 1fr) 290px;
+  grid-template-columns: clamp(240px, 18vw, 280px) minmax(0, 1fr) clamp(300px, 23vw, 360px);
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 8px;
   width: 100vw;
@@ -1153,7 +1153,8 @@ h2 {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 14px;
+  gap: 20px;
+  padding: 11px 14px;
 }
 
 .editor-header h1 {
@@ -1169,7 +1170,13 @@ h2 {
 .editor-header-actions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 7px;
+}
+
+.editor-header-actions > span {
+  font-size: 11px;
 }
 
 .editor-header-actions a,
@@ -1195,19 +1202,22 @@ h2 {
 .editor-tools,
 .editor-inspector {
   min-height: 0;
-  padding: 12px;
+  padding: 14px;
   overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 
 .editor-tools h2,
 .editor-inspector h2 {
-  margin: 5px 0 10px;
+  margin: 8px 0 10px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--border-light);
   font-size: 14px;
 }
 
 .palette-item {
   margin-bottom: 8px;
-  padding: 12px;
+  padding: 13px 10px;
   border: 2px dashed var(--border);
   background: #fff;
   text-align: center;
@@ -1242,7 +1252,7 @@ h2 {
 
 .layer-editor {
   margin: 8px 0;
-  padding: 7px;
+  padding: 8px;
   border: 1px solid var(--border);
 }
 
@@ -1273,12 +1283,56 @@ h2 {
 }
 
 .editor-canvas {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
   overflow: hidden;
 }
 
-.editor-canvas svg {
+.editor-canvas-status {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  min-height: 48px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.editor-canvas-status > div {
+  display: grid;
+  gap: 2px;
+}
+
+.editor-canvas-status > div span,
+.editor-canvas-status > span {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.editor-canvas-status strong {
+  font-size: 12px;
+}
+
+.editor-canvas-status p {
+  margin: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.editor-canvas-viewport {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.editor-canvas-viewport svg {
+  display: block;
   width: 100%;
   height: 100%;
   touch-action: none;
@@ -1344,17 +1398,38 @@ h2 {
   stroke-width: 5;
 }
 
-.editor-location text {
-  fill: #111;
-  font-size: 13px;
+.editor-location-name {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  padding: 7px;
+  color: #111;
+  font-size: 15px;
   font-weight: 700;
+  line-height: 1.3;
+  text-align: center;
+  overflow-wrap: anywhere;
   pointer-events: none;
 }
 
-.editor-location .editor-location-grid {
-  fill: #666;
+.editor-selection-summary {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 12px;
+  padding: 10px;
+  border: 1px solid var(--border);
+}
+
+.editor-selection-summary span,
+.editor-selection-summary small {
+  color: var(--muted);
   font-size: 10px;
-  font-weight: 400;
+}
+
+.editor-selection-summary strong {
+  overflow-wrap: anywhere;
 }
 
 .editor-inspector form {
@@ -1385,9 +1460,101 @@ h2 {
   font-size: 11px;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 1100px) {
   .map-editor-shell {
-    grid-template-columns: 170px minmax(500px, 1fr) 240px;
+    grid-template-columns: 220px minmax(0, 1fr) 280px;
+  }
+
+  .editor-header-actions {
+    max-width: 58%;
+  }
+
+  .editor-canvas-status > span {
+    display: none;
+  }
+}
+
+@media (max-width: 1050px) {
+  body {
+    overflow: hidden;
+  }
+
+  .map-editor-shell {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(300px, 42dvh) minmax(480px, 68dvh) minmax(320px, 62dvh) auto;
+    height: 100dvh;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  .editor-header,
+  .editor-tools,
+  .editor-canvas,
+  .editor-inspector,
+  .editor-status {
+    grid-column: 1;
+  }
+
+  .editor-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 9px;
+  }
+
+  .editor-header-actions {
+    justify-content: flex-start;
+    max-width: none;
+  }
+
+  .editor-header-actions > span {
+    flex-basis: 100%;
+  }
+
+  .editor-tools {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 10px;
+    max-height: 42dvh;
+  }
+
+  .editor-tools > h2,
+  .editor-tools > label,
+  .editor-tools > details,
+  .editor-tools > p,
+  .editor-tools > .pan-controls {
+    grid-column: 1 / -1;
+  }
+
+  .editor-tools > .palette-item {
+    grid-column: auto;
+  }
+
+  .editor-canvas-status {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .editor-canvas-status p {
+    text-align: right;
+  }
+
+  .editor-canvas-viewport {
     overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+  }
+
+  .editor-canvas-viewport svg {
+    width: max(100%, 720px);
+    min-width: 720px;
+  }
+
+  .editor-inspector {
+    max-height: 62dvh;
+  }
+
+  .editor-status {
+    position: sticky;
+    bottom: 0;
+    z-index: 10;
   }
 }

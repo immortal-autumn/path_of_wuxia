@@ -42,7 +42,7 @@ type Waiter = {
 
 type DragState =
   | { kind: "location"; id: string; originalRegionId: string | null; originalGridX: number; originalGridY: number }
-  | { kind: "region"; id: string; offsetX: number; offsetY: number }
+  | { kind: "region"; id: string; offsetX: number; offsetY: number; originalX: number; originalY: number }
   | { kind: "resize"; id: string; startX: number; startY: number };
 
 function scopeForPoint(layerId: string, regionId: string | null, gridX: number, gridY: number) {
@@ -80,7 +80,7 @@ export default function MapEditorShell({
   const [notice, setNotice] = useState("拖拽素材到画布即可新增地图内容。");
   const [centerChunk, setCenterChunk] = useState({ x: 0, y: 0 });
   const [radius, setRadius] = useState(1);
-  const [zoom, setZoom] = useState(1);
+  const [zoom, setZoom] = useState(1.15);
   const [layerId, setLayerId] = useState(initialViewport.layer.id);
   const [selectedLocationId, setSelectedLocationId] = useState<string | null>(null);
   const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
@@ -370,6 +370,7 @@ export default function MapEditorShell({
     if (drag.kind === "location") {
       const location = viewport.locations.find((item) => item.id === drag.id);
       if (!location) return;
+      if (location.gridX === drag.originalGridX && location.gridY === drag.originalGridY) return;
       const region = regionAt(location.x, location.y);
       const scopes = [
         scopeForPoint(location.layerId, drag.originalRegionId, drag.originalGridX, drag.originalGridY),
@@ -384,6 +385,8 @@ export default function MapEditorShell({
     }
     const region = viewport.regions.find((item) => item.id === drag.id);
     if (!region) return;
+    if (drag.kind === "region" && region.x === drag.originalX && region.y === drag.originalY) return;
+    if (drag.kind === "resize" && region.width === drag.startX && region.height === drag.startY) return;
     await applyOperation({
       type: "region.update",
       regionId: region.id,
@@ -615,13 +618,28 @@ export default function MapEditorShell({
       </aside>
 
       <section className="editor-canvas bordered-box" aria-label="地图编辑画布">
-        <svg
-          viewBox={viewBox}
-          onDragOver={(event) => event.preventDefault()}
-          onDrop={onDrop}
-          onPointerMove={onPointerMove}
-          onPointerUp={onPointerUp}
-        >
+        <header className="editor-canvas-status" aria-label="画布信息">
+          <div>
+            <span>当前地图</span>
+            <strong>{selectedLayer.name}</strong>
+          </div>
+          <p>
+            {selectedLocation
+              ? `已选地点：${selectedLocation.name} · 网格 (${selectedLocation.gridX}, ${selectedLocation.gridY})`
+              : selectedRegion
+                ? `已选区域：${selectedRegion.name}`
+                : "选择地点或区域后，可在右侧编辑资料。"}
+          </p>
+          <span>{viewport.loadedChunkCount} 区块 · {viewport.locations.length} 地点 · {Math.round(zoom * 100)}%</span>
+        </header>
+        <div className="editor-canvas-viewport">
+          <svg
+            viewBox={viewBox}
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={onDrop}
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerUp}
+          >
           {gridLines.map((line) => line.vertical
             ? <line className="editor-grid-line" key={`x-${line.value}`} x1={line.value} y1={viewY} x2={line.value} y2={viewY + worldHeight} />
             : <line className="editor-grid-line" key={`y-${line.value}`} x1={viewX} y1={line.value} x2={viewX + worldWidth} y2={line.value} />)}
@@ -640,7 +658,14 @@ export default function MapEditorShell({
               onClick={() => { setSelectedRegionId(region.id); setSelectedLocationId(null); }}
               onPointerDown={(event) => {
                 const point = worldPoint(event.clientX, event.clientY, event.currentTarget.ownerSVGElement!);
-                startDrag(event, { kind: "region", id: region.id, offsetX: point.x - region.x, offsetY: point.y - region.y });
+                startDrag(event, {
+                  kind: "region",
+                  id: region.id,
+                  offsetX: point.x - region.x,
+                  offsetY: point.y - region.y,
+                  originalX: region.x,
+                  originalY: region.y,
+                });
               }}
             >
               <rect x={region.x} y={region.y} width={region.width} height={region.height} />
@@ -668,33 +693,39 @@ export default function MapEditorShell({
               </line>
             );
           })}
-          {viewport.locations.map((location) => (
-            <g
-              className={`editor-location ${selectedLocationId === location.id ? "selected" : ""}`}
-              key={location.id}
-              transform={`translate(${location.x} ${location.y})`}
-              onClick={() => { setSelectedLocationId(location.id); setSelectedRegionId(null); }}
-              onPointerDown={(event) => startDrag(event, {
-                kind: "location",
-                id: location.id,
-                originalRegionId: location.regionId,
-                originalGridX: location.gridX,
-                originalGridY: location.gridY,
-              })}
-            >
-              <rect x="-62" y="-34" width="124" height="68" />
-              <text y="-5" textAnchor="middle">{location.name}</text>
-              <text className="editor-location-grid" y="17" textAnchor="middle">({location.gridX}, {location.gridY})</text>
-            </g>
-          ))}
-        </svg>
+            {viewport.locations.map((location) => (
+              <g
+                className={`editor-location ${selectedLocationId === location.id ? "selected" : ""}`}
+                key={location.id}
+                transform={`translate(${location.x} ${location.y})`}
+                onClick={() => { setSelectedLocationId(location.id); setSelectedRegionId(null); }}
+                onPointerDown={(event) => startDrag(event, {
+                  kind: "location",
+                  id: location.id,
+                  originalRegionId: location.regionId,
+                  originalGridX: location.gridX,
+                  originalGridY: location.gridY,
+                })}
+              >
+                <rect x="-70" y="-70" width="140" height="140" />
+                <foreignObject x="-66" y="-66" width="132" height="132" pointerEvents="none">
+                  <div className="editor-location-name">{location.name}</div>
+                </foreignObject>
+              </g>
+            ))}
+          </svg>
+        </div>
       </section>
 
       <aside className="editor-inspector bordered-box">
         <h2>属性与连接</h2>
         {selectedLocation && (
           <form key={`${selectedLocation.id}-${selectedLocation.version}`} onSubmit={saveLocation}>
-            <strong>{selectedLocation.region} - {selectedLocation.name}</strong>
+            <div className="editor-selection-summary">
+              <span>已选地点</span>
+              <strong>{selectedLocation.name}</strong>
+              <small>{selectedLocation.region} · 网格 ({selectedLocation.gridX}, {selectedLocation.gridY})</small>
+            </div>
             <label>名称<input name="name" defaultValue={selectedLocation.name} /></label>
             <label>描述<textarea name="description" defaultValue={selectedLocation.description} /></label>
             <label>所属大区域
@@ -773,7 +804,11 @@ export default function MapEditorShell({
         )}
         {selectedRegion && (
           <form key={`${selectedRegion.id}-${selectedRegion.version}`} onSubmit={saveRegion}>
-            <strong>{selectedRegion.name}</strong>
+            <div className="editor-selection-summary">
+              <span>已选区域</span>
+              <strong>{selectedRegion.name}</strong>
+              <small>{Math.round(selectedRegion.width)} × {Math.round(selectedRegion.height)}</small>
+            </div>
             <label>名称<input name="name" defaultValue={selectedRegion.name} /></label>
             <label>描述<textarea name="description" defaultValue={selectedRegion.description} /></label>
             <button>保存区域资料</button>
