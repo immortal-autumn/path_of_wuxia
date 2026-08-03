@@ -5,7 +5,7 @@ import { applyWorldSeed } from "./world-seed";
 
 export type GameDatabase = DatabaseSync;
 
-export const MAP_SCHEMA_VERSION = 5;
+export const MAP_SCHEMA_VERSION = 6;
 
 export function openGameDatabase(databasePath = process.env.DATABASE_PATH ?? resolve("data/wuxia.db")) {
   if (databasePath !== ":memory:") mkdirSync(dirname(databasePath), { recursive: true });
@@ -114,6 +114,12 @@ function migrate(db: GameDatabase) {
     CREATE TABLE IF NOT EXISTS sessions(
       token_hash TEXT PRIMARY KEY, player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
       created_at TEXT NOT NULL, expires_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS player_visited_locations(
+      player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+      location_id TEXT NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+      first_visited_at TEXT NOT NULL, last_visited_at TEXT NOT NULL,
+      PRIMARY KEY(player_id,location_id)
     );
     CREATE TABLE IF NOT EXISTS action_logs(
       id INTEGER PRIMARY KEY AUTOINCREMENT, player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
@@ -233,6 +239,23 @@ function migrate(db: GameDatabase) {
       db.exec("PRAGMA foreign_keys = ON");
     }
   }
+  if (previousVersion < 6) {
+    db.exec(`
+      INSERT OR IGNORE INTO player_visited_locations(player_id,location_id,first_visited_at,last_visited_at)
+      SELECT player_id,location_id,MIN(created_at),MAX(created_at)
+      FROM (
+        SELECT player_id,from_location AS location_id,created_at FROM action_logs
+          WHERE kind='move' AND from_location IS NOT NULL
+        UNION ALL
+        SELECT player_id,to_location AS location_id,created_at FROM action_logs
+          WHERE kind='move' AND to_location IS NOT NULL
+      )
+      GROUP BY player_id,location_id;
+
+      INSERT OR IGNORE INTO player_visited_locations(player_id,location_id,first_visited_at,last_visited_at)
+      SELECT id,current_location,created_at,created_at FROM players;
+    `);
+  }
 
   db.exec(`
     DROP INDEX IF EXISTS idx_active_grid;
@@ -251,6 +274,7 @@ function migrate(db: GameDatabase) {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_active_grid ON locations(layer_id,grid_x,grid_y) WHERE is_active=1;
     CREATE INDEX IF NOT EXISTS idx_locks_session ON map_edit_locks(session_id);
     CREATE INDEX IF NOT EXISTS idx_operations_session ON map_edit_operations(session_id,id DESC);
+    CREATE INDEX IF NOT EXISTS idx_visited_location ON player_visited_locations(location_id,player_id);
   `);
   db.prepare("INSERT OR REPLACE INTO schema_migrations(version,applied_at) VALUES (?,?)").run(MAP_SCHEMA_VERSION, now);
 }
@@ -271,6 +295,10 @@ function seed(db: GameDatabase) {
       SELECT id,MAX(0,cultivation),120,? FROM players
     `).run(now);
     db.prepare(`UPDATE players SET current_location='home-entrance',updated_at=? WHERE current_location NOT IN (SELECT id FROM locations WHERE is_active=1)`).run(now);
+    db.prepare(`
+      INSERT OR IGNORE INTO player_visited_locations(player_id,location_id,first_visited_at,last_visited_at)
+      SELECT id,current_location,created_at,updated_at FROM players
+    `).run();
     const eventCount = db.prepare("SELECT COUNT(*) AS count FROM world_events").get() as { count: number };
     if (eventCount.count === 0) {
       db.prepare(`INSERT INTO world_events(player_id,event_type,content,created_at) VALUES (NULL,'system','玄关的门被轻轻推开，新的世界由此展开。',?)`).run(now);

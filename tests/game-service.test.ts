@@ -116,6 +116,32 @@ describe("GameService", () => {
     }
   });
 
+  it("backfills schema-v6 exploration history from existing movement logs", () => {
+    const directory = mkdtempSync(join(tmpdir(), "wuxia-v6-visited-migration-"));
+    const databasePath = join(directory, "game.db");
+    try {
+      const versionFive = openGameDatabase(databasePath);
+      const versionFiveService = new GameService(versionFive, () => new Date(clock), () => roll);
+      const player = versionFiveService.createSession().player;
+      versionFiveService.move(player.id, "home-exterior");
+      versionFiveService.move(player.id, "loumen-road");
+      versionFive.prepare("DELETE FROM player_visited_locations WHERE player_id=?").run(player.id);
+      versionFive.prepare("DELETE FROM schema_migrations").run();
+      versionFive.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (5,?)").run(clock.toISOString());
+      versionFive.close();
+
+      const upgraded = openGameDatabase(databasePath);
+      const upgradedService = new GameService(upgraded, () => new Date(clock), () => roll);
+      expect(upgradedService.getVisitedMap(player.id).locations.map((location) => location.id).sort())
+        .toEqual(["home-entrance", "home-exterior", "loumen-road"]);
+      expect(upgraded.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: 6 });
+      expect(upgraded.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+      upgraded.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("upgrades a populated legacy database without SQLite ALTER TABLE foreign-key errors", () => {
     const directory = mkdtempSync(join(tmpdir(), "wuxia-v1-migration-"));
     const databasePath = join(directory, "game.db");
@@ -161,6 +187,31 @@ describe("GameService", () => {
     expect(service.getPlayerBySessionToken(identity.token)?.id).toBe(identity.player.id);
     const stored = db.prepare("SELECT token_hash FROM sessions").get() as { token_hash: string };
     expect(stored.token_hash).not.toBe(identity.token);
+    expect(service.getVisitedMap(identity.player.id)).toMatchObject({
+      layers: [{ id: "home-ground" }],
+      locations: [{ id: "home-entrance" }],
+      routes: [],
+    });
+  });
+
+  it("stores an isolated visited map for each player and includes only discovered connections", () => {
+    const explorer = service.createSession().player;
+    const newcomer = service.createSession().player;
+
+    service.move(explorer.id, "home-exterior");
+    let visited = service.getVisitedMap(explorer.id);
+    expect(visited.layers.map((layer) => layer.id).sort()).toEqual(["home-ground", "world-root"]);
+    expect(visited.locations.map((location) => location.id).sort()).toEqual(["home-entrance", "home-exterior"]);
+    expect(visited.routes).toMatchObject([{ id: "route-home-door-v4", routeType: "transition" }]);
+
+    service.move(explorer.id, "loumen-road");
+    service.move(explorer.id, "home-exterior");
+    visited = service.getVisitedMap(explorer.id);
+    expect(visited.locations.map((location) => location.id).sort()).toEqual(["home-entrance", "home-exterior", "loumen-road"]);
+    expect(visited.routes.map((route) => route.id).sort()).toEqual(["route-home-door-v4", "route-home-road-v4"]);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM player_visited_locations WHERE player_id=?").get(explorer.id)).toEqual({ count: 3 });
+
+    expect(service.getVisitedMap(newcomer.id).locations.map((location) => location.id)).toEqual(["home-entrance"]);
   });
 
   it("keeps the global online count while scoping position payloads to three steps", () => {

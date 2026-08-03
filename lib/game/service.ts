@@ -35,6 +35,7 @@ import type {
   RouteType,
   SessionIdentity,
   TransitionKind,
+  VisitedMap,
   WorldEvent,
   WorldStatus,
 } from "./types";
@@ -245,6 +246,8 @@ export class GameService {
         VALUES (?,?,'初入世界',?,?,?, ?,0,20,'home-entrance',?,?,?)
       `).run(playerId, name, initial.maxHp, initial.maxHp, initial.maxEndurance, initial.maxEndurance, createdAt, createdAt, createdAt);
       this.db.prepare("INSERT INTO player_progression(player_id,endurance,updated_at) VALUES (?,?,?)").run(playerId, initial.maxEndurance, createdAt);
+      this.db.prepare("INSERT INTO player_visited_locations(player_id,location_id,first_visited_at,last_visited_at) VALUES (?,'home-entrance',?,?)")
+        .run(playerId, createdAt, createdAt);
       this.db.prepare("INSERT INTO sessions(token_hash,player_id,created_at,expires_at) VALUES (?,?,?,?)")
         .run(tokenHash(token), playerId, createdAt, new Date(at.getTime() + SESSION_LIFETIME_MS).toISOString());
       this.db.prepare("INSERT INTO world_events(player_id,event_type,content,created_at) VALUES (?,'arrival',?,?)")
@@ -393,6 +396,39 @@ export class GameService {
     }
     sql += " ORDER BY id";
     return (this.db.prepare(sql).all(...params) as RouteRow[]).map(mapRoute);
+  }
+
+  getVisitedMap(playerId: string): VisitedMap {
+    this.getPlayer(playerId);
+    const locations = (this.db.prepare(`
+      ${this.locationSelect()}
+      WHERE l.is_active=1 AND EXISTS (
+        SELECT 1 FROM player_visited_locations visited
+        WHERE visited.player_id=? AND visited.location_id=l.id
+      )
+      ORDER BY l.layer_id,l.grid_y,l.grid_x,l.id
+    `).all(playerId) as LocationRow[]).map(mapLocation);
+    const visitedLayerIds = new Set(locations.map((location) => location.layerId));
+    const routes = (this.db.prepare(`
+      SELECT route.id,route.from_location,route.to_location,route.route_type,route.transition_kind,
+             route.from_direction,route.to_direction,route.version
+      FROM routes route
+      WHERE route.is_active=1
+        AND EXISTS (
+          SELECT 1 FROM player_visited_locations visited_from
+          WHERE visited_from.player_id=? AND visited_from.location_id=route.from_location
+        )
+        AND EXISTS (
+          SELECT 1 FROM player_visited_locations visited_to
+          WHERE visited_to.player_id=? AND visited_to.location_id=route.to_location
+        )
+      ORDER BY route.id
+    `).all(playerId, playerId) as RouteRow[]).map(mapRoute);
+    return {
+      layers: this.getLayers().filter((layer) => visitedLayerIds.has(layer.id)),
+      locations,
+      routes,
+    };
   }
 
   getActions(locationIds?: string[]) {
@@ -904,6 +940,11 @@ export class GameService {
       this.db.prepare("UPDATE players SET current_location=?,updated_at=?,last_seen_at=? WHERE id=?").run(destinationId, at, at, playerId);
       this.db.prepare("UPDATE player_progression SET training_anchor_at=?,updated_at=? WHERE player_id=?")
         .run(destination.trainingMultiplier > 0 ? at : null, at, playerId);
+      this.db.prepare(`
+        INSERT INTO player_visited_locations(player_id,location_id,first_visited_at,last_visited_at)
+        VALUES (?,?,?,?)
+        ON CONFLICT(player_id,location_id) DO UPDATE SET last_visited_at=excluded.last_visited_at
+      `).run(playerId, destinationId, at, at);
       this.db.prepare("INSERT INTO action_logs(player_id,kind,from_location,to_location,result_text,created_at) VALUES (?,'move',?,?,?,?)")
         .run(playerId, player.currentLocation, destinationId, content, at);
       const result = this.db.prepare("INSERT INTO world_events(player_id,event_type,content,created_at) VALUES (?,'move',?,?)").run(playerId, content, at);

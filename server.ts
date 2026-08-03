@@ -130,6 +130,15 @@ async function main() {
           return;
         }
 
+        if (command.type === "map.visited") {
+          send(socket, {
+            type: "map.visited.snapshot",
+            requestId: command.requestId,
+            map: service.getVisitedMap(context.playerId),
+          });
+          return;
+        }
+
         if (command.type === "chat.send") {
           const now = Date.now();
           const lastSentAt = chatTimestamps.get(context.playerId) ?? 0;

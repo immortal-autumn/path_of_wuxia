@@ -76,6 +76,12 @@ export type MapViewport = {
   truncated: boolean;
 };
 
+export type VisitedMap = {
+  layers: MapLayer[];
+  locations: Location[];
+  routes: MapRoute[];
+};
+
 export type MapLock = { scopeKey: string; sessionId: string; playerId: string; playerName: string; leaseExpiresAt: string };
 export type MapHistoryState = { canUndo: boolean; canRedo: boolean; operationCount: number };
 export type MapEditSessionState = { id: string; scopes: string[]; leaseExpiresAt: string; history: MapHistoryState };

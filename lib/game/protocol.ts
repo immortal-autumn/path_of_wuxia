@@ -9,6 +9,7 @@ import type {
   OnlinePlayer,
   PlayerSelf,
   TransitionKind,
+  VisitedMap,
   WorldEvent,
   WorldStatus,
 } from "./types";
@@ -102,6 +103,7 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("cultivation.breakthrough"), requestId }),
   z.object({ type: z.literal("chat.send"), requestId, content: z.string().min(1).max(240) }),
   z.object({ type: z.literal("ping"), requestId }),
+  z.object({ type: z.literal("map.visited"), requestId }),
   z.object({
     type: z.literal("map.viewport.subscribe"), requestId, layerId: id,
     centerChunkX: z.number().int(), centerChunkY: z.number().int(), radius: z.number().int().min(1).max(3), zoom: z.number().min(0.1).max(4),
@@ -130,6 +132,7 @@ export type ServerMessage =
   | { type: "chat.message"; message: ChatMessage }
   | { type: "world.updated"; world: WorldStatus }
   | { type: "map.viewport.snapshot"; requestId: string; viewport: MapViewport; locks: MapLock[] }
+  | { type: "map.visited.snapshot"; requestId: string; map: VisitedMap }
   | { type: "map.locations.result"; requestId: string; layerId: string; locations: MapViewport["locations"] }
   | { type: "map.edit.session"; requestId: string; session: MapEditSessionState }
   | { type: "map.history.state"; requestId: string; history: MapHistoryState }
