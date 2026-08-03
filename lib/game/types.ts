@@ -69,6 +69,7 @@ export type MapViewport = {
   layers: MapLayer[];
   regions: MapRegion[];
   locations: Location[];
+  remoteLocations: Location[];
   routes: MapRoute[];
   chunks: MapChunkSummary[];
   loadedChunkCount: number;

@@ -145,6 +145,16 @@ async function main() {
           return;
         }
 
+        if (command.type === "map.locations.search") {
+          send(socket, {
+            type: "map.locations.result",
+            requestId: command.requestId,
+            layerId: command.layerId,
+            locations: service.searchMapLocations(command.layerId, command.query, command.limit),
+          });
+          return;
+        }
+
         if (command.type === "map.lock.acquire") {
           const session = service.acquireMapLocks(
             context.playerId,

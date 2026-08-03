@@ -43,6 +43,8 @@ This is the canonical inventory of implemented project behavior. Update it in th
 | Incremental synchronization | `map.chunks.invalidated` | Broadcasts affected chunk keys; clients reload only bounded local data. | Playwright editor-to-game visibility test. |
 | Safe map schema upgrades | SQLite startup migration | Preserves active version-2 locations and routes while applying non-overlapping default-region geometry only to untouched seed regions. | Unit version-2 upgrade regression test. |
 | Layered map storage | `map_layers`, layer-scoped chunks and editor layer selector | Separates world, house, Northern Song and Palos maps; ordinary grid occupancy is unique within a layer. | Unit v3→v4 migration, viewport and transition tests. |
+| Layer hierarchy editing | Editor layer forms / `map.edit` | Creates, renames, reparents and deletes empty custom layers under edit leases; rejects self/descendant cycles and protects initial layers. | Unit layer lifecycle/cycle test and Playwright layer-create/update/delete test. |
+| Cross-layer target search | Editor connection form / `map.locations.search` | Searches at most 200 active locations in a selected layer, then creates typed door/stairs/elevator/gate/road/ferry/dungeon/fast-travel/portal connections without using direction slots. | Unit bounded location-search/transition test and Playwright cross-layer connection test. |
 | Source-tracked complete demo world | SQLite startup / `npm run map:seed` | Idempotently installs a 29-location modern house, 250+ Northern Song nodes and 267 public Palworld markers with stable IDs, source URL/version/retrieval date, hierarchical layers and full reachability from玄关. | Unit idempotent-import and `validateWorldMap` topology/source/count tests. |
 | Map integrity validation | `npm run map:validate` | Checks layer cycles, source records, eight-direction adjacency, reciprocal direction slots, cross-layer transitions, training-room effect, 500+/per-world minimums and full reachability. | Unit source-tracked seed validation test; command exits non-zero on errors. |
 
@@ -50,8 +52,8 @@ This is the canonical inventory of implemented project behavior. Update it in th
 
 | Direction | Messages |
 | --- | --- |
-| Client → server | `sync`, `move`, `act`, `attributes.allocate`, `cultivation.breakthrough`, `chat.send`, `ping`, `map.viewport.subscribe`, `map.lock.acquire/renew/release`, `map.edit`, `map.history.undo/redo` |
-| Server → client | `snapshot`, `ack`, `self.updated`, `cultivation.updated`, `players.updated`, `world.event`, `chat.message`, `world.updated`, `map.viewport.snapshot`, `map.edit.session`, `map.history.state`, `map.chunks.invalidated`, `map.locks.updated`, `error`, `pong` |
+| Client → server | `sync`, `move`, `act`, `attributes.allocate`, `cultivation.breakthrough`, `chat.send`, `ping`, `map.viewport.subscribe`, `map.locations.search`, `map.lock.acquire/renew/release`, `map.edit`, `map.history.undo/redo` |
+| Server → client | `snapshot`, `ack`, `self.updated`, `cultivation.updated`, `players.updated`, `world.event`, `chat.message`, `world.updated`, `map.viewport.snapshot`, `map.locations.result`, `map.edit.session`, `map.history.state`, `map.chunks.invalidated`, `map.locks.updated`, `error`, `pong` |
 
 ## Operations and verification functions
 

@@ -17,11 +17,14 @@ import { createClientId } from "@/lib/game/client-id";
 import type {
   MapEditOperation,
   MapEditSessionState,
+  MapLayer,
   MapLock,
   MapRegion,
   MapViewport,
+  Location,
   PlayerSelf,
   RouteType,
+  TransitionKind,
 } from "@/lib/game/types";
 
 type CommandWithoutId = ClientMessage extends infer Message
@@ -48,6 +51,19 @@ function scopeForPoint(layerId: string, regionId: string | null, gridX: number, 
   return `layer:${layerId}:chunk:${chunkKey(chunk.chunkX, chunk.chunkY)}`;
 }
 
+function layerLabel(layer: MapLayer, layers: MapLayer[]) {
+  const byId = new Map(layers.map((item) => [item.id, item]));
+  const seen = new Set<string>([layer.id]);
+  let depth = 0;
+  let parentId = layer.parentLayerId;
+  while (parentId && !seen.has(parentId)) {
+    seen.add(parentId);
+    depth += 1;
+    parentId = byId.get(parentId)?.parentLayerId ?? null;
+  }
+  return `${"　".repeat(depth)}${depth > 0 ? "↳ " : ""}${layer.name}`;
+}
+
 export default function MapEditorShell({
   player,
   initialViewport,
@@ -70,6 +86,10 @@ export default function MapEditorShell({
   const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
   const [routeTarget, setRouteTarget] = useState("");
   const [routeType, setRouteType] = useState<RouteType>("normal");
+  const [routeTargetLayerId, setRouteTargetLayerId] = useState(initialViewport.layer.id);
+  const [routeTargets, setRouteTargets] = useState<Location[]>(initialViewport.locations);
+  const [routeSearch, setRouteSearch] = useState("");
+  const [transitionKind, setTransitionKind] = useState<TransitionKind>("door");
   const socketRef = useRef<WebSocket | null>(null);
   const waitersRef = useRef(new Map<string, Waiter>());
   const dragRef = useRef<DragState | null>(null);
@@ -85,8 +105,12 @@ export default function MapEditorShell({
   const viewY = centerChunk.y * 1000 + 500 - worldHeight / 2;
   const viewBox = `${viewX} ${viewY} ${worldWidth} ${worldHeight}`;
   const locationMap = useMemo(() => new Map(viewport.locations.map((item) => [item.id, item])), [viewport.locations]);
+  const routeLocationMap = useMemo(() => new Map(
+    [...viewport.locations, ...viewport.remoteLocations, ...routeTargets].map((item) => [item.id, item]),
+  ), [routeTargets, viewport.locations, viewport.remoteLocations]);
   const selectedLocation = selectedLocationId ? locationMap.get(selectedLocationId) ?? null : null;
   const selectedRegion = selectedRegionId ? viewport.regions.find((item) => item.id === selectedRegionId) ?? null : null;
+  const selectedLayer = viewport.layers.find((item) => item.id === layerId) ?? viewport.layer;
 
   const send = useCallback((command: CommandWithoutId, expected: ServerMessage["type"] = "ack") => {
     const socket = socketRef.current;
@@ -101,6 +125,20 @@ export default function MapEditorShell({
       socket.send(JSON.stringify({ ...command, requestId }));
     });
   }, []);
+
+  const loadRouteTargets = useCallback(async (targetLayerId: string, query = "") => {
+    if (!connected) return;
+    try {
+      const message = await send({
+        type: "map.locations.search", layerId: targetLayerId, query, limit: 200,
+      }, "map.locations.result");
+      if (message.type !== "map.locations.result") throw new Error("地点搜索响应不正确。");
+      setRouteTargets(message.locations);
+      setRouteTarget((current) => message.locations.some((location) => location.id === current) ? current : "");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "地点搜索失败。");
+    }
+  }, [connected, send]);
 
   const requestViewport = useCallback(() => {
     const socket = socketRef.current;
@@ -230,8 +268,10 @@ export default function MapEditorShell({
       const activeSession = await acquireScopes(scopes);
       await send({ type: "map.edit", sessionId: activeSession.id, operation });
       requestViewport();
+      return true;
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "地图操作失败。");
+      return false;
     }
   };
 
@@ -379,19 +419,92 @@ export default function MapEditorShell({
     }, [`region:${selectedRegion.id}`]);
   };
 
+  const createLayer = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const id = createClientId("layer");
+    const parentLayerId = String(data.get("parentLayerId") || "") || null;
+    const created = await applyOperation({
+      type: "layer.create",
+      layer: {
+        id,
+        name: String(data.get("name")),
+        description: String(data.get("description")),
+        parentLayerId,
+        version: 1,
+      },
+    }, [`layer:${parentLayerId ?? "world-root"}`]);
+    if (!created) return;
+    form.reset();
+    setLayerId(id);
+    setCenterChunk({ x: 0, y: 0 });
+    setSelectedLocationId(null);
+    setSelectedRegionId(null);
+  };
+
+  const saveLayer = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    await applyOperation({
+      type: "layer.update",
+      layerId: selectedLayer.id,
+      expectedVersion: selectedLayer.version,
+      patch: {
+        name: String(data.get("name")),
+        description: String(data.get("description")),
+        parentLayerId: String(data.get("parentLayerId") || "") || null,
+      },
+    }, [`layer:${selectedLayer.id}`]);
+  };
+
+  const deleteLayer = async () => {
+    const nextLayerId = selectedLayer.parentLayerId ?? "world-root";
+    const deleted = await applyOperation(
+      { type: "layer.delete", layerId: selectedLayer.id },
+      [`layer:${selectedLayer.id}`],
+    );
+    if (!deleted) return;
+    setLayerId(nextLayerId);
+    setCenterChunk({ x: 0, y: 0 });
+    setSelectedLocationId(null);
+    setSelectedRegionId(null);
+  };
+
   const createRoute = async () => {
     if (!selectedLocation || !routeTarget) return;
-    const target = locationMap.get(routeTarget);
+    const target = routeLocationMap.get(routeTarget);
     if (!target) return;
     await applyOperation({
       type: "route.create",
       fromLocation: selectedLocation.id,
       toLocation: target.id,
       routeType,
+      transitionKind: routeType === "transition" ? transitionKind : undefined,
     }, [
       scopeForPoint(selectedLocation.layerId, selectedLocation.regionId, selectedLocation.gridX, selectedLocation.gridY),
       scopeForPoint(target.layerId, target.regionId, target.gridX, target.gridY),
     ]);
+  };
+
+  const changeRouteType = async (nextType: RouteType) => {
+    setRouteType(nextType);
+    setRouteTarget("");
+    if (nextType === "normal") {
+      setRouteTargetLayerId(layerId);
+      return;
+    }
+    const targetLayer = viewport.layers.find((layer) => layer.id !== layerId)?.id ?? layerId;
+    setRouteTargetLayerId(targetLayer);
+    setRouteTargets([]);
+    await loadRouteTargets(targetLayer, routeSearch);
+  };
+
+  const changeRouteTargetLayer = async (targetLayerId: string) => {
+    setRouteTargetLayerId(targetLayerId);
+    setRouteTarget("");
+    setRouteTargets([]);
+    await loadRouteTargets(targetLayerId, routeSearch);
   };
 
   const finishEditing = async () => {
@@ -431,14 +544,52 @@ export default function MapEditorShell({
         <h2>地图层</h2>
         <label>当前地图
           <select value={layerId} onChange={(event) => {
-            setLayerId(event.target.value);
+            const nextLayerId = event.target.value;
+            setLayerId(nextLayerId);
             setCenterChunk({ x: 0, y: 0 });
             setSelectedLocationId(null);
             setSelectedRegionId(null);
+            setRouteType("normal");
+            setRouteTarget("");
+            setRouteTargetLayerId(nextLayerId);
           }}>
-            {viewport.layers.map((layer) => <option key={layer.id} value={layer.id}>{layer.name}</option>)}
+            {viewport.layers.map((layer) => <option key={layer.id} value={layer.id}>{layerLabel(layer, viewport.layers)}</option>)}
           </select>
         </label>
+        <details className="layer-editor" open>
+          <summary>编辑当前层</summary>
+          <form key={`${selectedLayer.id}-${selectedLayer.version}`} onSubmit={saveLayer}>
+            <label>地图层名称<input name="name" defaultValue={selectedLayer.name} /></label>
+            <label>地图层描述<textarea name="description" defaultValue={selectedLayer.description} /></label>
+            <label>父地图层
+              <select name="parentLayerId" defaultValue={selectedLayer.parentLayerId ?? ""} disabled={selectedLayer.id === "world-root"}>
+                <option value="">无父层</option>
+                {viewport.layers.filter((layer) => layer.id !== selectedLayer.id).map((layer) => (
+                  <option key={layer.id} value={layer.id}>{layerLabel(layer, viewport.layers)}</option>
+                ))}
+              </select>
+            </label>
+            <button>保存地图层</button>
+            <button
+              type="button"
+              disabled={["world-root", "home-ground", "song-overview", "palos-overview"].includes(selectedLayer.id)}
+              onClick={deleteLayer}
+            >删除空地图层</button>
+          </form>
+        </details>
+        <details className="layer-editor">
+          <summary>新增地图层</summary>
+          <form onSubmit={createLayer}>
+            <label>新层名称<input name="name" defaultValue="新地图层" /></label>
+            <label>新层描述<textarea name="description" defaultValue="通过地图设计工具新增的地图层。" /></label>
+            <label>放在此层之下
+              <select name="parentLayerId" defaultValue={selectedLayer.id}>
+                {viewport.layers.map((layer) => <option key={layer.id} value={layer.id}>{layerLabel(layer, viewport.layers)}</option>)}
+              </select>
+            </label>
+            <button>新增地图层</button>
+          </form>
+        </details>
         <h2>拖拽素材</h2>
         <div className="palette-item" draggable onDragStart={(event) => event.dataTransfer.setData("application/x-map-tool", "region")}>大区域</div>
         <div className="palette-item" draggable onDragStart={(event) => event.dataTransfer.setData("application/x-map-tool", "location")}>小地点</div>
@@ -558,32 +709,64 @@ export default function MapEditorShell({
               [scopeForPoint(selectedLocation.layerId, selectedLocation.regionId, selectedLocation.gridX, selectedLocation.gridY)],
             )}>删除地点</button>
             <hr />
-            <label>连接目标
-              <select value={routeTarget} onChange={(event) => setRouteTarget(event.target.value)}>
-                <option value="">请选择</option>
-                {viewport.locations.filter((item) => item.id !== selectedLocation.id).map((item) => (
-                  <option key={item.id} value={item.id}>{item.name}</option>
-                ))}
-              </select>
-            </label>
             <label>路线类型
-              <select value={routeType} onChange={(event) => setRouteType(event.target.value as RouteType)}>
+              <select value={routeType} onChange={(event) => changeRouteType(event.target.value as RouteType)}>
                 <option value="normal">八方向普通路线</option>
+                <option value="transition">跨层连接</option>
                 <option value="portal">传送门</option>
               </select>
             </label>
+            {routeType !== "normal" && (
+              <>
+                <label>目标地图层
+                  <select value={routeTargetLayerId} onChange={(event) => changeRouteTargetLayer(event.target.value)}>
+                    {viewport.layers
+                      .filter((layer) => routeType !== "transition" || layer.id !== selectedLocation.layerId)
+                      .map((layer) => <option key={layer.id} value={layer.id}>{layerLabel(layer, viewport.layers)}</option>)}
+                  </select>
+                </label>
+                <label>搜索目标地点
+                  <span className="editor-inline-search">
+                    <input value={routeSearch} onChange={(event) => setRouteSearch(event.target.value)} placeholder="名称（可留空）" />
+                    <button type="button" onClick={() => loadRouteTargets(routeTargetLayerId, routeSearch)}>搜索</button>
+                  </span>
+                </label>
+              </>
+            )}
+            <label>连接目标
+              <select value={routeTarget} onChange={(event) => setRouteTarget(event.target.value)}>
+                <option value="">请选择</option>
+                {(routeType === "normal" ? viewport.locations : routeTargets)
+                  .filter((item) => item.id !== selectedLocation.id)
+                  .map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+              </select>
+            </label>
+            {routeType === "transition" && (
+              <label>跨层方式
+                <select value={transitionKind} onChange={(event) => setTransitionKind(event.target.value as TransitionKind)}>
+                  <option value="door">门</option>
+                  <option value="stairs">楼梯</option>
+                  <option value="elevator">电梯</option>
+                  <option value="gate">关门 / 区域入口</option>
+                  <option value="road">道路</option>
+                  <option value="ferry">渡船</option>
+                  <option value="dungeon">地下城入口</option>
+                  <option value="fast-travel">快速传送点</option>
+                </select>
+              </label>
+            )}
             <button type="button" disabled={!routeTarget} onClick={createRoute}>建立连接</button>
             <div className="route-list">
               {viewport.routes.filter((route) => route.fromLocation === selectedLocation.id || route.toLocation === selectedLocation.id).map((route) => (
                 <button type="button" key={route.id} onClick={() => {
                   const otherId = route.fromLocation === selectedLocation.id ? route.toLocation : route.fromLocation;
-                  const other = locationMap.get(otherId);
+                  const other = routeLocationMap.get(otherId);
                   if (!other) return;
                   applyOperation({ type: "route.delete", routeId: route.id }, [
                     scopeForPoint(selectedLocation.layerId, selectedLocation.regionId, selectedLocation.gridX, selectedLocation.gridY),
                     scopeForPoint(other.layerId, other.regionId, other.gridX, other.gridY),
                   ]);
-                }}>删除 {route.routeType === "portal" ? "传送门" : "路线"} → {locationMap.get(route.fromLocation === selectedLocation.id ? route.toLocation : route.fromLocation)?.name}</button>
+                }}>删除 {route.routeType === "portal" ? "传送门" : route.routeType === "transition" ? "跨层连接" : "路线"} → {routeLocationMap.get(route.fromLocation === selectedLocation.id ? route.toLocation : route.fromLocation)?.name}</button>
               ))}
             </div>
           </form>

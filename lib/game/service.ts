@@ -348,6 +348,17 @@ export class GameService {
     return (this.db.prepare(sql).all(...params) as LocationRow[]).map(mapLocation);
   }
 
+  searchMapLocations(layerId: string, query = "", limit = 100) {
+    this.getLayer(layerId);
+    const cleanedQuery = query.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
+    const safeLimit = Math.max(1, Math.min(200, Math.floor(limit)));
+    const rows = this.db.prepare(`
+      ${this.locationSelect()} WHERE l.is_active=1 AND l.layer_id=? AND l.name LIKE ?
+      ORDER BY l.name,l.id LIMIT ?
+    `).all(layerId, `%${cleanedQuery}%`, safeLimit) as LocationRow[];
+    return rows.map(mapLocation);
+  }
+
   getLayer(layerId: string) {
     const row = this.db.prepare("SELECT id,name,description,parent_layer_id,version FROM map_layers WHERE id=? AND is_active=1").get(layerId) as LayerRow | undefined;
     if (!row) throw new Error("地图层不存在或已停用。");
@@ -495,14 +506,28 @@ export class GameService {
       WHERE is_active=1 AND layer_id=? AND x<=? AND x+width>=? AND y<=? AND y+height>=? LIMIT 500
     `).all(layerId, (maxX + 1) * 1000, minX * 1000, (maxY + 1) * 1000, minY * 1000) as RegionRow[]).map(mapRegion);
     const common = { layer: this.getLayer(layerId), layers: this.getLayers(), regions, chunks, loadedChunkCount: chunks.length };
-    if (zoom < 0.6) return { ...common, locations: [], routes: [], truncated: false };
+    if (zoom < 0.6) return { ...common, locations: [], remoteLocations: [], routes: [], truncated: false };
     const rows = this.db.prepare(`
       ${this.locationSelect()} WHERE l.is_active=1 AND l.layer_id=? AND l.chunk_x BETWEEN ? AND ? AND l.chunk_y BETWEEN ? AND ?
       ORDER BY l.id LIMIT ?
     `).all(layerId, minX, maxX, minY, maxY, MAX_VIEWPORT_LOCATIONS + 1) as LocationRow[];
     const truncated = rows.length > MAX_VIEWPORT_LOCATIONS;
     const locations = rows.slice(0, MAX_VIEWPORT_LOCATIONS).map(mapLocation);
-    return { ...common, locations, routes: this.getRoutes(locations.map((item) => item.id)), truncated };
+    const localIds = locations.map((item) => item.id);
+    const normalRoutes = this.getRoutes(localIds).filter((route) => route.routeType === "normal");
+    const transitionRows = localIds.length === 0 ? [] : this.db.prepare(`
+      SELECT id,from_location,to_location,route_type,transition_kind,from_direction,to_direction,version
+      FROM routes WHERE is_active=1 AND route_type IN ('transition','portal')
+      AND (from_location IN (${placeholders(localIds)}) OR to_location IN (${placeholders(localIds)}))
+      ORDER BY id
+    `).all(...localIds, ...localIds) as RouteRow[];
+    const transitionRoutes = transitionRows.map(mapRoute);
+    const localIdSet = new Set(localIds);
+    const remoteIds = [...new Set(transitionRoutes.flatMap((route) => [route.fromLocation, route.toLocation]).filter((id) => !localIdSet.has(id)))];
+    return {
+      ...common, locations, remoteLocations: this.getLocations(remoteIds),
+      routes: [...normalRoutes, ...transitionRoutes], truncated,
+    };
   }
 
   private cleanupExpiredLocks() {
@@ -688,6 +713,11 @@ export class GameService {
       const parent = operation.patch.parentLayerId === undefined ? current.parentLayerId : operation.patch.parentLayerId;
       if (parent === current.id) throw new Error("地图层不能以自身为父级。");
       if (parent) this.getLayer(parent);
+      let ancestor = parent;
+      while (ancestor) {
+        if (ancestor === current.id) throw new Error("地图层不能移入自己的子层。");
+        ancestor = (this.db.prepare("SELECT parent_layer_id FROM map_layers WHERE id=? AND is_active=1").get(ancestor) as { parent_layer_id: string | null } | undefined)?.parent_layer_id ?? null;
+      }
       const name = operation.patch.name === undefined ? current.name : cleanText(operation.patch.name, "地图层名称", 40);
       const description = operation.patch.description === undefined ? current.description : cleanText(operation.patch.description, "地图层描述", 200);
       this.db.prepare("UPDATE map_layers SET name=?,description=?,parent_layer_id=?,version=version+1,updated_at=? WHERE id=?").run(name, description, parent, now, current.id);
@@ -815,6 +845,7 @@ export class GameService {
         if (this.db.prepare("SELECT 1 FROM location_direction_slots WHERE location_id=? AND direction=?").get(from.id, fromDirection)) throw new Error("起点该方向已有路线。");
         if (this.db.prepare("SELECT 1 FROM location_direction_slots WHERE location_id=? AND direction=?").get(to.id, toDirection)) throw new Error("终点反方向已有路线。");
       }
+      if (operation.routeType === "transition" && from.layerId === to.layerId) throw new Error("跨层连接必须连接不同地图层。");
       const routeId = operation.routeId || `route-${randomUUID()}`;
       const kind = operation.routeType === "portal" ? "portal" : operation.routeType === "transition" ? operation.transitionKind ?? "door" : null;
       this.db.prepare("DELETE FROM routes WHERE is_active=0 AND ((from_location=? AND to_location=?) OR (from_location=? AND to_location=?))").run(from.id, to.id, to.id, from.id);

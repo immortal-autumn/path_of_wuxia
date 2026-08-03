@@ -215,6 +215,32 @@ describe("GameService", () => {
     expect(service.getRoutes().some((route) => route.transitionKind === "gate" && route.fromLocation === "song-overview-entry")).toBe(true);
   });
 
+  it("searches bounded cross-layer targets and safely manages the layer hierarchy", () => {
+    expect(service.searchMapLocations("palos-travel", "初始台地", 10)).toMatchObject([
+      { id: "palos-fasttravel-1001", layerId: "palos-travel" },
+    ]);
+    expect(service.searchMapLocations("palos-dungeons", "", 500)).toHaveLength(124);
+
+    const player = service.createSession().player;
+    const session = service.acquireMapLocks(player.id, ["layer:world-root"]);
+    service.applyMapOperation(player.id, session.id, {
+      type: "layer.create",
+      layer: { id: "test-layer-parent", name: "测试父层", description: "父层。", parentLayerId: "world-root", version: 1 },
+    });
+    service.acquireMapLocks(player.id, ["layer:test-layer-parent"], session.id);
+    service.applyMapOperation(player.id, session.id, {
+      type: "layer.create",
+      layer: { id: "test-layer-child", name: "测试子层", description: "子层。", parentLayerId: "test-layer-parent", version: 1 },
+    });
+    expect(() => service.applyMapOperation(player.id, session.id, {
+      type: "layer.update", layerId: "test-layer-parent", patch: { parentLayerId: "test-layer-child" },
+    })).toThrow("自己的子层");
+    service.acquireMapLocks(player.id, ["layer:test-layer-child"], session.id);
+    service.applyMapOperation(player.id, session.id, { type: "layer.delete", layerId: "test-layer-child" });
+    service.applyMapOperation(player.id, session.id, { type: "layer.delete", layerId: "test-layer-parent" });
+    expect(service.getLayers().some((layer) => layer.id.startsWith("test-layer"))).toBe(false);
+  });
+
   it("expires edit leases and supports undo and redo", () => {
     const first = service.createSession().player;
     const second = service.createSession().player;

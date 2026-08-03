@@ -1002,6 +1002,8 @@ h2 {
 }
 
 .editor-tools select,
+.editor-tools input,
+.editor-tools textarea,
 .editor-inspector input,
 .editor-inspector select,
 .editor-inspector textarea {
@@ -1009,6 +1011,28 @@ h2 {
   padding: 6px;
   border: 1px solid var(--border);
   background: #fff;
+}
+
+.editor-tools textarea {
+  min-height: 58px;
+  resize: vertical;
+}
+
+.layer-editor {
+  margin: 8px 0;
+  padding: 7px;
+  border: 1px solid var(--border);
+}
+
+.layer-editor summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.layer-editor form > button {
+  width: 100%;
+  margin-top: 4px;
 }
 
 .editor-inspector textarea {
@@ -1124,6 +1148,12 @@ h2 {
   display: grid;
   gap: 4px;
   margin-top: 8px;
+}
+
+.editor-inline-search {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px;
 }
 
 .editor-status {

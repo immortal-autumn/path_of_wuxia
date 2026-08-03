@@ -106,6 +106,10 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("map.viewport.subscribe"), requestId, layerId: id,
     centerChunkX: z.number().int(), centerChunkY: z.number().int(), radius: z.number().int().min(1).max(3), zoom: z.number().min(0.1).max(4),
   }),
+  z.object({
+    type: z.literal("map.locations.search"), requestId, layerId: id,
+    query: z.string().max(80).default(""), limit: z.number().int().min(1).max(200).default(100),
+  }),
   z.object({ type: z.literal("map.lock.acquire"), requestId, scopes: z.array(z.string().min(1).max(120)).min(1).max(16), sessionId: id.optional() }),
   z.object({ type: z.literal("map.lock.renew"), requestId, sessionId: id }),
   z.object({ type: z.literal("map.lock.release"), requestId, sessionId: id }),
@@ -126,6 +130,7 @@ export type ServerMessage =
   | { type: "chat.message"; message: ChatMessage }
   | { type: "world.updated"; world: WorldStatus }
   | { type: "map.viewport.snapshot"; requestId: string; viewport: MapViewport; locks: MapLock[] }
+  | { type: "map.locations.result"; requestId: string; layerId: string; locations: MapViewport["locations"] }
   | { type: "map.edit.session"; requestId: string; session: MapEditSessionState }
   | { type: "map.history.state"; requestId: string; history: MapHistoryState }
   | { type: "map.chunks.invalidated"; chunkKeys: string[] }

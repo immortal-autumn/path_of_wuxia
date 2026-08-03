@@ -11,7 +11,15 @@ async function enterEditor(page: Page) {
   await page.goto("/map-editor");
   await expect(page.getByRole("heading", { name: "地图设计工具" })).toBeVisible();
   await expect(page.locator(".editor-header-actions")).toContainText("已连接");
-  await expect.poll(() => page.locator(".editor-location").count()).toBeGreaterThanOrEqual(4);
+  await expect.poll(() => page.locator(".editor-location").count()).toBeGreaterThanOrEqual(3);
+}
+
+async function selectEditorLayer(page: Page, name: string, label = "当前地图") {
+  const option = page.getByLabel(label).locator("option").filter({ hasText: name }).first();
+  const value = await option.getAttribute("value");
+  if (!value) throw new Error(`Map layer ${name} has no option value`);
+  await page.getByLabel(label).selectOption(value);
+  return value;
 }
 
 async function disableRandomUuid(page: Page) {
@@ -103,6 +111,53 @@ test.describe("game map", () => {
 });
 
 test.describe("map editor", () => {
+  test("creates, updates and deletes layers, then builds a typed cross-layer connection", async ({ page }) => {
+    await enterEditor(page);
+    const suffix = Date.now();
+    const emptyLayerName = `空测试层${suffix}`;
+    const targetLayerName = `跨层目标${suffix}`;
+    const newLayer = page.locator("details.layer-editor").filter({ hasText: "新增地图层" });
+    await newLayer.locator("summary").click();
+    await newLayer.getByLabel("新层名称").fill(emptyLayerName);
+    await newLayer.getByLabel("新层描述").fill("用于验证地图层生命周期。");
+    await newLayer.getByRole("button", { name: "新增地图层" }).click();
+    await expect(page.getByLabel("当前地图").locator("option:checked")).toContainText(emptyLayerName);
+
+    const currentLayer = page.locator("details.layer-editor").filter({ hasText: "编辑当前层" });
+    await currentLayer.getByLabel("地图层名称").fill(`${emptyLayerName}改`);
+    await currentLayer.getByRole("button", { name: "保存地图层" }).click();
+    await expect(page.getByLabel("当前地图").locator("option:checked")).toContainText(`${emptyLayerName}改`);
+    await currentLayer.getByRole("button", { name: "删除空地图层" }).click();
+    await expect(page.getByLabel("当前地图").locator("option:checked")).toContainText("八方世界");
+
+    await newLayer.getByLabel("新层名称").fill(targetLayerName);
+    await newLayer.getByLabel("新层描述").fill("跨层路线目标层。");
+    await newLayer.getByRole("button", { name: "新增地图层" }).click();
+    await expect(page.getByLabel("当前地图").locator("option:checked")).toContainText(targetLayerName);
+
+    const palette = page.locator(".palette-item").filter({ hasText: "小地点" });
+    const svg = page.locator(".editor-canvas svg");
+    const box = await svg.boundingBox();
+    if (!box) throw new Error("Editor canvas has no bounds");
+    await palette.dragTo(svg, { targetPosition: { x: box.width * 0.55, y: box.height * 0.45 } });
+    await expect(page.locator(".editor-location.selected")).toBeVisible();
+    const inspector = page.locator(".editor-inspector form");
+    await inspector.getByLabel("名称", { exact: true }).fill(`跨层测试点${suffix}`);
+    await inspector.getByRole("button", { name: "保存地点资料" }).click();
+    await expect(page.getByRole("status")).toContainText("自动保存");
+
+    await selectEditorLayer(page, "八方世界");
+    await page.locator(".editor-location").filter({ hasText: "楼门路" }).click();
+    await page.getByLabel("路线类型").selectOption("transition");
+    await selectEditorLayer(page, targetLayerName, "目标地图层");
+    await expect(page.getByLabel("连接目标").locator("option")).toHaveCount(2);
+    await page.getByLabel("连接目标").selectOption({ label: `跨层测试点${suffix}` });
+    await page.getByLabel("跨层方式").selectOption("road");
+    await page.getByRole("button", { name: "建立连接" }).click();
+    await expect(page.getByRole("status")).toContainText("自动保存");
+    await expect(page.locator(".route-list")).toContainText(`跨层测试点${suffix}`);
+  });
+
   test("drags a snapped location, auto-saves, undoes, redoes, and creates an eight-direction route", async ({ page }) => {
     await disableRandomUuid(page);
     await enterEditor(page);
