@@ -59,13 +59,14 @@ const generatedMs = performance.now() - startedAt;
 const queryStartedAt = performance.now();
 const sample = database.prepare(`
   SELECT id FROM locations
-  WHERE is_active=1 AND chunk_x BETWEEN ? AND ? AND chunk_y BETWEEN ? AND ?
+  WHERE layer_id='world-root' AND is_active=1 AND chunk_x BETWEEN ? AND ? AND chunk_y BETWEEN ? AND ?
   ORDER BY id LIMIT 1201
 `).all(16, 22, 16, 22);
 const queryMs = performance.now() - queryStartedAt;
 const plan = database.prepare(`
   EXPLAIN QUERY PLAN SELECT id FROM locations
-  WHERE is_active=1 AND chunk_x BETWEEN 16 AND 22 AND chunk_y BETWEEN 16 AND 22
+  WHERE layer_id='world-root' AND is_active=1
+    AND chunk_x BETWEEN 16 AND 22 AND chunk_y BETWEEN 16 AND 22
   LIMIT 1201
 `).all();
 
