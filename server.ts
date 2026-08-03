@@ -14,6 +14,7 @@ const service = getGameService();
 type SocketContext = {
   playerId: string;
   alive: boolean;
+  visibleLocationIds: Set<string>;
 };
 
 function readCookie(request: IncomingMessage, name: string) {
@@ -62,8 +63,21 @@ async function main() {
   };
 
   const broadcastPresence = () => {
-    broadcast({ type: "players.updated", players: service.getOnlinePlayers(onlinePlayerIds()) });
-    broadcast({ type: "world.updated", world: service.getWorldStatus(onlinePlayerIds().length) });
+    const playerIds = onlinePlayerIds();
+    const players = service.getOnlinePlayers(playerIds);
+    for (const [socket, context] of sockets) {
+      send(socket, {
+        type: "players.updated",
+        players: players.filter((player) => context.visibleLocationIds.has(player.currentLocation)),
+      });
+    }
+    broadcast({ type: "world.updated", world: service.getWorldStatus(playerIds.length) });
+  };
+
+  const sendSnapshot = (socket: WebSocket, context: SocketContext) => {
+    const snapshot = service.getSnapshot(context.playerId, onlinePlayerIds());
+    context.visibleLocationIds = new Set(snapshot.locations.map((location) => location.id));
+    send(socket, { type: "snapshot", snapshot });
   };
 
   wss.on("connection", (socket, request) => {
@@ -74,9 +88,10 @@ async function main() {
       return;
     }
 
-    sockets.set(socket, { playerId: player.id, alive: true });
+    const context: SocketContext = { playerId: player.id, alive: true, visibleLocationIds: new Set() };
+    sockets.set(socket, context);
     service.touchPlayers([player.id]);
-    send(socket, { type: "snapshot", snapshot: service.getSnapshot(player.id, onlinePlayerIds()) });
+    sendSnapshot(socket, context);
     broadcastPresence();
 
     socket.on("pong", () => {
@@ -105,10 +120,7 @@ async function main() {
       const command = parsed.data;
       try {
         if (command.type === "sync") {
-          send(socket, {
-            type: "snapshot",
-            snapshot: service.getSnapshot(context.playerId, onlinePlayerIds()),
-          });
+          sendSnapshot(socket, context);
           send(socket, { type: "ack", requestId: command.requestId });
           return;
         }
@@ -224,11 +236,8 @@ async function main() {
         send(socket, { type: "self.updated", player: mutation.self });
         broadcast({ type: "world.event", event: mutation.event });
         if (command.type === "move") {
-          send(socket, {
-            type: "snapshot",
-            snapshot: service.getSnapshot(context.playerId, onlinePlayerIds()),
-          });
-          broadcast({ type: "players.updated", players: service.getOnlinePlayers(onlinePlayerIds()) });
+          sendSnapshot(socket, context);
+          broadcastPresence();
         }
         send(socket, { type: "ack", requestId: command.requestId, message: mutation.message });
       } catch (error) {

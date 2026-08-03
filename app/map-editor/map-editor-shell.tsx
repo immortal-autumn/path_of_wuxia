@@ -90,6 +90,8 @@ export default function MapEditorShell({
   const [routeTargetLayerId, setRouteTargetLayerId] = useState(initialViewport.layer.id);
   const [routeTargets, setRouteTargets] = useState<Location[]>(initialViewport.locations);
   const [routeSearch, setRouteSearch] = useState("");
+  const [locationSearch, setLocationSearch] = useState("");
+  const [locationResults, setLocationResults] = useState<Location[]>([]);
   const [transitionKind, setTransitionKind] = useState<TransitionKind>("door");
   const socketRef = useRef<WebSocket | null>(null);
   const waitersRef = useRef(new Map<string, Waiter>());
@@ -112,6 +114,18 @@ export default function MapEditorShell({
   const selectedLocation = selectedLocationId ? locationMap.get(selectedLocationId) ?? null : null;
   const selectedRegion = selectedRegionId ? viewport.regions.find((item) => item.id === selectedRegionId) ?? null : null;
   const selectedLayer = viewport.layers.find((item) => item.id === layerId) ?? viewport.layer;
+  const canvasLocations = useMemo(() => viewport.locations.filter((location) => (
+    location.x >= viewX - 80 && location.x <= viewX + worldWidth + 80
+    && location.y >= viewY - 80 && location.y <= viewY + worldHeight + 80
+  )), [viewX, viewY, viewport.locations, worldHeight, worldWidth]);
+  const canvasLocationIds = useMemo(() => new Set(canvasLocations.map((location) => location.id)), [canvasLocations]);
+  const canvasRegions = useMemo(() => viewport.regions.filter((region) => (
+    region.x <= viewX + worldWidth && region.x + region.width >= viewX
+    && region.y <= viewY + worldHeight && region.y + region.height >= viewY
+  )), [viewX, viewY, viewport.regions, worldHeight, worldWidth]);
+  const canvasRoutes = useMemo(() => viewport.routes.filter((route) => (
+    canvasLocationIds.has(route.fromLocation) || canvasLocationIds.has(route.toLocation)
+  )), [canvasLocationIds, viewport.routes]);
 
   const send = useCallback((command: CommandWithoutId, expected: ServerMessage["type"] = "ack") => {
     const socket = socketRef.current;
@@ -140,6 +154,29 @@ export default function MapEditorShell({
       setNotice(error instanceof Error ? error.message : "地点搜索失败。");
     }
   }, [connected, send]);
+
+  const searchCurrentMap = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    try {
+      const message = await send({
+        type: "map.locations.search", layerId, query: locationSearch, limit: 200,
+      }, "map.locations.result");
+      if (message.type !== "map.locations.result") throw new Error("地点搜索响应不正确。");
+      setLocationResults(message.locations);
+      setNotice(message.locations.length > 0 ? `找到 ${message.locations.length} 个地点。` : "没有找到匹配地点。");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "地点搜索失败。");
+    }
+  };
+
+  const locateLocation = (locationId: string) => {
+    const location = locationResults.find((item) => item.id === locationId);
+    if (!location) return;
+    setCenterChunk({ x: location.chunkX, y: location.chunkY });
+    setSelectedLocationId(location.id);
+    setSelectedRegionId(null);
+    setNotice(`已定位至${location.name}。`);
+  };
 
   const requestViewport = useCallback(() => {
     const socket = socketRef.current;
@@ -557,6 +594,8 @@ export default function MapEditorShell({
             setRouteType("normal");
             setRouteTarget("");
             setRouteTargetLayerId(nextLayerId);
+            setLocationSearch("");
+            setLocationResults([]);
           }}>
             {viewport.layers.map((layer) => <option key={layer.id} value={layer.id}>{layerLabel(layer, viewport.layers)}</option>)}
           </select>
@@ -595,6 +634,23 @@ export default function MapEditorShell({
             <button>新增地图层</button>
           </form>
         </details>
+        <h2>快速定位</h2>
+        <form className="editor-location-search" onSubmit={searchCurrentMap}>
+          <label>地点名称
+            <span className="editor-inline-search">
+              <input aria-label="定位地点" value={locationSearch} onChange={(event) => setLocationSearch(event.target.value)} placeholder="输入完整或部分名称" />
+              <button>查找</button>
+            </span>
+          </label>
+          {locationResults.length > 0 && (
+            <label>定位结果
+              <select aria-label="定位结果" defaultValue="" onChange={(event) => locateLocation(event.target.value)}>
+                <option value="" disabled>选择地点</option>
+                {locationResults.map((location) => <option key={location.id} value={location.id}>{location.name}</option>)}
+              </select>
+            </label>
+          )}
+        </form>
         <h2>拖拽素材</h2>
         <div className="palette-item" draggable onDragStart={(event) => event.dataTransfer.setData("application/x-map-tool", "region")}>大区域</div>
         <div className="palette-item" draggable onDragStart={(event) => event.dataTransfer.setData("application/x-map-tool", "location")}>小地点</div>
@@ -619,7 +675,12 @@ export default function MapEditorShell({
         {viewport.truncated && <p className="editor-warning">地点过密，已限制为1200个。</p>}
       </aside>
 
-      <section className="editor-canvas bordered-box" aria-label="地图编辑画布">
+      <section
+        className="editor-canvas bordered-box"
+        aria-label="地图编辑画布"
+        data-loaded-locations={viewport.locations.length}
+        data-rendered-locations={canvasLocations.length}
+      >
         <header className="editor-canvas-status" aria-label="画布信息">
           <div>
             <span>当前地图</span>
@@ -632,7 +693,7 @@ export default function MapEditorShell({
                 ? `已选区域：${selectedRegion.name}`
                 : "选择地点或区域后，可在右侧编辑资料。"}
           </p>
-          <span>{viewport.loadedChunkCount} 区块 · {viewport.locations.length} 地点 · {Math.round(zoom * 100)}%</span>
+          <span>{viewport.loadedChunkCount} 区块 · 已载入 {viewport.locations.length} · 屏幕 {canvasLocations.length} · {Math.round(zoom * 100)}%</span>
         </header>
         <div className="editor-canvas-viewport">
           <svg
@@ -653,7 +714,7 @@ export default function MapEditorShell({
               </text>
             </g>
           ))}
-          {viewport.regions.map((region) => (
+          {canvasRegions.map((region) => (
             <g
               className={`editor-region ${selectedRegionId === region.id ? "selected" : ""}`}
               key={region.id}
@@ -685,7 +746,7 @@ export default function MapEditorShell({
               />
             </g>
           ))}
-          {viewport.routes.map((route) => {
+          {canvasRoutes.map((route) => {
             const from = locationMap.get(route.fromLocation);
             const to = locationMap.get(route.toLocation);
             if (!from || !to) return null;
@@ -695,7 +756,7 @@ export default function MapEditorShell({
               </line>
             );
           })}
-            {viewport.locations.map((location) => (
+            {canvasLocations.map((location) => (
               <g
                 className={`editor-location ${selectedLocationId === location.id ? "selected" : ""}`}
                 key={location.id}

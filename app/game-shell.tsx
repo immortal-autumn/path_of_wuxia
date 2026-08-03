@@ -129,58 +129,56 @@ function MapPanel({
 }) {
   const [inspectedLocationId, setInspectedLocationId] = useState<string | null>(null);
   const locationMap = useMemo(() => new Map(locations.map((location) => [location.id, location])), [locations]);
+  const routeGraph = useMemo(() => {
+    const graph = new Map<string, Array<{
+      route: (typeof routes)[number];
+      neighborId: string;
+      direction: (typeof routes)[number]["fromDirection"];
+    }>>();
+    for (const route of routes) {
+      const fromEdges = graph.get(route.fromLocation) ?? [];
+      fromEdges.push({ route, neighborId: route.toLocation, direction: route.fromDirection });
+      graph.set(route.fromLocation, fromEdges);
+      const toEdges = graph.get(route.toLocation) ?? [];
+      toEdges.push({ route, neighborId: route.fromLocation, direction: route.toDirection });
+      graph.set(route.toLocation, toEdges);
+    }
+    return graph;
+  }, [routes]);
   const distances = useMemo(() => {
     const result = new Map<string, number>([[self.currentLocation, 0]]);
     const queue = [self.currentLocation];
 
-    while (queue.length > 0) {
-      const locationId = queue.shift();
-      if (!locationId) continue;
+    for (let cursor = 0; cursor < queue.length; cursor += 1) {
+      const locationId = queue[cursor];
       const distance = result.get(locationId) ?? 0;
       if (distance >= 3) continue;
 
-      for (const route of routes) {
-        const neighbor =
-          route.fromLocation === locationId
-            ? route.toLocation
-            : route.toLocation === locationId
-              ? route.fromLocation
-              : null;
-        if (neighbor && !result.has(neighbor)) {
-          result.set(neighbor, distance + 1);
-          queue.push(neighbor);
+      for (const edge of routeGraph.get(locationId) ?? []) {
+        if (!result.has(edge.neighborId)) {
+          result.set(edge.neighborId, distance + 1);
+          queue.push(edge.neighborId);
         }
       }
     }
 
     return result;
-  }, [routes, self.currentLocation]);
-  const adjacent = useMemo(() => {
-    const result = new Set<string>();
-    for (const route of routes) {
-      if (route.fromLocation === self.currentLocation) result.add(route.toLocation);
-      if (route.toLocation === self.currentLocation) result.add(route.fromLocation);
-    }
-    return result;
-  }, [routes, self.currentLocation]);
-  const moveOptions = useMemo(() => routes.flatMap((route) => {
-    const startsHere = route.fromLocation === self.currentLocation;
-    const endsHere = route.toLocation === self.currentLocation;
-    if (!startsHere && !endsHere) return [];
-
-    const location = locationMap.get(startsHere ? route.toLocation : route.fromLocation);
+  }, [routeGraph, self.currentLocation]);
+  const currentEdges = useMemo(() => routeGraph.get(self.currentLocation) ?? [], [routeGraph, self.currentLocation]);
+  const adjacent = useMemo(() => new Set(currentEdges.map((edge) => edge.neighborId)), [currentEdges]);
+  const moveOptions = useMemo(() => currentEdges.flatMap((edge) => {
+    const location = locationMap.get(edge.neighborId);
     if (!location) return [];
-    const direction = startsHere ? route.fromDirection : route.toDirection;
     return [{
-      routeId: route.id,
+      routeId: edge.route.id,
       location,
-      directionLabel: route.routeType === "portal"
+      directionLabel: edge.route.routeType === "portal"
         ? "传送门"
-        : direction
-          ? DIRECTION_LABEL[direction]
+        : edge.direction
+          ? DIRECTION_LABEL[edge.direction]
           : "路线",
     }];
-  }), [locationMap, routes, self.currentLocation]);
+  }), [currentEdges, locationMap]);
   const visibleLocations = useMemo(
     () => locations.filter((location) => distances.has(location.id)),
     [distances, locations],

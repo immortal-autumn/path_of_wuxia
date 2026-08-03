@@ -206,6 +206,11 @@ test.describe("game map", () => {
 test.describe("map editor", () => {
   test("keeps editor node text concise and reflows the workspace without page-level overflow", async ({ page }) => {
     await enterEditor(page);
+    const editorCanvas = page.getByLabel("地图编辑画布");
+    const loadedLocations = Number(await editorCanvas.getAttribute("data-loaded-locations"));
+    const renderedLocations = Number(await editorCanvas.getAttribute("data-rendered-locations"));
+    expect(renderedLocations).toBeGreaterThan(0);
+    expect(renderedLocations).toBeLessThan(loadedLocations);
     const locationCount = await page.locator(".editor-location").count();
     await expect(page.locator(".editor-location-name")).toHaveCount(locationCount);
     await expect(page.locator(".editor-location text, .editor-location-grid")).toHaveCount(0);
@@ -221,6 +226,14 @@ test.describe("map editor", () => {
     await page.locator(".editor-location").filter({ hasText: "楼门路" }).click();
     await expect(page.getByLabel("画布信息")).toContainText("已选地点：楼门路 · 网格");
     await expect(page.locator(".editor-selection-summary")).toContainText("楼门路");
+    await expect(page.getByRole("button", { name: "完成编辑" })).toBeDisabled();
+
+    await page.getByLabel("定位地点").fill("初始台地");
+    await page.getByRole("button", { name: "查找" }).click();
+    await page.getByLabel("定位结果").selectOption({ label: "帕洛斯传送点·初始台地" });
+    await expect(page.getByRole("status")).toContainText("已定位至帕洛斯传送点·初始台地");
+    await expect(page.getByLabel("画布信息")).toContainText("已选地点：帕洛斯传送点·初始台地");
+    await expect(page.locator(".editor-location-name").filter({ hasText: "初始台地" })).toBeVisible();
     await expect(page.getByRole("button", { name: "完成编辑" })).toBeDisabled();
 
     await page.setViewportSize({ width: 768, height: 900 });

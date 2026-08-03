@@ -156,6 +156,20 @@ describe("GameService", () => {
     expect(stored.token_hash).not.toBe(identity.token);
   });
 
+  it("keeps the global online count while scoping position payloads to three steps", () => {
+    const viewer = service.createSession().player;
+    const nearby = service.createSession().player;
+    const distant = service.createSession().player;
+    db.prepare("UPDATE players SET current_location='home-hall' WHERE id=?").run(nearby.id);
+    db.prepare("UPDATE players SET current_location='palos-dungeon-5123' WHERE id=?").run(distant.id);
+
+    const snapshot = service.getSnapshot(viewer.id, [viewer.id, nearby.id, distant.id]);
+
+    expect(snapshot.world.onlineCount).toBe(3);
+    expect(snapshot.onlinePlayers.map((player) => player.id).sort()).toEqual([nearby.id, viewer.id].sort());
+    expect(snapshot.onlinePlayers.some((player) => player.id === distant.id)).toBe(false);
+  });
+
   it("allocates 2,000 unique identities", () => {
     const names = new Set<string>();
     for (let index = 0; index < 2_000; index += 1) names.add(service.createSession().player.name);

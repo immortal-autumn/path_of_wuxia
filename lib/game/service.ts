@@ -482,9 +482,11 @@ export class GameService {
     const self = this.getPlayer(playerId);
     const current = this.getLocation(self.currentLocation);
     const neighborhood = this.getNeighborhood(self.currentLocation);
-    const onlinePlayers = this.getOnlinePlayers(onlinePlayerIds);
+    const allOnlinePlayers = this.getOnlinePlayers(onlinePlayerIds);
+    const visibleLocationIds = new Set(neighborhood.locations.map((location) => location.id));
+    const onlinePlayers = allOnlinePlayers.filter((player) => visibleLocationIds.has(player.currentLocation));
     return {
-      self, world: this.getWorldStatus(onlinePlayers.length), currentLayer: this.getLayer(current.layerId),
+      self, world: this.getWorldStatus(allOnlinePlayers.length), currentLayer: this.getLayer(current.layerId),
       regions: neighborhood.regions, locations: neighborhood.locations, routes: neighborhood.routes,
       transitions: this.getTransitions(self.currentLocation), actions: this.getActions([self.currentLocation]),
       onlinePlayers, recentEvents: this.getRecentEvents(), chatMessages: this.getRecentChat(),
