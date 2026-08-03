@@ -1,57 +1,11 @@
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { CHUNK_SIZE, GRID_SIZE } from "./map";
 import { applyWorldSeed } from "./world-seed";
 
 export type GameDatabase = DatabaseSync;
 
 export const MAP_SCHEMA_VERSION = 4;
-
-const LAYERS = [
-  ["world-root", "八方世界", "嬴长嫚与楼夜秋之家、大宋与帕洛斯之间的世界总览。", null],
-  ["home-ground", "住宅一层", "嬴长嫚与楼夜秋之家的主要起居层。", "world-root"],
-  ["song-overview", "北宋舆图", "约1110年北宋全盛期的总览。", "world-root"],
-  ["palos-overview", "帕洛斯群岛", "帕洛斯群岛及公开扩展岛区的总览。", "world-root"],
-] as const;
-
-const REGIONS = [
-  ["home", "home-ground", "嬴长嫚与楼夜秋之家", "两人共同生活的现代多层住宅。", 320, 0, 320, 420],
-  ["song", "world-root", "大宋", "楼门路左侧尽头通往的大区域。", 80, 240, 320, 240],
-  ["palos", "world-root", "帕洛斯", "楼门路右侧通往的大区域。", 560, 240, 320, 240],
-] as const;
-
-const LOCATIONS = [
-  ["home-entrance", "home-ground", "玄关", "home", "嬴长嫚与楼夜秋之家的内外分界。", 3, 1],
-  ["loumen-road", "world-root", "楼门路", null, "屋外横贯东西的街道，左通大宋，右往帕洛斯。", 3, 2],
-  ["song-gate", "world-root", "大宋入口", "song", "由楼门路进入大宋的入口。", 2, 2],
-  ["palos-gate", "world-root", "帕洛斯入口", "palos", "由楼门路进入帕洛斯的入口。", 4, 2],
-  ["song-overview-entry", "song-overview", "北宋舆图入口", null, "从大宋入口进入北宋全盛期舆图。", 0, 0],
-  ["palos-overview-entry", "palos-overview", "帕洛斯群岛入口", null, "从帕洛斯入口进入群岛总览。", 0, 0],
-] as const;
-
-const ROUTES = [
-  ["route-entrance-road", "home-entrance", "loumen-road", "transition", null, null, "door"],
-  ["route-road-song", "loumen-road", "song-gate", "normal", "left", "right", null],
-  ["route-road-palos", "loumen-road", "palos-gate", "normal", "right", "left", null],
-  ["route-enter-song", "song-gate", "song-overview-entry", "transition", null, null, "gate"],
-  ["route-enter-palos", "palos-gate", "palos-overview-entry", "transition", null, null, "gate"],
-] as const;
-
-const ACTIONS = [
-  ["observe-entrance", "home-entrance", "整理衣装", "在玄关整理衣装，准备出门。", 0, 0, "{name}在玄关整理好衣装。"],
-  ["observe-road", "loumen-road", "观察街道", "看看楼门路上来往的人群。", 0, 0, "{name}站在楼门路上观察四周。"],
-  ["observe-song", "song-gate", "眺望大宋", "从入口眺望大宋方向。", 0, 0, "{name}在入口处眺望大宋。"],
-  ["observe-palos", "palos-gate", "眺望帕洛斯", "从入口眺望帕洛斯方向。", 0, 0, "{name}在入口处眺望帕洛斯。"],
-] as const;
-
-export function gridToWorld(grid: number) {
-  return grid * GRID_SIZE;
-}
-
-export function worldToChunk(world: number) {
-  return Math.floor(world / CHUNK_SIZE);
-}
 
 export function openGameDatabase(databasePath = process.env.DATABASE_PATH ?? resolve("data/wuxia.db")) {
   if (databasePath !== ":memory:") mkdirSync(dirname(databasePath), { recursive: true });
@@ -192,8 +146,6 @@ function migrate(db: GameDatabase) {
 
   const previousVersion = (db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number | null } | undefined)?.version ?? 0;
   const now = new Date().toISOString();
-  const layerInsert = db.prepare(`INSERT OR IGNORE INTO map_layers(id,name,description,parent_layer_id,created_at,updated_at) VALUES (?,?,?,?,?,?)`);
-  for (const layer of LAYERS) layerInsert.run(...layer, now, now);
 
   // SQLite rejects ALTER TABLE ADD COLUMN when a populated table combines a
   // non-null default with REFERENCES. The application validates these layer IDs
@@ -267,52 +219,9 @@ function seed(db: GameDatabase) {
     const now = new Date().toISOString();
     db.prepare(`
       INSERT INTO world_state(id,era,seed,announcement,updated_at)
-      VALUES (1,'北宋大观四年与帕洛斯世界','path-of-wuxia-world-v2','玄关之外，楼门路向左通往北宋，向右通往帕洛斯。',?)
+      VALUES (1,'北宋大观四年与帕洛斯世界','path-of-wuxia-world-v3','玄关之外是一张连续大地图：楼门路向左通往北宋，向右通往帕洛斯。',?)
       ON CONFLICT(id) DO UPDATE SET era=excluded.era,seed=excluded.seed,announcement=excluded.announcement,updated_at=excluded.updated_at
     `).run(now);
-
-    const layerStatement = db.prepare(`INSERT OR IGNORE INTO map_layers(id,name,description,parent_layer_id,seed_revision,created_at,updated_at) VALUES (?,?,?,?,1,?,?)`);
-    for (const layer of LAYERS) layerStatement.run(...layer, now, now);
-
-    const regionStatement = db.prepare(`
-      INSERT OR IGNORE INTO map_regions(id,layer_id,name,description,x,y,width,height,version,is_active,seed_revision,created_at,updated_at)
-      VALUES (?,?,?,?,?,?,?,?,1,1,1,?,?)
-    `);
-    for (const region of REGIONS) regionStatement.run(...region, now, now);
-
-    const locationStatement = db.prepare(`
-      INSERT OR IGNORE INTO locations(
-        id,layer_id,name,region,description,x,y,region_id,grid_x,grid_y,chunk_x,chunk_y,version,is_active,seed_revision
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,1,1)
-    `);
-    for (const [id, layerId, name, regionId, description, gridX, gridY] of LOCATIONS) {
-      const x = gridToWorld(gridX);
-      const y = gridToWorld(gridY);
-      const regionName = regionId ? REGIONS.find((region) => region[0] === regionId)?.[2] ?? regionId : "公共区域";
-      locationStatement.run(id, layerId, name, regionName, description, x, y, regionId, gridX, gridY, worldToChunk(x), worldToChunk(y));
-    }
-
-    const routeStatement = db.prepare(`
-      INSERT OR IGNORE INTO routes(
-        from_location,to_location,stamina_cost,id,route_type,from_direction,to_direction,transition_kind,version,is_active,seed_revision
-      ) VALUES (?,?,0,?,?,?,?,?,1,1,1)
-    `);
-    const slotStatement = db.prepare(`INSERT OR IGNORE INTO location_direction_slots(location_id,direction,route_id,target_location) VALUES (?,?,?,?)`);
-    for (const [id, from, to, routeType, fromDirection, toDirection, kind] of ROUTES) {
-      routeStatement.run(from, to, id, routeType, fromDirection, toDirection, kind);
-      if (routeType === "normal" && fromDirection && toDirection) {
-        slotStatement.run(from, fromDirection, id, to);
-        slotStatement.run(to, toDirection, id, from);
-      }
-    }
-
-    const actionStatement = db.prepare(`
-      INSERT INTO action_definitions(id,location_id,name,description,stamina_delta,silver_delta,cultivation_delta,hp_delta,result_template)
-      VALUES (?,?,?,?,0,?,0,?,?)
-      ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description,
-        stamina_delta=0,silver_delta=excluded.silver_delta,cultivation_delta=0,hp_delta=excluded.hp_delta,result_template=excluded.result_template
-    `);
-    for (const action of ACTIONS) actionStatement.run(...action);
 
     applyWorldSeed(db);
 

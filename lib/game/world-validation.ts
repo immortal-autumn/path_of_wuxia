@@ -16,6 +16,7 @@ export type MapValidationReport = {
     songLocations: number;
     palosLocations: number;
     homeLocations: number;
+    overworldLocations: number;
     reachableLocations: number;
   };
 };
@@ -54,6 +55,19 @@ export function validateWorldMap(db: DatabaseSync): MapValidationReport {
       path.add(cursor);
       cursor = parents.get(cursor) ?? null;
     }
+  }
+  const canonicalLayers = new Set(["world-root", "home-ground", "home-upper", "home-basement", "home-yard", "home-roof"]);
+  const obsoleteSeedLayers = db.prepare("SELECT id FROM map_layers WHERE is_active=1 AND seed_revision>0").all() as Array<{ id: string }>;
+  for (const layer of obsoleteSeedLayers) {
+    if (!canonicalLayers.has(layer.id)) errors.push(`种子地图层 ${layer.id} 不应在连续大地图中保持活动。`);
+  }
+  const publicLocationsOutsideOverworld = db.prepare(`
+    SELECT l.id,l.layer_id FROM locations l JOIN location_sources s ON s.location_id=l.id
+    WHERE l.is_active=1 AND s.source_id IN ('source-song-wikipedia','source-palworld-map') AND l.layer_id<>'world-root'
+    ORDER BY l.id
+  `).all() as Array<{ id: string; layer_id: string }>;
+  if (publicLocationsOutsideOverworld.length > 0) {
+    errors.push(`${publicLocationsOutsideOverworld.length} 个大宋或帕洛斯地点没有位于连续大地图：${publicLocationsOutsideOverworld.slice(0, 8).map((item) => item.id).join("、")}。`);
   }
 
   const routes = db.prepare(`
@@ -155,6 +169,7 @@ export function validateWorldMap(db: DatabaseSync): MapValidationReport {
     songLocations: scalar("SELECT COUNT(DISTINCT location_id) AS count FROM location_sources WHERE source_id='source-song-wikipedia'"),
     palosLocations: scalar("SELECT COUNT(DISTINCT location_id) AS count FROM location_sources WHERE source_id='source-palworld-map'"),
     homeLocations: scalar("SELECT COUNT(DISTINCT location_id) AS count FROM location_sources WHERE source_id='source-home-design'"),
+    overworldLocations: scalar("SELECT COUNT(*) AS count FROM locations WHERE is_active=1 AND layer_id='world-root'"),
     reachableLocations: reachable.size,
   };
   if (counts.songLocations < 250) errors.push(`北宋来源地点只有 ${counts.songLocations} 个，至少需要250个。`);

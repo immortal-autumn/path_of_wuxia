@@ -31,11 +31,14 @@ describe("GameService", () => {
   afterEach(() => db.close());
 
   it("seeds a source-tracked 500+ location world and preserves all ordinary direction slots", () => {
-    expect(service.getLayers().map((layer) => layer.id)).toEqual(expect.arrayContaining([
-      "world-root", "home-ground", "home-basement", "song-overview", "palos-overview", "palos-dungeons",
-    ]));
+    expect(service.getLayers().map((layer) => layer.id).sort()).toEqual([
+      "home-basement", "home-ground", "home-roof", "home-upper", "home-yard", "world-root",
+    ]);
     expect(service.getLocation("home-entrance")).toMatchObject({ layerId: "home-ground", name: "玄关" });
+    expect(service.getLocation("home-exterior")).toMatchObject({ layerId: "world-root", name: "嬴长嫚与楼夜秋之家·入口" });
     expect(service.getLocation("loumen-road")).toMatchObject({ layerId: "world-root", name: "楼门路" });
+    expect(service.getLocation("song-jingji-1-seat")).toMatchObject({ layerId: "world-root", regionId: "song" });
+    expect(service.getLocation("palos-fasttravel-1001")).toMatchObject({ layerId: "world-root", regionId: "palos" });
     expect(service.getLocation("home-training-room")).toMatchObject({ layerId: "home-basement" });
     const validation = validateWorldMap(db);
     expect(validation.errors).toEqual([]);
@@ -43,8 +46,11 @@ describe("GameService", () => {
     expect(validation.counts.songLocations).toBeGreaterThanOrEqual(250);
     expect(validation.counts.locations).toBeGreaterThanOrEqual(500);
     expect(validation.counts.reachableLocations).toBe(validation.counts.locations);
+    expect(validation.counts.overworldLocations).toBeGreaterThanOrEqual(890);
     expect((db.prepare("SELECT COUNT(*) AS count FROM location_direction_slots").get() as { count: number }).count).toBeGreaterThan(500);
-    expect(service.getTransitions("home-entrance")[0]).toMatchObject({ destinationName: "楼门路", transitionKind: "door" });
+    expect((db.prepare("SELECT COUNT(*) AS count FROM routes r JOIN locations f ON f.id=r.from_location JOIN locations t ON t.id=r.to_location WHERE r.is_active=1 AND r.route_type<>'normal' AND f.layer_id='world-root' AND t.layer_id='world-root'").get() as { count: number }).count).toBe(0);
+    expect(validation.counts.layers).toBe(6);
+    expect(service.getTransitions("home-entrance")[0]).toMatchObject({ destinationName: "嬴长嫚与楼夜秋之家·入口", transitionKind: "door" });
   });
 
   it("reapplies the bundled world seed idempotently", () => {
@@ -54,6 +60,23 @@ describe("GameService", () => {
     expect(first).toEqual(second);
     expect(db.prepare("SELECT COUNT(*) AS locations FROM locations").get()).toEqual(before);
     expect(validateWorldMap(db).ok).toBe(true);
+  });
+
+  it("upgrades the former public-map hierarchy into one continuous overworld", () => {
+    db.prepare(`INSERT INTO map_layers(id,name,description,parent_layer_id,version,is_active,seed_revision,created_at,updated_at)
+      VALUES ('song-legacy-layer','旧大宋层','旧层级。','world-root',1,1,2,?,?)`).run(clock.toISOString(), clock.toISOString());
+    db.prepare("UPDATE locations SET layer_id='song-legacy-layer',grid_x=0,grid_y=0,x=0,y=0,chunk_x=0,chunk_y=0,seed_revision=2 WHERE id='song-jingji-1-seat'").run();
+    db.prepare("UPDATE map_layers SET seed_revision=2 WHERE seed_revision>0").run();
+    db.prepare("UPDATE map_regions SET seed_revision=2 WHERE seed_revision>0").run();
+    db.prepare("UPDATE locations SET seed_revision=2 WHERE seed_revision>0").run();
+    db.prepare("UPDATE routes SET seed_revision=2 WHERE seed_revision>0").run();
+
+    importWorldSeed(db);
+
+    expect(db.prepare("SELECT is_active FROM map_layers WHERE id='song-legacy-layer'").get()).toEqual({ is_active: 0 });
+    expect(service.getLocation("song-jingji-1-seat")).toMatchObject({ layerId: "world-root", regionId: "song" });
+    expect(service.getLayers()).toHaveLength(6);
+    expect(validateWorldMap(db).errors).toEqual([]);
   });
 
   it("preserves active locations and routes while upgrading a version-3 database", () => {
@@ -69,7 +92,7 @@ describe("GameService", () => {
       const upgraded = openGameDatabase(databasePath);
       expect(upgraded.prepare("SELECT COUNT(*) AS count FROM locations WHERE is_active=1").get()).toEqual(expectedLocations);
       expect(upgraded.prepare("SELECT COUNT(*) AS count FROM routes WHERE is_active=1").get()).toEqual(expectedRoutes);
-      expect(upgraded.prepare("SELECT route_type FROM routes WHERE id='route-entrance-road'").get()).toEqual({ route_type: "transition" });
+      expect(upgraded.prepare("SELECT route_type FROM routes WHERE id='route-home-door-v3'").get()).toEqual({ route_type: "transition" });
       upgraded.close();
     } finally {
       rmSync(directory, { recursive: true, force: true });
@@ -150,6 +173,7 @@ describe("GameService", () => {
   it("moves without consuming endurance and performs actions without cultivation rewards", () => {
     const player = service.createSession().player;
     const endurance = player.endurance;
+    service.move(player.id, "home-exterior");
     const moved = service.move(player.id, "loumen-road");
     expect(moved.self).toMatchObject({ currentLocation: "loumen-road", endurance });
     const acted = service.act(player.id, "observe-road");
@@ -198,7 +222,7 @@ describe("GameService", () => {
 
   it("edits layer-scoped locations, enforces direction slots, and allows transitions", () => {
     const player = service.createSession().player;
-    const session = service.acquireMapLocks(player.id, ["layer:world-root:chunk:0:0", "layer:song-overview:chunk:0:0"]);
+    const session = service.acquireMapLocks(player.id, ["layer:world-root:chunk:0:0", "region:home"]);
     service.applyMapOperation(player.id, session.id, {
       type: "location.create",
       location: { id: "test-neighbor", layerId: "world-root", name: "测试邻居", description: "相邻格。", regionId: null, gridX: 3, gridY: 3 },
@@ -207,19 +231,19 @@ describe("GameService", () => {
       type: "route.create", fromLocation: "loumen-road", toLocation: "test-neighbor", routeType: "normal",
     });
     expect(() => service.applyMapOperation(player.id, session.id, {
-      type: "route.create", fromLocation: "song-overview-entry", toLocation: "test-neighbor", routeType: "normal",
+      type: "route.create", fromLocation: "home-entrance", toLocation: "test-neighbor", routeType: "normal",
     })).toThrow("同一地图层");
     service.applyMapOperation(player.id, session.id, {
-      type: "route.create", fromLocation: "song-overview-entry", toLocation: "test-neighbor", routeType: "transition", transitionKind: "gate",
+      type: "route.create", fromLocation: "home-entrance", toLocation: "test-neighbor", routeType: "transition", transitionKind: "gate",
     });
-    expect(service.getRoutes().some((route) => route.transitionKind === "gate" && route.fromLocation === "song-overview-entry")).toBe(true);
+    expect(service.getRoutes().some((route) => route.transitionKind === "gate" && route.fromLocation === "home-entrance" && route.toLocation === "test-neighbor")).toBe(true);
   });
 
   it("searches bounded cross-layer targets and safely manages the layer hierarchy", () => {
-    expect(service.searchMapLocations("palos-travel", "初始台地", 10)).toMatchObject([
-      { id: "palos-fasttravel-1001", layerId: "palos-travel" },
+    expect(service.searchMapLocations("world-root", "初始台地", 10)).toMatchObject([
+      { id: "palos-fasttravel-1001", layerId: "world-root" },
     ]);
-    expect(service.searchMapLocations("palos-dungeons", "", 500)).toHaveLength(124);
+    expect(service.searchMapLocations("world-root", "洞窟入口", 500)).toHaveLength(123);
 
     const player = service.createSession().player;
     const session = service.acquireMapLocks(player.id, ["layer:world-root"]);
@@ -248,7 +272,7 @@ describe("GameService", () => {
     expect(() => service.acquireMapLocks(second.id, ["layer:world-root:chunk:0:0"])).toThrow("正由其他玩家编辑");
     service.applyMapOperation(first.id, session.id, {
       type: "location.create",
-      location: { id: "undo-place", layerId: "world-root", name: "可撤销地点", description: "撤销测试。", regionId: null, gridX: 5, gridY: 3 },
+      location: { id: "undo-place", layerId: "world-root", name: "可撤销地点", description: "撤销测试。", regionId: null, gridX: 3, gridY: 3 },
     });
     expect(service.undoMapOperation(first.id, session.id).history.canRedo).toBe(true);
     expect(() => service.getLocation("undo-place")).toThrow("已停用");
@@ -264,11 +288,11 @@ describe("GameService", () => {
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,1)
     `);
     for (let index = 0; index < 1_250; index += 1) {
-      const gridX = 10 + (index % 40);
-      const gridY = 10 + Math.floor(index / 40);
+      const gridX = 100 + (index % 40);
+      const gridY = 100 + Math.floor(index / 40);
       insert.run(`bulk-${index}`, "world-root", `批量地点${index}`, "公共区域", "压力测试。", gridX * 160, gridY * 160, null, gridX, gridY, Math.floor((gridX * 160) / 1000), Math.floor((gridY * 160) / 1000));
     }
-    const viewport = service.getMapViewport("world-root", 4, 4, 3, 1);
+    const viewport = service.getMapViewport("world-root", 19, 18, 3, 1);
     expect(viewport.locations.length).toBeLessThanOrEqual(1_200);
     expect(viewport.loadedChunkCount).toBeLessThanOrEqual(49);
   });

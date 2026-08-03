@@ -25,6 +25,14 @@ export function applyWorldSeed(db: DatabaseSync): WorldSeedReport {
     sourceInsert.run(source.id, source.title, source.url, source.contentVersion, source.retrievedAt, source.notes);
   }
 
+  const deactivateMissing = (table: "map_layers" | "map_regions" | "locations", desiredIds: Set<string>) => {
+    const rows = db.prepare(`SELECT id FROM ${table} WHERE seed_revision>0 AND seed_revision<?`).all(WORLD_SEED_REVISION) as Array<{ id: string }>;
+    const deactivate = db.prepare(`UPDATE ${table} SET is_active=0 WHERE id=?`);
+    for (const row of rows) if (!desiredIds.has(row.id)) deactivate.run(row.id);
+  };
+
+  deactivateMissing("map_layers", new Set(seed.layers.map((layer) => layer.id)));
+
   const layerInsert = db.prepare(`
     INSERT INTO map_layers(id,name,description,parent_layer_id,version,is_active,seed_revision,created_at,updated_at)
     VALUES (?,?,?,?,1,1,?,?,?)
@@ -35,6 +43,8 @@ export function applyWorldSeed(db: DatabaseSync): WorldSeedReport {
   for (const layer of seed.layers) {
     layerInsert.run(layer.id, layer.name, layer.description, layer.parentLayerId, WORLD_SEED_REVISION, now, now);
   }
+
+  deactivateMissing("map_regions", new Set(seed.regions.map((region) => region.id)));
 
   const regionInsert = db.prepare(`
     INSERT INTO map_regions(id,layer_id,name,description,x,y,width,height,version,is_active,seed_revision,created_at,updated_at)
@@ -50,6 +60,8 @@ export function applyWorldSeed(db: DatabaseSync): WorldSeedReport {
       region.width, region.height, WORLD_SEED_REVISION, now, now,
     );
   }
+
+  deactivateMissing("locations", new Set(seed.locations.map((location) => location.id)));
 
   const regionNames = new Map((db.prepare("SELECT id,name FROM map_regions").all() as Array<{ id: string; name: string }>).map((row) => [row.id, row.name]));
   const locationInsert = db.prepare(`
@@ -87,6 +99,14 @@ export function applyWorldSeed(db: DatabaseSync): WorldSeedReport {
     INSERT INTO location_direction_slots(location_id,direction,route_id,target_location) VALUES (?,?,?,?)
     ON CONFLICT(location_id,direction) DO UPDATE SET route_id=excluded.route_id,target_location=excluded.target_location
   `);
+  const desiredRouteIds = new Set(seed.routes.map((route) => route.id));
+  const previousSeedRoutes = db.prepare("SELECT rowid,id FROM routes WHERE seed_revision>0 AND seed_revision<?").all(WORLD_SEED_REVISION) as Array<{ rowid: number; id: string | null }>;
+  const clearSlots = db.prepare("DELETE FROM location_direction_slots WHERE route_id=?");
+  const deactivateRoute = db.prepare("UPDATE routes SET is_active=0 WHERE rowid=?");
+  for (const route of previousSeedRoutes) {
+    if (route.id) clearSlots.run(route.id);
+    if (!route.id || !desiredRouteIds.has(route.id)) deactivateRoute.run(route.rowid);
+  }
   for (const route of seed.routes) {
     routeInsert.run(
       route.fromLocation, route.toLocation, route.id, route.routeType, route.transitionKind,
@@ -130,7 +150,7 @@ export function applyWorldSeed(db: DatabaseSync): WorldSeedReport {
     sources: seed.sources.length,
     layers: seed.layers.length,
     regions: seed.regions.length,
-    locations: seed.locations.length + seed.baseLocationSources.length,
+    locations: seed.locations.length,
     routes: seed.routes.length,
     actions: seed.actions.length,
   };

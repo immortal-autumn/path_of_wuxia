@@ -1,7 +1,7 @@
 import { directionBetween, OPPOSITE_DIRECTION } from "./map";
 import type { Direction, RouteType, TransitionKind } from "./types";
 
-export const WORLD_SEED_REVISION = 2;
+export const WORLD_SEED_REVISION = 3;
 export const WORLD_SEED_RETRIEVED_AT = "2026-08-03";
 
 export type WorldSeedSource = {
@@ -134,6 +134,24 @@ function serpentine(index: number, width: number) {
   return { gridX: row % 2 === 0 ? column : width - 1 - column, gridY: row };
 }
 
+function westwardSerpentine(index: number, width: number, startX: number, startY: number) {
+  const row = Math.floor(index / width);
+  const column = index % width;
+  return {
+    gridX: row % 2 === 0 ? startX - column : startX - (width - 1 - column),
+    gridY: startY + row,
+  };
+}
+
+function eastwardSerpentine(index: number, width: number, startX: number, startY: number) {
+  const row = Math.floor(index / width);
+  const column = index % width;
+  return {
+    gridX: row % 2 === 0 ? startX + column : startX + (width - 1 - column),
+    gridY: startY + row,
+  };
+}
+
 function slug(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
@@ -167,31 +185,27 @@ export function buildWorldSeed(): WorldSeedData {
   ];
 
   const layers: WorldSeedLayer[] = [
+    { id: "world-root", name: "八方世界", description: "楼门路、大宋与帕洛斯相连的连续大地图。", parentLayerId: null },
+    { id: "home-ground", name: "住宅一层", description: "嬴长嫚与楼夜秋之家的主要起居层。", parentLayerId: "world-root" },
     { id: "home-upper", name: "住宅二层", description: "卧室、书房和客房所在楼层。", parentLayerId: "home-ground" },
     { id: "home-basement", name: "住宅地下层", description: "修炼、健身、工坊和储藏空间。", parentLayerId: "home-ground" },
     { id: "home-yard", name: "住宅庭院", description: "住宅外围的前后花园和附属空间。", parentLayerId: "home-ground" },
     { id: "home-roof", name: "住宅屋顶", description: "屋顶露台、花园与设备区。", parentLayerId: "home-ground" },
   ];
-  const regions: WorldSeedRegion[] = [];
+  const regions: WorldSeedRegion[] = [
+    { id: "home", layerId: "home-ground", name: "嬴长嫚与楼夜秋之家·室内", description: "两人共同生活的现代多层住宅。", x: 400, y: 80, width: 640, height: 400 },
+    { id: "world-home", layerId: "world-root", name: "嬴长嫚与楼夜秋之家", description: "楼门路旁住宅的外部入口。", x: 400, y: 80, width: 160, height: 160 },
+  ];
   const locations: WorldSeedLocation[] = [];
   const routes: WorldSeedRoute[] = [];
-  const actions: WorldSeedAction[] = [];
-  const baseLocationSources: WorldSeedData["baseLocationSources"] = [
-    { locationId: "home-entrance", sourceId: "source-home-design", sourceKey: "home/ground/entrance" },
-    { locationId: "loumen-road", sourceId: "source-home-design", sourceKey: "outside/loumen-road" },
-    { locationId: "song-gate", sourceId: "source-song-wikipedia", sourceKey: "song/gate" },
-    { locationId: "song-overview-entry", sourceId: "source-song-wikipedia", sourceKey: "song/overview" },
-    { locationId: "palos-gate", sourceId: "source-palworld-map", sourceKey: "palos/gate" },
-    { locationId: "palos-overview-entry", sourceId: "source-palworld-map", sourceKey: "palos/overview" },
+  const actions: WorldSeedAction[] = [
+    { id: "observe-entrance", locationId: "home-entrance", name: "整理衣装", description: "在玄关整理衣装，准备出门。", silverDelta: 0, hpDelta: 0, resultTemplate: "{name}在玄关整理好衣装。" },
+    { id: "observe-road", locationId: "loumen-road", name: "观察街道", description: "看看楼门路上来往的人群。", silverDelta: 0, hpDelta: 0, resultTemplate: "{name}站在楼门路上观察四周。" },
+    { id: "observe-song", locationId: "song-gate", name: "眺望大宋", description: "从入口眺望大宋方向。", silverDelta: 0, hpDelta: 0, resultTemplate: "{name}在入口处眺望大宋。" },
+    { id: "observe-palos", locationId: "palos-gate", name: "眺望帕洛斯", description: "从入口眺望帕洛斯方向。", silverDelta: 0, hpDelta: 0, resultTemplate: "{name}在入口处眺望帕洛斯。" },
   ];
-  const coordinates = new Map<string, { gridX: number; gridY: number; layerId: string }>([
-    ["home-entrance", { gridX: 3, gridY: 1, layerId: "home-ground" }],
-    ["loumen-road", { gridX: 3, gridY: 2, layerId: "world-root" }],
-    ["song-gate", { gridX: 2, gridY: 2, layerId: "world-root" }],
-    ["palos-gate", { gridX: 4, gridY: 2, layerId: "world-root" }],
-    ["song-overview-entry", { gridX: 0, gridY: 0, layerId: "song-overview" }],
-    ["palos-overview-entry", { gridX: 0, gridY: 0, layerId: "palos-overview" }],
-  ]);
+  const baseLocationSources: WorldSeedData["baseLocationSources"] = [];
+  const coordinates = new Map<string, { gridX: number; gridY: number; layerId: string }>();
 
   const addLocation = (location: WorldSeedLocation) => {
     locations.push(location);
@@ -214,6 +228,17 @@ export function buildWorldSeed(): WorldSeedData {
   const addChain = (prefix: string, ids: string[]) => {
     for (let index = 1; index < ids.length; index += 1) addNormal(`${prefix}-${index}`, ids[index - 1], ids[index]);
   };
+
+  addLocation({ id: "home-entrance", layerId: "home-ground", name: "玄关", description: "嬴长嫚与楼夜秋之家的内外分界。", regionId: "home", gridX: 3, gridY: 1, sourceId: "source-home-design", sourceKey: "home/ground/entrance" });
+  addLocation({ id: "home-exterior", layerId: "world-root", name: "嬴长嫚与楼夜秋之家·入口", description: "从楼门路进入住宅的门前。", regionId: "world-home", gridX: 3, gridY: 1, sourceId: "source-home-design", sourceKey: "outside/home-entrance" });
+  addLocation({ id: "loumen-road", layerId: "world-root", name: "楼门路", description: "屋外横贯东西的街道，左通大宋，右往帕洛斯。", regionId: null, gridX: 3, gridY: 2, sourceId: "source-home-design", sourceKey: "outside/loumen-road" });
+  addLocation({ id: "song-gate", layerId: "world-root", name: "大宋入口", description: "由楼门路进入大宋连续舆图的入口。", regionId: "song", gridX: 2, gridY: 2, sourceId: "source-song-wikipedia", sourceKey: "song/gate" });
+  addLocation({ id: "palos-gate", layerId: "world-root", name: "帕洛斯入口", description: "由楼门路进入帕洛斯连续群岛地图的入口。", regionId: "palos", gridX: 4, gridY: 2, sourceId: "source-palworld-map", sourceKey: "palos/gate" });
+
+  addTransition("route-home-door-v3", "home-entrance", "home-exterior", "door");
+  addNormal("route-home-road-v3", "home-exterior", "loumen-road");
+  addNormal("route-road-song-v3", "loumen-road", "song-gate");
+  addNormal("route-road-palos-v3", "loumen-road", "palos-gate");
 
   const homeFloors = [
     ["home-ground", "住宅一层", [
@@ -271,47 +296,55 @@ export function buildWorldSeed(): WorldSeedData {
     resultTemplate: "{name}在修炼房中静心吐纳。",
   });
 
-  regions.push({ id: "region-song-overview", layerId: "song-overview", name: "北宋二十四路总览", description: "约1110年的北宋路级结构入口。", x: -80, y: -80, width: 1120, height: 960 });
-  const songOverviewIds = ["song-overview-entry"];
+  let songIndex = 0;
+  addLocation({
+    id: "song-overview-entry", layerId: "world-root", name: "大宋官道", description: "通往北宋二十四路的连续官道。",
+    regionId: "song", ...westwardSerpentine(songIndex, 36, 1, 2), sourceId: "source-song-wikipedia", sourceKey: "song/overview",
+  });
+  songIndex += 1;
+  addNormal("route-world-song-v3", "song-gate", "song-overview-entry");
+  let songTail = "song-overview-entry";
   SONG_CIRCUITS.forEach(([circuitSlug, circuitName, prefectures], circuitIndex) => {
-    const layerId = `song-${circuitSlug}`;
     const hubId = `song-hub-${circuitSlug}`;
     const entryId = `song-entry-${circuitSlug}`;
-    const hubPoint = serpentine(circuitIndex + 1, 6);
-    layers.push({ id: layerId, name: `北宋·${circuitName}`, description: `${circuitName}所属府、州、军的可行走结构。`, parentLayerId: "song-overview" });
-    regions.push({ id: `region-${layerId}`, layerId, name: `北宋${circuitName}辖境`, description: `${circuitName}行政地点与驿市。`, x: -80, y: -80, width: 1440, height: Math.max(640, Math.ceil((prefectures.length * 2 + 1) / 7) * 160 + 160) });
-    addLocation({ id: hubId, layerId: "song-overview", name: `北宋总览·${circuitName}`, description: `进入${circuitName}。`, regionId: "region-song-overview", ...hubPoint, sourceId: "source-song-wikipedia", sourceKey: `route/${circuitName}` });
-    addLocation({ id: entryId, layerId, name: `${circuitName}·路口`, description: `${circuitName}的层级入口。`, regionId: `region-${layerId}`, gridX: 0, gridY: 0, sourceId: "source-song-wikipedia", sourceKey: `route/${circuitName}/entry` });
-    songOverviewIds.push(hubId);
-    addTransition(`route-enter-song-${circuitSlug}`, hubId, entryId, "gate");
-    const circuitIds = [entryId];
+    addLocation({ id: hubId, layerId: "world-root", name: `大宋·${circuitName}`, description: `${circuitName}在大宋官道上的界标。`, regionId: "song", ...westwardSerpentine(songIndex, 36, 1, 2), sourceId: "source-song-wikipedia", sourceKey: `route/${circuitName}` });
+    songIndex += 1;
+    addNormal(`route-song-circuit-${circuitIndex + 1}-v3`, songTail, hubId);
+    addLocation({ id: entryId, layerId: "world-root", name: `${circuitName}·驿道`, description: `${circuitName}府、州、军之间的驿道起点。`, regionId: "song", ...westwardSerpentine(songIndex, 36, 1, 2), sourceId: "source-song-wikipedia", sourceKey: `route/${circuitName}/entry` });
+    songIndex += 1;
+    addNormal(`route-song-entry-${circuitSlug}-v3`, hubId, entryId);
+    songTail = entryId;
     prefectures.forEach((prefecture, prefectureIndex) => {
       const cityId = `song-${circuitSlug}-${prefectureIndex + 1}-seat`;
       const marketId = `song-${circuitSlug}-${prefectureIndex + 1}-post`;
-      const cityPoint = serpentine(prefectureIndex * 2 + 1, 7);
-      const marketPoint = serpentine(prefectureIndex * 2 + 2, 7);
-      addLocation({ id: cityId, layerId, name: `${circuitName}·${prefecture}治所`, description: `${prefecture}的行政治所。`, regionId: `region-${layerId}`, ...cityPoint, sourceId: "source-song-wikipedia", sourceKey: `${circuitName}/${prefecture}` });
-      addLocation({ id: marketId, layerId, name: `${circuitName}·${prefecture}驿市`, description: `连接${prefecture}治所与下一处州府的驿路市集。`, regionId: `region-${layerId}`, ...marketPoint, sourceId: "source-song-wikipedia", sourceKey: `${circuitName}/${prefecture}/game-post` });
-      circuitIds.push(cityId, marketId);
+      addLocation({ id: cityId, layerId: "world-root", name: `${circuitName}·${prefecture}治所`, description: `${prefecture}的行政治所。`, regionId: "song", ...westwardSerpentine(songIndex, 36, 1, 2), sourceId: "source-song-wikipedia", sourceKey: `${circuitName}/${prefecture}` });
+      songIndex += 1;
+      addNormal(`route-song-${circuitSlug}-${prefectureIndex + 1}-seat-v3`, songTail, cityId);
+      addLocation({ id: marketId, layerId: "world-root", name: `${circuitName}·${prefecture}驿市`, description: `连接${prefecture}治所与下一处州府的驿路市集。`, regionId: "song", ...westwardSerpentine(songIndex, 36, 1, 2), sourceId: "source-song-wikipedia", sourceKey: `${circuitName}/${prefecture}/game-post` });
+      songIndex += 1;
+      addNormal(`route-song-${circuitSlug}-${prefectureIndex + 1}-post-v3`, cityId, marketId);
+      songTail = marketId;
     });
-    addChain(`route-song-${circuitSlug}`, circuitIds);
   });
-  addChain("route-song-overview", songOverviewIds);
 
-  regions.push({ id: "region-palos-overview", layerId: "palos-overview", name: "帕洛斯标记总览", description: "按公开地图标记类型组织的帕洛斯层级入口。", x: -80, y: -80, width: 960, height: 480 });
-  const palOverviewIds = ["palos-overview-entry"];
+  let palosIndex = 0;
+  addLocation({
+    id: "palos-overview-entry", layerId: "world-root", name: "帕洛斯群岛海岸", description: "通往帕洛斯各处地标的连续海岸路线。",
+    regionId: "palos", ...eastwardSerpentine(palosIndex, 36, 5, 2), sourceId: "source-palworld-map", sourceKey: "palos/overview",
+  });
+  palosIndex += 1;
+  addNormal("route-world-palos-v3", "palos-gate", "palos-overview-entry");
+  let palosTail = "palos-overview-entry";
   PAL_CATEGORIES.forEach(([category, name, description], categoryIndex) => {
-    const layerId = `palos-${category}`;
     const hubId = `palos-hub-${category}`;
     const entryId = `palos-entry-${category}`;
-    const hubPoint = serpentine(categoryIndex + 1, 6);
-    layers.push({ id: layerId, name, description, parentLayerId: "palos-overview" });
-    regions.push({ id: `region-${layerId}`, layerId, name: `${name}区域`, description, x: -80, y: -80, width: 1760, height: category === "dungeons" ? 2240 : 1280 });
-    addLocation({ id: hubId, layerId: "palos-overview", name: `帕洛斯总览·${name}`, description: `进入${name}地图层。`, regionId: "region-palos-overview", ...hubPoint, sourceId: "source-palworld-map", sourceKey: `category/${category}` });
-    addLocation({ id: entryId, layerId, name: `${name}·入口`, description, regionId: `region-${layerId}`, gridX: 0, gridY: 0, sourceId: "source-palworld-map", sourceKey: `category/${category}/entry` });
-    palOverviewIds.push(hubId);
-    addTransition(`route-enter-palos-${category}`, hubId, entryId, category === "dungeons" ? "dungeon" : "fast-travel");
-    const categoryIds = [entryId];
+    addLocation({ id: hubId, layerId: "world-root", name: `帕洛斯·${name}`, description: `${name}在群岛路线上的区域界标。`, regionId: "palos", ...eastwardSerpentine(palosIndex, 36, 5, 2), sourceId: "source-palworld-map", sourceKey: `category/${category}` });
+    palosIndex += 1;
+    addNormal(`route-palos-category-${categoryIndex + 1}-v3`, palosTail, hubId);
+    addLocation({ id: entryId, layerId: "world-root", name: `${name}·路线起点`, description, regionId: "palos", ...eastwardSerpentine(palosIndex, 36, 5, 2), sourceId: "source-palworld-map", sourceKey: `category/${category}/entry` });
+    palosIndex += 1;
+    addNormal(`route-palos-entry-${category}-v3`, hubId, entryId);
+    palosTail = entryId;
     const markers: Array<{ id: string; name: string; description: string; sourceKey: string }> = [];
     if (category === "travel") {
       PAL_FAST_TRAVEL.forEach((markerName, index) => markers.push({ id: `palos-fasttravel-${1001 + index}`, name: markerName, description: "公开地图传送点。", sourceKey: String(1001 + index) }));
@@ -325,16 +358,26 @@ export function buildWorldSeed(): WorldSeedData {
       for (let marker = 10001; marker <= 10039; marker += 1) markers.push({ id: `palos-memo-${marker}`, name: `帕洛斯手记 ${marker - 10000}`, description: "公开地图手记标记。", sourceKey: String(marker) });
     }
     markers.forEach((marker, index) => {
-      const point = serpentine(index + 1, 10);
       addLocation({
-        id: marker.id, layerId, name: `${name}·${marker.name}`, description: marker.description,
-        regionId: `region-${layerId}`, ...point, sourceId: "source-palworld-map", sourceKey: marker.sourceKey,
+        id: marker.id, layerId: "world-root", name: `${name}·${marker.name}`, description: marker.description,
+        regionId: "palos", ...eastwardSerpentine(palosIndex, 36, 5, 2), sourceId: "source-palworld-map", sourceKey: marker.sourceKey,
       });
-      categoryIds.push(marker.id);
+      palosIndex += 1;
+      addNormal(`route-palos-${slug(category)}-${index + 1}-v3`, palosTail, marker.id);
+      palosTail = marker.id;
     });
-    addChain(`route-palos-${slug(category)}`, categoryIds);
   });
-  addChain("route-palos-overview", palOverviewIds);
+
+  const addRegionBounds = (id: string, name: string, description: string) => {
+    const members = locations.filter((location) => location.regionId === id);
+    const minX = Math.min(...members.map((location) => location.gridX)) * 160 - 80;
+    const minY = Math.min(...members.map((location) => location.gridY)) * 160 - 80;
+    const maxX = Math.max(...members.map((location) => location.gridX)) * 160 + 80;
+    const maxY = Math.max(...members.map((location) => location.gridY)) * 160 + 80;
+    regions.push({ id, layerId: "world-root", name, description, x: minX, y: minY, width: maxX - minX, height: maxY - minY });
+  };
+  addRegionBounds("song", "大宋", "楼门路以西连续展开的北宋二十四路大区域。");
+  addRegionBounds("palos", "帕洛斯", "楼门路以东连续展开的帕洛斯群岛大区域。");
 
   return { sources, layers, regions, locations, routes, actions, baseLocationSources };
 }
