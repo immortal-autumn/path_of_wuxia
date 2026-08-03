@@ -626,6 +626,32 @@ h2 {
   grid-column: 1 / -1;
 }
 
+.private-results {
+  padding-top: 9px;
+  font-size: 11px;
+}
+
+.private-results > strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.private-results article {
+  padding: 6px 0;
+  border-top: 1px solid var(--border-light);
+}
+
+.private-results time {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.private-results p {
+  margin: 3px 0 0;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
 .side-column {
   position: relative;
   min-height: 0;

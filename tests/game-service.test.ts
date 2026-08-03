@@ -219,6 +219,84 @@ describe("GameService", () => {
     expect(inventory.items.filter((item) => item.definitionId === "rice").reduce((sum, item) => sum + item.quantity, 0)).toBe(20);
   });
 
+  it("expands Eagle Eye vision temporarily without revealing locations in exploration history", () => {
+    const player = service.createSession().player;
+    const before = service.getSnapshot(player.id, [player.id]);
+    expect(before.self.visionDepth).toBe(3);
+    expect(service.getVisitedMap(player.id).locations).toHaveLength(1);
+
+    service.startAction(player.id, "action-eagle-eye");
+    clock = new Date(clock.getTime() + 60_000);
+    expect(service.settleActionQueue(player.id).completed).toBe(1);
+    const expanded = service.getSnapshot(player.id, [player.id]);
+    expect(expanded.self.visionDepth).toBe(4);
+    expect(expanded.locations.length).toBeGreaterThan(before.locations.length);
+    expect(service.getVisitedMap(player.id).locations).toHaveLength(1);
+
+    clock = new Date(clock.getTime() + 30 * 60_000);
+    expect(service.getPlayer(player.id).visionDepth).toBe(3);
+  });
+
+  it("keeps observation and listening private and filters private or adult traces", () => {
+    const player = service.createSession().player;
+    service.startAction(player.id, "action-observe");
+    clock = new Date(clock.getTime() + 60_000);
+    service.settleActionQueue(player.id);
+    expect(service.getPrivateEvents(player.id)[0].content).toContain("观察结果：");
+    expect(service.getPrivateEvents(player.id)[0].content).toContain("surroundings");
+    expect(db.prepare("SELECT COUNT(*) AS count FROM world_events WHERE player_id=? AND event_type='action'").get(player.id)).toEqual({ count: 0 });
+
+    const traceTime = clock.toISOString();
+    db.prepare(`
+      INSERT INTO action_logs(player_id,kind,action_template_id,from_location,to_location,result_text,created_at)
+      VALUES (?,'action','action-rest','home-hall','home-hall','附近侠客公开练功。',?),
+             (?,'action','action-bathe','home-hall','home-hall','不应听见的私人动静。',?),
+             (?,'action','action-sleep','home-hall','home-hall','不应听见的成人动静。',?)
+    `).run(player.id, traceTime, player.id, traceTime, player.id, traceTime);
+    db.prepare("UPDATE action_templates SET adult=1,visibility='public' WHERE id='action-sleep'").run();
+    service.startAction(player.id, "action-listen");
+    clock = new Date(clock.getTime() + 300_000);
+    service.settleActionQueue(player.id);
+    const listening = service.getPrivateEvents(player.id)[0].content;
+    expect(listening).toContain("附近侠客公开练功");
+    expect(listening).not.toContain("私人动静");
+    expect(listening).not.toContain("成人动静");
+    expect(db.prepare("SELECT COUNT(*) AS count FROM world_events WHERE player_id=? AND event_type='action'").get(player.id)).toEqual({ count: 0 });
+  });
+
+  it("offers straight eight-direction Qinggong targets and moves only after a successful timed settlement", () => {
+    const player = service.createSession().player;
+    expect(service.getQinggongTargets(player.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ locationId: "home-main-bedroom", direction: "down", distance: 2, durationSeconds: 35 }),
+    ]));
+    expect(service.getQinggongTargets(player.id).some((target) => target.locationId === "home-garage")).toBe(false);
+    db.prepare("UPDATE player_skills SET level=40 WHERE player_id=? AND skill_id='qinggong'").run(player.id);
+    expect(service.getQinggongTargets(player.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ locationId: "home-garage", direction: "right", distance: 3, durationSeconds: 45 }),
+      expect.objectContaining({ locationId: "home-back-garden", direction: "down", distance: 4, durationSeconds: 55 }),
+    ]));
+
+    service.startQinggong(player.id, "home-main-bedroom");
+    expect(service.getPlayer(player.id).currentLocation).toBe("home-entrance");
+    expect(service.getVisitedMap(player.id).locations).toHaveLength(1);
+    clock = new Date(clock.getTime() + 35_000);
+    expect(service.settleActionQueue(player.id).completed).toBe(1);
+    expect(service.getPlayer(player.id).currentLocation).toBe("home-main-bedroom");
+    expect(service.getVisitedMap(player.id).locations.map((location) => location.id)).toContain("home-main-bedroom");
+
+    const failedPlayer = service.createSession().player;
+    const initialHp = failedPlayer.hp;
+    roll = 99;
+    service.startQinggong(failedPlayer.id, "home-main-bedroom");
+    clock = new Date(clock.getTime() + 35_000);
+    service.settleActionQueue(failedPlayer.id);
+    const failed = service.getPlayer(failedPlayer.id);
+    expect(failed.currentLocation).toBe("home-entrance");
+    expect(failed.hp).toBe(initialHp - 5);
+    expect(failed.needs.fatigue).toBeGreaterThanOrEqual(5);
+    expect(service.getVisitedMap(failedPlayer.id).locations).toHaveLength(1);
+  });
+
   it("upgrades the former public-map hierarchy into one continuous overworld", () => {
     db.prepare(`INSERT INTO map_layers(id,name,description,parent_layer_id,version,is_active,seed_revision,created_at,updated_at)
       VALUES ('song-legacy-layer','旧大宋层','旧层级。','world-root',1,1,2,?,?)`).run(clock.toISOString(), clock.toISOString());

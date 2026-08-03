@@ -190,6 +190,26 @@ test.describe("game map", () => {
     await expect(page.getByLabel("行动队列")).toContainText("当前没有进行中的行动");
   });
 
+  test("uses timed Qinggong and exposes private perception results with temporary Eagle Eye vision", async ({ page }) => {
+    await enterWorld(page);
+    await updatePlayer(page, "UPDATE action_templates SET check_json='{}' WHERE id IN ('action-qinggong','action-eagle-eye','action-observe') AND ? IS NOT NULL");
+
+    await page.getByRole("button", { name: /轻功前往.*主卧/ }).click();
+    await expect(page.getByRole("status")).toContainText("开始施展轻功");
+    await expect(page.getByLabel("行动队列")).toContainText("施展轻功");
+    await updatePlayer(page, "UPDATE action_jobs SET completes_at='2000-01-01T00:00:00.000Z' WHERE player_id=? AND status='running'");
+    await expect(page.getByRole("button", { name: /嬴长嫚与楼夜秋之家·主卧.*当前位置/ })).toBeVisible();
+
+    await page.getByRole("button", { name: /开启鹰眼/ }).click();
+    await updatePlayer(page, "UPDATE action_jobs SET completes_at=? WHERE player_id=? AND status='running'", new Date(Date.now() - 1000).toISOString());
+    await expect(page.getByLabel("地图信息")).toContainText("四步视野");
+    await expect(page.getByLabel("个人行动记录")).toContainText("开启鹰眼成功");
+
+    await page.getByRole("button", { name: /观察四周/ }).click();
+    await updatePlayer(page, "UPDATE action_jobs SET completes_at='2000-01-01T00:00:00.000Z' WHERE player_id=? AND status='running'");
+    await expect(page.getByLabel("个人行动记录")).toContainText("观察结果：");
+  });
+
   test("equips persistent items and starts a real-time farm action", async ({ page }) => {
     await enterWorld(page);
     await page.getByRole("button", { name: "物品装备" }).click();

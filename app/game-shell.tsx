@@ -69,6 +69,10 @@ function durationText(seconds: number) {
   return `${Number((seconds / 86400).toFixed(seconds % 86400 === 0 ? 0 : 1))}天`;
 }
 
+function visionDepthText(depth: number) {
+  return ["零", "一", "二", "三", "四", "五", "六", "七", "八"][depth] ?? String(depth);
+}
+
 function remainingText(job: ActionJob, now: number) {
   if (!job.completesAt) return "等待开始";
   const seconds = Math.max(0, Math.ceil((new Date(job.completesAt).getTime() - now) / 1000));
@@ -159,7 +163,7 @@ function MapPanel({
     for (let cursor = 0; cursor < queue.length; cursor += 1) {
       const locationId = queue[cursor];
       const distance = result.get(locationId) ?? 0;
-      if (distance >= 3) continue;
+      if (distance >= self.visionDepth) continue;
 
       for (const edge of routeGraph.get(locationId) ?? []) {
         if (!result.has(edge.neighborId)) {
@@ -170,7 +174,7 @@ function MapPanel({
     }
 
     return result;
-  }, [routeGraph, self.currentLocation]);
+  }, [routeGraph, self.currentLocation, self.visionDepth]);
   const currentEdges = useMemo(() => routeGraph.get(self.currentLocation) ?? [], [routeGraph, self.currentLocation]);
   const adjacent = useMemo(() => new Set(currentEdges.map((edge) => edge.neighborId)), [currentEdges]);
   const moveOptions = useMemo(() => currentEdges.flatMap((edge) => {
@@ -248,10 +252,10 @@ function MapPanel({
         <div><dt>当前位置</dt><dd>{currentLocation ? `${currentLocation.name} · (${currentLocation.gridX}, ${currentLocation.gridY})` : "未知之地"}</dd></div>
         <div><dt>指向地点</dt><dd>{inspectedLocation ? `${inspectedLocation.name} · (${inspectedLocation.gridX}, ${inspectedLocation.gridY})` : "悬停或聚焦查看全名"}</dd></div>
         <div><dt>所属区域</dt><dd>{currentLocation?.region ?? "无名区域"}</dd></div>
-        <div><dt>三步视野</dt><dd>{visibleLocations.length} 处 · {nearbyPlayers.length} 人</dd></div>
+        <div><dt>{visionDepthText(self.visionDepth)}步视野</dt><dd>{visibleLocations.length} 处 · {nearbyPlayers.length} 人</dd></div>
       </dl>
       <div className="map-stage">
-        <svg className="wuxia-map" viewBox={viewBox} role="img" aria-label="当前位置三步内的八方向地图">
+        <svg className="wuxia-map" viewBox={viewBox} role="img" aria-label={`当前位置${visionDepthText(self.visionDepth)}步内的八方向地图`}>
           {visibleRoutes.map((route) => {
             const from = locationMap.get(route.fromLocation);
             const to = locationMap.get(route.toLocation);
@@ -318,7 +322,7 @@ function MapPanel({
         <div className="map-legend" aria-label="地图图例">
           <span><i className="legend-current" />当前位置</span>
           <span><i className="legend-next" />下一步</span>
-          <span><i className="legend-later" />二至三步</span>
+          <span><i className="legend-later" />二至{visionDepthText(self.visionDepth)}步</span>
         </div>
       </footer>
     </section>
@@ -457,6 +461,8 @@ function ActionsPanel({
   transitions,
   self,
   locations,
+  qinggongTargets,
+  privateEvents,
   pending,
   open,
   onStart,
@@ -464,8 +470,9 @@ function ActionsPanel({
   onReorder,
   onCraft,
   onFarm,
+  onQinggong,
   onTransition,
-}: Pick<GameSnapshot, "actionState" | "inventory" | "transitions" | "self" | "locations"> & {
+}: Pick<GameSnapshot, "actionState" | "inventory" | "transitions" | "self" | "locations" | "qinggongTargets" | "privateEvents"> & {
   pending: boolean;
   open: boolean;
   onStart: (actionId: string) => void;
@@ -473,6 +480,7 @@ function ActionsPanel({
   onReorder: (jobIds: string[]) => void;
   onCraft: (recipeId: string) => void;
   onFarm: (plotId: string, operation: "plant" | "water" | "harvest", cropId?: string) => void;
+  onQinggong: (destinationId: string) => void;
   onTransition: (locationId: string) => void;
 }) {
   const [now, setNow] = useState(() => Date.now());
@@ -561,6 +569,21 @@ function ActionsPanel({
               </span>
             </div>
           ))}
+          {qinggongTargets.map((target) => (
+            <button
+              className="action-card movement-action"
+              key={target.locationId}
+              disabled={pending || actionState.queued.length >= actionState.maxQueued}
+              onClick={() => onQinggong(target.locationId)}
+            >
+              <span className="action-mark">轻</span>
+              <span>
+                <strong>轻功前往{target.locationName}</strong>
+                <small>{DIRECTION_LABEL[target.direction]}方直线 {target.distance} 格，结算成功后抵达</small>
+              </span>
+              <em>{durationText(target.durationSeconds)}</em>
+            </button>
+          ))}
         </div>
         <aside className="action-queue" aria-label="行动队列">
           <div className="queue-heading"><strong>行动队列</strong><span>{actionState.queued.length} / {actionState.maxQueued}</span></div>
@@ -587,6 +610,16 @@ function ActionsPanel({
             <span>疲劳 {Math.round(actionState.needs.fatigue)}</span>
             <span>如厕 {Math.round(actionState.needs.bladder)}</span>
             <strong>检定修正 -{actionState.needPenalty}%</strong>
+          </div>
+          <div className="private-results" aria-label="个人行动记录">
+            <strong>个人行动记录</strong>
+            {privateEvents.length === 0 && <p>尚无私人结果</p>}
+            {privateEvents.slice(0, 6).map((event) => (
+              <article key={event.id}>
+                <time dateTime={event.createdAt}>{formatClock(event.createdAt)}</time>
+                <p>{event.content}</p>
+              </article>
+            ))}
           </div>
         </aside>
       </div>
@@ -972,6 +1005,8 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           transitions={snapshot.transitions}
           self={snapshot.self}
           locations={snapshot.locations}
+          qinggongTargets={snapshot.qinggongTargets}
+          privateEvents={snapshot.privateEvents}
           pending={pending !== null || connection !== "online"}
           open={drawer === "actions"}
           onStart={(actionId) => sendCommand({ type: "action.start", actionId }, "action")}
@@ -979,6 +1014,7 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           onReorder={(jobIds) => sendCommand({ type: "action.queue.reorder", jobIds }, "action")}
           onCraft={(recipeId) => sendCommand({ type: "craft.start", recipeId }, "craft")}
           onFarm={(plotId, operation, cropId) => sendCommand({ type: "farm.start", plotId, operation, cropId }, "farm")}
+          onQinggong={(destinationId) => sendCommand({ type: "qinggong.start", destinationId }, "qinggong")}
           onTransition={(locationId) => sendCommand({ type: "move", locationId }, "move")}
         />
       </div>

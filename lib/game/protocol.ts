@@ -102,6 +102,7 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("move"), requestId, locationId: id }),
   z.object({ type: z.literal("act"), requestId, actionId: id }),
   z.object({ type: z.literal("action.start"), requestId, actionId: id }),
+  z.object({ type: z.literal("qinggong.start"), requestId, destinationId: id }),
   z.object({ type: z.literal("action.cancel"), requestId, jobId: id }),
   z.object({ type: z.literal("action.queue.reorder"), requestId, jobIds: z.array(id).max(8) }),
   z.object({ type: z.literal("inventory.equip"), requestId, itemId: id }),

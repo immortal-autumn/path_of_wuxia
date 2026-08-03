@@ -236,6 +236,13 @@ async function main() {
           return;
         }
 
+        if (command.type === "qinggong.start") {
+          const result = service.startQinggong(context.playerId, command.destinationId);
+          send(socket, { type: "action.updated", actionState: result.actionState });
+          send(socket, { type: "ack", requestId: command.requestId, message: result.message });
+          return;
+        }
+
         if (command.type === "inventory.equip" || command.type === "inventory.unequip" || command.type === "inventory.use") {
           const result = command.type === "inventory.equip"
             ? service.equipItem(context.playerId, command.itemId)
@@ -363,6 +370,7 @@ async function main() {
       for (const [socket, context] of sockets) {
         if (context.playerId === playerId) sendSnapshot(socket, context);
       }
+      broadcastPresence();
     }
   }, 1_000);
 

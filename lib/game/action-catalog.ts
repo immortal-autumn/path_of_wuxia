@@ -40,13 +40,20 @@ export const ACTION_CATALOG: CatalogAction[] = [
     id: "action-observe", name: "观察四周", description: "用一分钟查看当前地点的细节。", category: "perception",
     durationSeconds: 60, facilityTypes: ["surroundings"], requirements: { skillId: "perception" },
     check: { attribute: "spirit", skillId: "perception", difficulty: 35 }, success: { skillExperience: 8 },
-    failure: { skillExperience: 3 }, resultTemplate: "{name}仔细观察了四周。",
+    failure: { skillExperience: 3 }, resultTemplate: "{name}仔细观察了四周。", visibility: "private",
   },
   {
     id: "action-listen", name: "凝神聆听", description: "静下心分辨附近的声响与活动。", category: "perception",
     durationSeconds: 300, facilityTypes: ["surroundings"], requirements: { skillId: "hearing" },
     check: { attribute: "spirit", skillId: "hearing", difficulty: 45 }, success: { skillExperience: 10 },
-    failure: { skillExperience: 4 }, resultTemplate: "{name}凝神听取附近的动静。",
+    failure: { skillExperience: 4 }, resultTemplate: "{name}凝神听取附近的动静。", visibility: "private",
+  },
+  {
+    id: "action-eagle-eye", name: "开启鹰眼", description: "集中感知一分钟，随后三十分钟内看见更远地点。", category: "perception",
+    durationSeconds: 60, facilityTypes: ["surroundings"], requirements: { skillId: "eagle-eye" },
+    check: { attribute: "spirit", skillId: "eagle-eye", difficulty: 30 },
+    success: { skillExperience: 12, statusId: "eagle-eye", statusDurationSeconds: 1800 },
+    failure: { skillExperience: 5 }, resultTemplate: "{name}尝试将感知延伸至远方。", visibility: "private",
   },
   {
     id: "action-drink-water", name: "饮水", description: "花两分钟慢慢补充水分。", category: "life",
@@ -116,6 +123,14 @@ export const ACTION_CATALOG: CatalogAction[] = [
     durationSeconds: 3600, facilityTypes: ["road", "wilderness"], check: { attribute: "constitution", difficulty: 35 },
     success: { hpDelta: 5, needDeltas: { fatigue: -10 } }, failure: { needDeltas: { fatigue: -3 } },
     resultTemplate: "{name}在野外整理出一处临时营地。",
+  },
+  {
+    id: "action-qinggong", name: "施展轻功", description: "沿八方向跨越多个网格抵达指定地点。", category: "movement",
+    durationSeconds: 0, facilityTypes: [], requirements: { skillId: "qinggong" },
+    check: { attribute: "agility", skillId: "qinggong", difficulty: 30 },
+    success: { skillExperience: 15, needDeltas: { fatigue: 3, hydration: -2 } },
+    failure: { skillExperience: 6, hpDelta: -5, needDeltas: { fatigue: 5 } },
+    resultTemplate: "{name}施展轻功越过数格。",
   },
 ];
 

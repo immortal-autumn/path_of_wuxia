@@ -11,7 +11,7 @@ import {
 } from "./action-engine";
 import type { GameDatabase } from "./database";
 import { getGameDatabase, inTransaction } from "./database";
-import { chunkForGrid, chunkKey, directionBetween, gridToWorldPosition, OPPOSITE_DIRECTION } from "./map";
+import { chunkForGrid, chunkKey, directionBetween, DIRECTION_DELTAS, gridToWorldPosition, OPPOSITE_DIRECTION } from "./map";
 import {
   ATTRIBUTE_KEYS,
   breakthroughChance,
@@ -48,9 +48,11 @@ import type {
   MapTransition,
   MapViewport,
   OnlinePlayer,
+  PrivateEvent,
   PlayerSelf,
   PlayerNeeds,
   PlayerSkill,
+  QinggongTarget,
   RouteType,
   SessionIdentity,
   TransitionKind,
@@ -75,6 +77,7 @@ type PlayerRow = {
   strength: number; agility: number; constitution: number; root: number; comprehension: number; spirit: number;
   unspent_points: number; realm_index: number; realm_level: number; cultivation_progress: number;
   endurance: number; training_anchor_at: string | null; training_multiplier: number;
+  vision_bonus_until: string | null; vision_depth_bonus: number;
 };
 type LocationRow = {
   id: string; layer_id: string; name: string; region: string; region_id: string | null; region_name: string | null;
@@ -191,6 +194,14 @@ function transitionLabel(kind: TransitionKind, destination: string) {
     ferry: "乘渡船前往", dungeon: "进入地下城", "fast-travel": "快速传送至", portal: "传送至",
   };
   return `${prefix[kind]}${destination}`;
+}
+
+function straightDirection(dx: number, dy: number): Direction | null {
+  const distance = Math.max(Math.abs(dx), Math.abs(dy));
+  if (distance < 1) return null;
+  return (Object.entries(DIRECTION_DELTAS).find(([, [stepX, stepY]]) => (
+    stepX * distance === dx && stepY * distance === dy
+  ))?.[0] ?? null) as Direction | null;
 }
 
 export class GameService {
@@ -572,7 +583,8 @@ export class GameService {
       SELECT p.id,p.name,p.title,p.hp,p.silver,p.current_location,
              pr.strength,pr.agility,pr.constitution,pr.root,pr.comprehension,pr.spirit,
              pr.unspent_points,pr.realm_index,pr.realm_level,pr.cultivation_progress,
-             pr.endurance,pr.training_anchor_at,COALESCE(le.multiplier,0) AS training_multiplier
+             pr.endurance,pr.training_anchor_at,COALESCE(le.multiplier,0) AS training_multiplier,
+             p.vision_bonus_until,p.vision_depth_bonus
       FROM players p JOIN player_progression pr ON pr.player_id=p.id
       LEFT JOIN location_effects le ON le.location_id=p.current_location AND le.effect_type='cultivation'
     `;
@@ -619,6 +631,9 @@ export class GameService {
       },
       needs,
       skills: this.getPlayerSkills(row.id),
+      visionDepth: row.vision_bonus_until && new Date(row.vision_bonus_until).getTime() > this.now().getTime()
+        ? Math.min(8, 3 + Math.max(0, row.vision_depth_bonus))
+        : 3,
     };
   }
 
@@ -975,7 +990,17 @@ export class GameService {
     const needs = this.settleNeedsInternal(playerId, completedAt);
     const skillId = check.skillId ?? requirements.skillId;
     const chance = actionSuccessChance({ attributes, skillLevel: this.skillLevel(playerId, skillId), needs, check });
-    const success = chance >= 100 || this.randomPercent() < chance;
+    let success = chance >= 100 || this.randomPercent() < chance;
+    let qinggongDestination: Location | null = null;
+    if (template.id === "action-qinggong") {
+      const destinationId = typeof context.destinationId === "string" ? context.destinationId : "";
+      const sourceLocationId = typeof context.sourceLocationId === "string" ? context.sourceLocationId : "";
+      const target = sourceLocationId === row.current_location
+        ? this.getQinggongTargets(playerId).find((item) => item.locationId === destinationId)
+        : undefined;
+      if (!target) success = false;
+      else qinggongDestination = this.getLocation(target.locationId);
+    }
     const outcome = success ? outcomes.success : outcomes.failure;
     const timestamp = completedAt.toISOString();
     const nextNeeds = applyNeedDeltas(needs, outcome.needDeltas);
@@ -999,6 +1024,25 @@ export class GameService {
       `).run(playerId, outcome.cultivationDelta, row.realm_index, advanced.level, template.name, timestamp);
     }
     this.addSkillExperience(playerId, skillId, outcome.skillExperience ?? 0, timestamp);
+
+    if (success && outcome.statusId === "eagle-eye") {
+      const level = this.skillLevel(playerId, "eagle-eye");
+      const bonus = Math.min(5, 1 + Math.floor(level / 20));
+      const duration = Math.max(1, outcome.statusDurationSeconds ?? 1800);
+      this.db.prepare("UPDATE players SET vision_bonus_until=?,vision_depth_bonus=?,updated_at=? WHERE id=?")
+        .run(new Date(completedAt.getTime() + duration * 1000).toISOString(), bonus, timestamp, playerId);
+    }
+
+    if (success && qinggongDestination) {
+      this.db.prepare("UPDATE players SET current_location=?,updated_at=?,last_seen_at=? WHERE id=?")
+        .run(qinggongDestination.id, timestamp, timestamp, playerId);
+      this.db.prepare("UPDATE player_progression SET training_anchor_at=?,updated_at=? WHERE player_id=?")
+        .run(qinggongDestination.trainingMultiplier > 0 ? timestamp : null, timestamp, playerId);
+      this.db.prepare(`
+        INSERT INTO player_visited_locations(player_id,location_id,first_visited_at,last_visited_at)
+        VALUES (?,?,?,?) ON CONFLICT(player_id,location_id) DO UPDATE SET last_visited_at=excluded.last_visited_at
+      `).run(playerId, qinggongDestination.id, timestamp, timestamp);
+    }
 
     this.consumeReservations(job.id, timestamp);
     for (const item of outcome.items ?? []) {
@@ -1035,11 +1079,33 @@ export class GameService {
       }
     }
 
-    const content = `${template.result_template.replaceAll("{name}", row.name)} ${resultDetail}${success ? "成功" : "失败"}。`;
+    let privateDetail = "";
+    if (template.id === "action-observe") {
+      const location = this.getLocation(row.current_location);
+      const facilities = (this.db.prepare(`
+        SELECT facility_type FROM location_facilities WHERE location_id=? AND is_active=1 ORDER BY facility_type
+      `).all(row.current_location) as Array<{ facility_type: string }>).map((item) => item.facility_type);
+      privateDetail = `观察结果：${location.description} 可用设施：${facilities.join("、") || "无"}。`;
+    } else if (template.id === "action-listen") {
+      const nearbyIds = this.getNeighborhood(row.current_location, 3).locations.map((location) => location.id);
+      const traces = nearbyIds.length === 0 ? [] : this.db.prepare(`
+        SELECT l.result_text FROM action_logs l
+        JOIN action_templates t ON t.id=l.action_template_id
+        WHERE l.created_at<=? AND l.from_location IN (${placeholders(nearbyIds)})
+          AND t.visibility='public' AND t.adult=0
+        ORDER BY l.id DESC LIMIT 3
+      `).all(timestamp, ...nearbyIds) as Array<{ result_text: string }>;
+      privateDetail = traces.length > 0
+        ? `聆听结果：${traces.map((trace) => trace.result_text).join("；")}`
+        : "聆听结果：没有听到明显动静。";
+    }
+    const movementDetail = success && qinggongDestination ? `抵达${qinggongDestination.name}。` : "";
+    const content = `${template.result_template.replaceAll("{name}", row.name)} ${resultDetail}${success ? "成功" : "失败"}。${movementDetail}${privateDetail}`;
+    const destinationId = success && qinggongDestination ? qinggongDestination.id : row.current_location;
     this.db.prepare(`
       INSERT INTO action_logs(player_id,kind,action_template_id,action_job_id,from_location,to_location,result_text,created_at)
       VALUES (?,'action',?,?,?,?,?,?)
-    `).run(playerId, template.id, job.id, row.current_location, row.current_location, content, timestamp);
+    `).run(playerId, template.id, job.id, row.current_location, destinationId, content, timestamp);
     if (template.visibility === "public") {
       this.db.prepare("INSERT INTO world_events(player_id,event_type,content,created_at) VALUES (?,'action',?,?)")
         .run(playerId, content, timestamp);
@@ -1166,6 +1232,53 @@ export class GameService {
   getActionState(playerId: string) {
     this.settleActionQueue(playerId);
     return this.readActionState(playerId);
+  }
+
+  getQinggongTargets(playerId: string): QinggongTarget[] {
+    const player = this.getPlayer(playerId);
+    const source = this.getLocation(player.currentLocation);
+    const range = Math.min(7, 2 + Math.floor(this.skillLevel(playerId, "qinggong") / 20));
+    const rows = this.db.prepare(`
+      ${this.locationSelect()} WHERE l.is_active=1 AND l.layer_id=?
+        AND l.grid_x BETWEEN ? AND ? AND l.grid_y BETWEEN ? AND ? AND l.id<>?
+      ORDER BY l.grid_y,l.grid_x,l.id
+    `).all(
+      source.layerId, source.gridX - range, source.gridX + range,
+      source.gridY - range, source.gridY + range, source.id,
+    ) as LocationRow[];
+    return rows.flatMap((row): QinggongTarget[] => {
+      const location = mapLocation(row);
+      const dx = location.gridX - source.gridX;
+      const dy = location.gridY - source.gridY;
+      const distance = Math.max(Math.abs(dx), Math.abs(dy));
+      const direction = straightDirection(dx, dy);
+      if (!direction || distance < 2 || distance > range) return [];
+      return [{
+        locationId: location.id,
+        locationName: location.name,
+        direction,
+        distance,
+        durationSeconds: 15 + 10 * distance,
+      }];
+    });
+  }
+
+  startQinggong(playerId: string, destinationId: string) {
+    return inTransaction(this.db, () => {
+      const player = this.getPlayerRow(playerId);
+      const target = this.getQinggongTargets(playerId).find((item) => item.locationId === destinationId);
+      if (!target) throw new Error("轻功只能前往同层二至七格内的八方向直线地点。");
+      const queued = this.enqueueSystemJob({
+        playerId,
+        templateId: "action-qinggong",
+        durationSeconds: target.durationSeconds,
+        context: { sourceLocationId: player.current_location, destinationId },
+      });
+      return {
+        actionState: this.readActionState(playerId),
+        message: queued.running ? `前往${target.locationName}的轻功已加入等待队列。` : `开始施展轻功前往${target.locationName}。`,
+      };
+    });
   }
 
   startAction(playerId: string, actionTemplateId: string) {
@@ -1299,6 +1412,15 @@ export class GameService {
     return (this.db.prepare("SELECT id,player_id,event_type,content,created_at FROM world_events ORDER BY id DESC LIMIT ?").all(limit) as EventRow[]).map(mapEvent);
   }
 
+  getPrivateEvents(playerId: string, limit = 12): PrivateEvent[] {
+    return (this.db.prepare(`
+      SELECT id,event_type,content,created_at FROM private_events
+      WHERE player_id=? ORDER BY id DESC LIMIT ?
+    `).all(playerId, limit) as Array<{ id: number; event_type: string; content: string; created_at: string }>).map((row) => ({
+      id: row.id, eventType: row.event_type, content: row.content, createdAt: row.created_at,
+    }));
+  }
+
   getRecentChat(limit = 50) {
     const rows = this.db.prepare(`
       SELECT c.id,c.player_id,p.name AS player_name,c.content,c.created_at
@@ -1312,7 +1434,7 @@ export class GameService {
     this.settleCultivation(playerId, false);
     const self = this.getPlayer(playerId);
     const current = this.getLocation(self.currentLocation);
-    const neighborhood = this.getNeighborhood(self.currentLocation);
+    const neighborhood = this.getNeighborhood(self.currentLocation, self.visionDepth);
     const allOnlinePlayers = this.getOnlinePlayers(onlinePlayerIds);
     const visibleLocationIds = new Set(neighborhood.locations.map((location) => location.id));
     const onlinePlayers = allOnlinePlayers.filter((player) => visibleLocationIds.has(player.currentLocation));
@@ -1322,7 +1444,8 @@ export class GameService {
       transitions: this.getTransitions(self.currentLocation), actions: this.getActions([self.currentLocation]),
       actionState: this.readActionState(playerId),
       inventory: this.getInventoryState(playerId),
-      onlinePlayers, recentEvents: this.getRecentEvents(), chatMessages: this.getRecentChat(),
+      qinggongTargets: this.getQinggongTargets(playerId),
+      onlinePlayers, recentEvents: this.getRecentEvents(), privateEvents: this.getPrivateEvents(playerId), chatMessages: this.getRecentChat(),
     };
   }
 

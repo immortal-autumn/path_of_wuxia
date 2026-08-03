@@ -394,12 +394,22 @@ export type PlayerSelf = {
   cultivation: CultivationProgress;
   needs: PlayerNeeds;
   skills: PlayerSkill[];
+  visionDepth: number;
 };
 
 export type OnlinePlayer = { id: string; name: string; title: string; currentLocation: string };
 export type WorldStatus = { timeZone: "Asia/Shanghai"; dateTime: string; announcement: string; onlineCount: number; serverTime: string };
 export type WorldEvent = { id: number; playerId: string | null; eventType: string; content: string; createdAt: string };
+export type PrivateEvent = { id: number; eventType: string; content: string; createdAt: string };
 export type ChatMessage = { id: number; playerId: string; playerName: string; content: string; createdAt: string };
+
+export type QinggongTarget = {
+  locationId: string;
+  locationName: string;
+  direction: Direction;
+  distance: number;
+  durationSeconds: number;
+};
 
 export type GameSnapshot = {
   self: PlayerSelf;
@@ -412,8 +422,10 @@ export type GameSnapshot = {
   actions: ActionDefinition[];
   actionState: ActionSystemState;
   inventory: InventoryState;
+  qinggongTargets: QinggongTarget[];
   onlinePlayers: OnlinePlayer[];
   recentEvents: WorldEvent[];
+  privateEvents: PrivateEvent[];
   chatMessages: ChatMessage[];
 };
 
