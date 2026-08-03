@@ -14,6 +14,7 @@ import Link from "next/link";
 import type { ClientMessage, ServerMessage } from "@/lib/game/protocol";
 import { chunkForGrid, chunkKey, DIRECTION_LABEL, worldToGridPosition } from "@/lib/game/map";
 import { createClientId } from "@/lib/game/client-id";
+import { conciseLocationName } from "@/lib/game/location-label";
 import type {
   MapEditOperation,
   MapEditSessionState,
@@ -708,9 +709,9 @@ export default function MapEditorShell({
                   originalGridY: location.gridY,
                 })}
               >
-                <rect x="-70" y="-70" width="140" height="140" />
-                <foreignObject x="-66" y="-66" width="132" height="132" pointerEvents="none">
-                  <div className="editor-location-name">{location.name}</div>
+                <rect x="-50" y="-50" width="100" height="100" />
+                <foreignObject x="-46" y="-46" width="92" height="92" pointerEvents="none">
+                  <div className="editor-location-name">{conciseLocationName(location.name)}</div>
                 </foreignObject>
               </g>
             ))}

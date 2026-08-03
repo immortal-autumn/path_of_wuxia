@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openGameDatabase, type GameDatabase } from "../lib/game/database";
 import { directionBetween } from "../lib/game/map";
+import { conciseLocationName } from "../lib/game/location-label";
 import {
   cultivationForNextLevel,
   deriveStats,
@@ -29,6 +30,14 @@ describe("GameService", () => {
   });
 
   afterEach(() => db.close());
+
+  it("creates concise map labels without changing canonical location names", () => {
+    expect(conciseLocationName("嬴长嫚与楼夜秋之家·门厅")).toBe("门厅");
+    expect(conciseLocationName("嬴长嫚与楼夜秋之家·入口")).toBe("住宅入口");
+    expect(conciseLocationName("京畿路·开封府治所")).toBe("开封府治所");
+    expect(conciseLocationName("帕洛斯洞窟·洞窟入口 5001")).toBe("洞窟 5001");
+    expect(conciseLocationName("帕洛斯传送点·被遗忘的岛屿教堂遗址")).toBe("被遗忘的岛屿教堂…");
+  });
 
   it("seeds a source-tracked 500+ location world and preserves all ordinary direction slots", () => {
     expect(service.getLayers().map((layer) => layer.id).sort()).toEqual([

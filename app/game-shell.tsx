@@ -12,6 +12,7 @@ import type {
 } from "@/lib/game/types";
 import { DIRECTION_LABEL } from "@/lib/game/map";
 import { createClientId } from "@/lib/game/client-id";
+import { conciseLocationName } from "@/lib/game/location-label";
 
 type ConnectionState = "connecting" | "online" | "reconnecting" | "offline";
 type Drawer = "world" | "actions" | "character" | "chat" | null;
@@ -126,6 +127,7 @@ function MapPanel({
   pending: boolean;
   onMove: (locationId: string) => void;
 }) {
+  const [inspectedLocationId, setInspectedLocationId] = useState<string | null>(null);
   const locationMap = useMemo(() => new Map(locations.map((location) => [location.id, location])), [locations]);
   const distances = useMemo(() => {
     const result = new Map<string, number>([[self.currentLocation, 0]]);
@@ -194,6 +196,7 @@ function MapPanel({
     [routes, visibleLocationIds],
   );
   const currentLocation = locationMap.get(self.currentLocation);
+  const inspectedLocation = inspectedLocationId ? locationMap.get(inspectedLocationId) : null;
   const nearbyPlayers = onlinePlayers.filter((player) => visibleLocationIds.has(player.currentLocation));
 
   const viewBox = useMemo(() => {
@@ -233,9 +236,9 @@ function MapPanel({
       </header>
       <dl className="map-status" aria-label="地图信息">
         <div><dt>当前位置</dt><dd>{currentLocation?.name ?? "未知之地"}</dd></div>
+        <div><dt>指向地点</dt><dd>{inspectedLocation?.name ?? "悬停或聚焦查看全名"}</dd></div>
         <div><dt>所属区域</dt><dd>{currentLocation?.region ?? "无名区域"}</dd></div>
-        <div><dt>可见地点</dt><dd>{visibleLocations.length} 处</dd></div>
-        <div><dt>三步内侠客</dt><dd>{nearbyPlayers.length} 人</dd></div>
+        <div><dt>三步视野</dt><dd>{visibleLocations.length} 处 · {nearbyPlayers.length} 人</dd></div>
       </dl>
       <div className="map-stage">
         <svg className="wuxia-map" viewBox={viewBox} role="img" aria-label="当前位置三步内的八方向地图">
@@ -273,10 +276,14 @@ function MapPanel({
                 aria-disabled={!canMove}
                 onClick={() => activateLocation(location)}
                 onKeyDown={(event) => handleKey(event, location)}
+                onMouseEnter={() => setInspectedLocationId(location.id)}
+                onMouseLeave={() => setInspectedLocationId(null)}
+                onFocus={() => setInspectedLocationId(location.id)}
+                onBlur={() => setInspectedLocationId(null)}
               >
-                <rect className="node-box" x="-60" y="-60" width="120" height="120" />
-                <foreignObject x="-56" y="-56" width="112" height="112" pointerEvents="none">
-                  <div className="node-name">{location.name}</div>
+                <rect className="node-box" x="-48" y="-48" width="96" height="96" />
+                <foreignObject x="-44" y="-44" width="88" height="88" pointerEvents="none">
+                  <div className="node-name">{conciseLocationName(location.name)}</div>
                 </foreignObject>
               </g>
             );

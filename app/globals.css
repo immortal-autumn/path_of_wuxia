@@ -224,7 +224,7 @@ h2 {
 
 .map-status {
   display: grid;
-  grid-template-columns: minmax(190px, 1.35fr) minmax(160px, 1fr) repeat(2, minmax(100px, 0.55fr));
+  grid-template-columns: repeat(2, minmax(190px, 1.25fr)) minmax(150px, 0.9fr) minmax(130px, 0.65fr);
   margin: 0;
   border-bottom: 1px solid var(--border-light);
 }
@@ -320,9 +320,9 @@ h2 {
   justify-content: center;
   width: 100%;
   height: 100%;
-  padding: 8px;
+  padding: 6px;
   color: #111;
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 700;
   line-height: 1.35;
   text-align: center;
@@ -1411,9 +1411,9 @@ h2 {
   justify-content: center;
   width: 100%;
   height: 100%;
-  padding: 7px;
+  padding: 6px;
   color: #111;
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 700;
   line-height: 1.3;
   text-align: center;

@@ -101,10 +101,13 @@ test.describe("game map", () => {
     await expect(page.locator(".map-node .node-distance, .map-node .node-players")).toHaveCount(0);
     await expect(page.locator(".map-node.reachable")).toHaveCount(1);
     await expect(page.locator(".map-node.current")).toContainText("玄关");
-    await expect(page.locator(".map-node.current .node-box")).toHaveAttribute("width", "120");
-    await expect(page.locator(".map-node.current .node-box")).toHaveAttribute("height", "120");
+    await expect(page.locator(".map-node.current .node-box")).toHaveAttribute("width", "96");
+    await expect(page.locator(".map-node.current .node-box")).toHaveAttribute("height", "96");
     await expect(page.getByLabel("地图信息")).toContainText("当前位置玄关");
-    await expect(page.getByLabel("地图信息")).toContainText("可见地点4 处");
+    await expect(page.getByLabel("地图信息")).toContainText("三步视野4 处");
+    expect(await page.locator(".map-node .node-name").allTextContents()).toEqual(expect.arrayContaining(["玄关", "门厅", "客厅", "餐厅"]));
+    await page.getByRole("button", { name: /嬴长嫚与楼夜秋之家·门厅，可前往/ }).hover();
+    await expect(page.getByLabel("地图信息")).toContainText("指向地点嬴长嫚与楼夜秋之家·门厅");
     expect(await page.locator(".node-name").evaluateAll((nodes) => nodes.every((node) => (
       node.scrollWidth <= node.clientWidth && node.scrollHeight <= node.clientHeight
     )))).toBe(true);
@@ -206,13 +209,15 @@ test.describe("map editor", () => {
     const locationCount = await page.locator(".editor-location").count();
     await expect(page.locator(".editor-location-name")).toHaveCount(locationCount);
     await expect(page.locator(".editor-location text, .editor-location-grid")).toHaveCount(0);
-    await expect(page.locator(".editor-location rect").first()).toHaveAttribute("width", "140");
-    await expect(page.locator(".editor-location rect").first()).toHaveAttribute("height", "140");
+    await expect(page.locator(".editor-location rect").first()).toHaveAttribute("width", "100");
+    await expect(page.locator(".editor-location rect").first()).toHaveAttribute("height", "100");
     expect(await page.locator(".editor-location-name").evaluateAll((nodes) => nodes.every((node) => (
       node.scrollWidth <= node.clientWidth && node.scrollHeight <= node.clientHeight
     )))).toBe(true);
     await expect(page.getByLabel("画布信息")).toContainText("当前地图八方世界");
     await expect(page.getByLabel("当前地图").locator("option")).toHaveCount(6);
+    await expect(page.locator(".editor-location-name").filter({ hasText: "住宅入口" })).toHaveCount(1);
+    expect(await page.locator(".editor-location-name").allTextContents()).not.toContain("嬴长嫚与楼夜秋之家·入口");
     await page.locator(".editor-location").filter({ hasText: "楼门路" }).click();
     await expect(page.getByLabel("画布信息")).toContainText("已选地点：楼门路 · 网格");
     await expect(page.locator(".editor-selection-summary")).toContainText("楼门路");
@@ -356,8 +361,10 @@ test.describe("real-time multiplayer", () => {
     await first.getByRole("button", { name: "传音" }).click();
     await expect(second.getByLabel("世界聊天")).toContainText(message);
     await moveTo(first, "嬴长嫚与楼夜秋之家·门厅");
-    await expect(second.locator(".map-node").filter({ hasText: "嬴长嫚与楼夜秋之家·门厅" })).not.toContainText("在线");
-    await expect(second.getByLabel("地图信息")).toContainText("三步内侠客2 人");
+    const hallNode = second.getByRole("button", { name: /嬴长嫚与楼夜秋之家·门厅，可前往/ });
+    await expect(hallNode.locator(".node-name")).toHaveText("门厅");
+    await expect(hallNode).not.toContainText("在线");
+    await expect(second.getByLabel("地图信息")).toContainText("三步视野4 处 · 2 人");
     await firstContext.close();
     await expect(second.getByLabel("世界状态")).toContainText("1 位侠客在线");
     await secondContext.close();
