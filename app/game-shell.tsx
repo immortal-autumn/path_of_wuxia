@@ -79,6 +79,16 @@ function remainingText(job: ActionJob, now: number) {
   return seconds === 0 ? "正在结算" : `剩余 ${durationText(seconds)}`;
 }
 
+function cooldownRemainingText(until: string | null, now: number) {
+  if (!until) return "可以发动";
+  const seconds = Math.max(0, Math.ceil((new Date(until).getTime() - now) / 1000));
+  return seconds === 0 ? "可以发动" : `冷却剩余 ${durationText(seconds)}`;
+}
+
+function isCoolingDown(until: string | null, now: number) {
+  return until !== null && new Date(until).getTime() > now;
+}
+
 function StatBar({ label, value, max, tone }: { label: string; value: number; max: number; tone: string }) {
   const percentage = Math.max(0, Math.min(100, (value / max) * 100));
   return (
@@ -127,19 +137,31 @@ function MapPanel({
   routes,
   self,
   onlinePlayers,
+  qinggongTargets,
   pending,
   onMove,
+  onQinggong,
   onOpenVisitedMap,
   visitedMapLoading,
   currentLayer,
-}: Pick<GameSnapshot, "locations" | "routes" | "self" | "onlinePlayers" | "currentLayer"> & {
+}: Pick<GameSnapshot, "locations" | "routes" | "self" | "onlinePlayers" | "qinggongTargets" | "currentLayer"> & {
   pending: boolean;
   onMove: (locationId: string) => void;
+  onQinggong: (locationId: string) => void;
   onOpenVisitedMap: () => void;
   visitedMapLoading: boolean;
 }) {
   const [inspectedLocationId, setInspectedLocationId] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
   const locationMap = useMemo(() => new Map(locations.map((location) => [location.id, location])), [locations]);
+  const qinggongTargetMap = useMemo(
+    () => new Map(qinggongTargets.map((target) => [target.locationId, target])),
+    [qinggongTargets],
+  );
   const routeGraph = useMemo(() => {
     const graph = new Map<string, Array<{
       route: (typeof routes)[number];
@@ -191,12 +213,16 @@ function MapPanel({
     }];
   }), [currentEdges, locationMap]);
   const visibleLocations = useMemo(
-    () => locations.filter((location) => distances.has(location.id)),
-    [distances, locations],
+    () => locations.filter((location) => distances.has(location.id) || qinggongTargetMap.has(location.id)),
+    [distances, locations, qinggongTargetMap],
   );
   const visibleLocationIds = useMemo(
     () => new Set(visibleLocations.map((location) => location.id)),
     [visibleLocations],
+  );
+  const ordinaryVisibleCount = useMemo(
+    () => visibleLocations.filter((location) => distances.has(location.id)).length,
+    [distances, visibleLocations],
   );
   const visibleRoutes = useMemo(
     () => routes.filter(
@@ -206,6 +232,7 @@ function MapPanel({
   );
   const currentLocation = locationMap.get(self.currentLocation);
   const inspectedLocation = inspectedLocationId ? locationMap.get(inspectedLocationId) : null;
+  const inspectedQinggongTarget = inspectedLocationId ? qinggongTargetMap.get(inspectedLocationId) : null;
   const nearbyPlayers = onlinePlayers.filter((player) => visibleLocationIds.has(player.currentLocation));
 
   const viewBox = useMemo(() => {
@@ -224,7 +251,13 @@ function MapPanel({
   }, [visibleLocations]);
 
   const activateLocation = (location: Location) => {
-    if (adjacent.has(location.id) && !pending) onMove(location.id);
+    if (pending) return;
+    if (adjacent.has(location.id)) {
+      onMove(location.id);
+      return;
+    }
+    const qinggongTarget = qinggongTargetMap.get(location.id);
+    if (qinggongTarget && !isCoolingDown(qinggongTarget.cooldownUntil, now)) onQinggong(location.id);
   };
 
   const handleKey = (event: KeyboardEvent<SVGGElement>, location: Location) => {
@@ -242,7 +275,7 @@ function MapPanel({
           <h2>{currentLayer.name} · 局部地图</h2>
         </div>
         <div className="map-title-actions">
-          <p>地图仅显示地点名称；可直接点击实线长方框移动。</p>
+          <p>实线框为下一步；双线框为可立即施展轻功抵达的地点。</p>
           <button type="button" onClick={onOpenVisitedMap} disabled={visitedMapLoading}>
             {visitedMapLoading ? "读取足迹…" : "足迹地图"}
           </button>
@@ -250,12 +283,16 @@ function MapPanel({
       </header>
       <dl className="map-status" aria-label="地图信息">
         <div><dt>当前位置</dt><dd>{currentLocation ? `${currentLocation.name} · (${currentLocation.gridX}, ${currentLocation.gridY})` : "未知之地"}</dd></div>
-        <div><dt>指向地点</dt><dd>{inspectedLocation ? `${inspectedLocation.name} · (${inspectedLocation.gridX}, ${inspectedLocation.gridY})` : "悬停或聚焦查看全名"}</dd></div>
+        <div><dt>指向地点</dt><dd>{inspectedLocation
+          ? `${inspectedLocation.name} · (${inspectedLocation.gridX}, ${inspectedLocation.gridY})${inspectedQinggongTarget
+            ? ` · 轻功${DIRECTION_LABEL[inspectedQinggongTarget.direction]} ${inspectedQinggongTarget.distance}格 · ${cooldownRemainingText(inspectedQinggongTarget.cooldownUntil, now)}`
+            : ""}`
+          : "悬停或聚焦查看全名"}</dd></div>
         <div><dt>所属区域</dt><dd>{currentLocation?.region ?? "无名区域"}</dd></div>
-        <div><dt>{visionDepthText(self.visionDepth)}步视野</dt><dd>{visibleLocations.length} 处 · {nearbyPlayers.length} 人</dd></div>
+        <div><dt>{visionDepthText(self.visionDepth)}步视野</dt><dd>{ordinaryVisibleCount} 处 · 轻功 {qinggongTargets.length} 处 · {nearbyPlayers.length} 人</dd></div>
       </dl>
       <div className="map-stage">
-        <svg className="wuxia-map" viewBox={viewBox} role="img" aria-label={`当前位置${visionDepthText(self.visionDepth)}步内的八方向地图`}>
+        <svg className="wuxia-map" viewBox={viewBox} role="img" aria-label={`当前位置${visionDepthText(self.visionDepth)}步视野与轻功落点地图`}>
           {visibleRoutes.map((route) => {
             const from = locationMap.get(route.fromLocation);
             const to = locationMap.get(route.toLocation);
@@ -276,19 +313,29 @@ function MapPanel({
           {visibleLocations.map((location) => {
             const current = location.id === self.currentLocation;
             const reachable = adjacent.has(location.id);
-            const canMove = reachable && !pending;
-            const distance = distances.get(location.id) ?? 0;
+            const qinggongTarget = qinggongTargetMap.get(location.id);
+            const qinggongCooling = qinggongTarget ? isCoolingDown(qinggongTarget.cooldownUntil, now) : false;
+            const canActivate = !pending && (reachable || (qinggongTarget !== undefined && !qinggongCooling));
+            const distance = distances.get(location.id) ?? qinggongTarget?.distance ?? 0;
             return (
               <g
                 key={location.id}
-                className={`map-node distance-${distance} ${current ? "current" : ""} ${reachable ? "reachable" : ""}`}
+                className={`map-node distance-${distance} ${current ? "current" : ""} ${reachable ? "reachable" : ""} ${qinggongTarget ? "qinggong-target" : ""} ${qinggongCooling ? "qinggong-cooling" : ""}`}
                 data-distance={distance}
                 data-location-id={location.id}
+                data-ordinary-visible={distances.has(location.id) ? "true" : undefined}
+                data-qinggong-target={qinggongTarget ? "true" : undefined}
                 transform={`translate(${location.x} ${location.y})`}
                 role="button"
-                tabIndex={canMove ? 0 : -1}
-                aria-label={`${location.name}，网格 (${location.gridX}, ${location.gridY})${current ? "，当前位置" : reachable ? "，可前往" : ""}`}
-                aria-disabled={!canMove}
+                tabIndex={canActivate ? 0 : -1}
+                aria-label={`${location.name}，网格 (${location.gridX}, ${location.gridY})${current
+                  ? "，当前位置"
+                  : reachable
+                    ? "，普通移动可前往"
+                    : qinggongTarget
+                      ? `，轻功${DIRECTION_LABEL[qinggongTarget.direction]}方${qinggongTarget.distance}格${qinggongCooling ? `，${cooldownRemainingText(qinggongTarget.cooldownUntil, now)}` : "，轻功可达，立即发动"}`
+                      : ""}`}
+                aria-disabled={!canActivate}
                 onClick={() => activateLocation(location)}
                 onKeyDown={(event) => handleKey(event, location)}
                 onMouseEnter={() => setInspectedLocationId(location.id)}
@@ -296,6 +343,7 @@ function MapPanel({
                 onFocus={() => setInspectedLocationId(location.id)}
                 onBlur={() => setInspectedLocationId(null)}
               >
+                {qinggongTarget && <rect className="qinggong-ring" x="-67" y="-43" width="134" height="86" />}
                 <rect className="node-box" x="-60" y="-36" width="120" height="72" />
                 <foreignObject x="-56" y="-32" width="112" height="64" pointerEvents="none">
                   <div className="node-name">{conciseLocationName(location.name)}</div>
@@ -322,6 +370,7 @@ function MapPanel({
         <div className="map-legend" aria-label="地图图例">
           <span><i className="legend-current" />当前位置</span>
           <span><i className="legend-next" />下一步</span>
+          <span><i className="legend-qinggong" />轻功落点</span>
           <span><i className="legend-later" />二至{visionDepthText(self.visionDepth)}步</span>
         </div>
       </footer>
@@ -461,7 +510,6 @@ function ActionsPanel({
   transitions,
   self,
   locations,
-  qinggongTargets,
   privateEvents,
   combat,
   lootPiles,
@@ -472,12 +520,11 @@ function ActionsPanel({
   onReorder,
   onCraft,
   onFarm,
-  onQinggong,
   onCombatChoice,
   onRespawn,
   onTakeLoot,
   onTransition,
-}: Pick<GameSnapshot, "actionState" | "inventory" | "transitions" | "self" | "locations" | "qinggongTargets" | "privateEvents" | "combat" | "lootPiles"> & {
+}: Pick<GameSnapshot, "actionState" | "inventory" | "transitions" | "self" | "locations" | "privateEvents" | "combat" | "lootPiles"> & {
   pending: boolean;
   open: boolean;
   onStart: (actionId: string) => void;
@@ -485,7 +532,6 @@ function ActionsPanel({
   onReorder: (jobIds: string[]) => void;
   onCraft: (recipeId: string) => void;
   onFarm: (plotId: string, operation: "plant" | "water" | "harvest", cropId?: string) => void;
-  onQinggong: (destinationId: string) => void;
   onCombatChoice: (combatId: string, choice: "attack" | "power" | "defend" | "flee") => void;
   onRespawn: () => void;
   onTakeLoot: (lootPileId: string) => void;
@@ -497,6 +543,9 @@ function ActionsPanel({
     return () => clearInterval(timer);
   }, []);
   const currentLocation = locations.find((location) => location.id === self.currentLocation);
+  const activeSkillActionIds = new Set(self.skills.flatMap((skill) => (
+    skill.kind === "active" && skill.activeActionId ? [skill.activeActionId] : []
+  )));
   const regularActionLocked = combat !== null || self.defeated;
   const categoryLabel: Record<string, string> = {
     life: "生活", perception: "感知", movement: "身法", cultivation: "修炼", production: "生产",
@@ -549,7 +598,7 @@ function ActionsPanel({
               <button disabled={pending || regularActionLocked} onClick={() => onTakeLoot(pile.id)}>拾取全部</button>
             </div>
           ))}
-          {actionState.available.map((action) => (
+          {actionState.available.filter((action) => !activeSkillActionIds.has(action.id)).map((action) => (
             <button
               className="action-card"
               key={action.id}
@@ -606,21 +655,6 @@ function ActionsPanel({
                 )}
               </span>
             </div>
-          ))}
-          {qinggongTargets.map((target) => (
-            <button
-              className="action-card movement-action"
-              key={target.locationId}
-              disabled={pending || regularActionLocked || actionState.queued.length >= actionState.maxQueued}
-              onClick={() => onQinggong(target.locationId)}
-            >
-              <span className="action-mark">轻</span>
-              <span>
-                <strong>轻功前往{target.locationName}</strong>
-                <small>{DIRECTION_LABEL[target.direction]}方直线 {target.distance} 格，结算成功后抵达</small>
-              </span>
-              <em>{durationText(target.durationSeconds)}</em>
-            </button>
           ))}
         </div>
         <aside className="action-queue" aria-label="行动队列">
@@ -685,6 +719,10 @@ const RELATIONSHIP_LABELS: Record<string, string> = {
 
 const ROLE_LABELS: Record<string, string> = { mentor: "师父", disciple: "弟子" };
 
+const SKILL_CATEGORY_LABELS: Record<string, string> = {
+  perception: "感知", movement: "身法", production: "生产", combat: "战斗",
+};
+
 function CharacterPanel({
   self,
   inventory,
@@ -698,6 +736,7 @@ function CharacterPanel({
   onEquip,
   onUnequip,
   onUseItem,
+  onUseSkill,
   onAdultUpdate,
   onGreet,
   onInteractionRequest,
@@ -723,6 +762,7 @@ function CharacterPanel({
   onEquip: (itemId: string) => void;
   onUnequip: (itemId: string) => void;
   onUseItem: (itemId: string) => void;
+  onUseSkill: (skillId: string) => void;
   onAdultUpdate: (status: "unknown" | "adult" | "minor", enabled: boolean) => void;
   onGreet: (targetPlayerId: string) => void;
   onInteractionRequest: (targetPlayerId: string, requestType: "relationship.friend" | "relationship.sworn" | "relationship.mentor" | "relationship.lover" | "relationship.spouse" | "intimate") => void;
@@ -736,7 +776,12 @@ function CharacterPanel({
   onTradeCancel: (tradeId: string) => void;
   onCombatStart: (targetPlayerId: string) => void;
 }) {
-  const [tab, setTab] = useState<"base" | "combat" | "cultivation" | "inventory" | "social">("base");
+  const [tab, setTab] = useState<"base" | "combat" | "cultivation" | "skills" | "inventory" | "social">("base");
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
   const [draft, setDraft] = useState<BaseAttributes>({ strength: 0, agility: 0, constitution: 0, root: 0, comprehension: 0, spirit: 0 });
   const [adultStatus, setAdultStatus] = useState(social.adultProfile.status);
   const [adultEnabled, setAdultEnabled] = useState(social.adultProfile.contentEnabled);
@@ -744,6 +789,8 @@ function CharacterPanel({
   const allocated = Object.values(draft).reduce((sum, value) => sum + value, 0);
   const progress = Math.min(100, (self.cultivation.progress / Math.max(1, self.cultivation.nextLevelCost)) * 100);
   const tradableItems = inventory.items.filter((item) => !item.bound && !item.equippedSlot && item.quantity > item.reservedQuantity);
+  const activeSkills = self.skills.filter((skill) => skill.kind === "active");
+  const passiveSkills = self.skills.filter((skill) => skill.kind === "passive");
 
   return (
     <section className={`character-panel side-section mobile-drawer ${open ? "drawer-open" : ""}`} aria-label="角色状态">
@@ -763,6 +810,7 @@ function CharacterPanel({
         <button className={tab === "base" ? "active" : ""} onClick={() => setTab("base")}>基础属性</button>
         <button className={tab === "combat" ? "active" : ""} onClick={() => setTab("combat")}>战斗属性</button>
         <button className={tab === "cultivation" ? "active" : ""} onClick={() => setTab("cultivation")}>修炼突破</button>
+        <button className={tab === "skills" ? "active" : ""} onClick={() => setTab("skills")}>技能</button>
         <button className={tab === "inventory" ? "active" : ""} onClick={() => setTab("inventory")}>物品装备</button>
         <button className={tab === "social" ? "active" : ""} onClick={() => setTab("social")}>交往交易</button>
       </div>
@@ -800,6 +848,48 @@ function CharacterPanel({
           <p>下一级 +{self.cultivation.nextMinorAttributePoints} 属性点</p>
           {self.cultivation.realmIndex < 12 && <p>突破成功率 {self.cultivation.breakthroughChance}% · 失败扣 {self.cultivation.breakthroughCost} · 新境界 +{self.cultivation.nextRealmAttributePoints} 点</p>}
           <button disabled={pending || !self.cultivation.canBreakthrough} onClick={onBreakthrough}>尝试突破</button>
+        </div>
+      )}
+      {tab === "skills" && (
+        <div className="skills-panel" aria-label="角色技能">
+          <section aria-label="主动技能">
+            <h3>主动技能</h3>
+            {activeSkills.map((skill) => {
+              const cooling = isCoolingDown(skill.cooldownUntil, now);
+              return (
+                <article className="skill-card active-skill" key={skill.id}>
+                  <header><strong>{skill.name}</strong><span>{ATTRIBUTE_LABELS.find(([key]) => key === skill.attributeKey)?.[1] ?? skill.attributeKey} · {SKILL_CATEGORY_LABELS[skill.category] ?? skill.category}</span></header>
+                  <p>{skill.description}</p>
+                  <small>等级 {skill.level} · 经验 {skill.experience}</small>
+                  {skill.id === "qinggong" ? (
+                    <p className="skill-instruction">{cooling ? cooldownRemainingText(skill.cooldownUntil, now) : "在地图点击双线轻功边框立即发动"}</p>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={pending || cooling || skill.activeActionId === null}
+                      onClick={() => onUseSkill(skill.id)}
+                    >
+                      {cooling
+                        ? cooldownRemainingText(skill.cooldownUntil, now)
+                        : skill.activeActionId
+                          ? `发动${skill.activeActionName ?? skill.name}`
+                          : "尚未配置可发动规则"}
+                    </button>
+                  )}
+                </article>
+              );
+            })}
+          </section>
+          <section aria-label="被动技能">
+            <h3>被动技能</h3>
+            {passiveSkills.map((skill) => (
+              <article className="skill-card passive-skill" key={skill.id}>
+                <header><strong>{skill.name}</strong><span>{ATTRIBUTE_LABELS.find(([key]) => key === skill.attributeKey)?.[1] ?? skill.attributeKey} · {SKILL_CATEGORY_LABELS[skill.category] ?? skill.category}</span></header>
+                <p>{skill.description}</p>
+                <small>等级 {skill.level} · 经验 {skill.experience}</small>
+              </article>
+            ))}
+          </section>
         </div>
       )}
       {tab === "inventory" && (
@@ -1193,6 +1283,7 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           routes={snapshot.routes}
           self={snapshot.self}
           onlinePlayers={snapshot.onlinePlayers}
+          qinggongTargets={snapshot.qinggongTargets}
           currentLayer={snapshot.currentLayer}
           pending={pending !== null || connection !== "online" || snapshot.combat !== null || snapshot.self.defeated}
           visitedMapLoading={visitedMapLoading}
@@ -1201,6 +1292,7 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
             setDrawer(null);
             sendCommand({ type: "move", locationId }, "move");
           }}
+          onQinggong={(destinationId) => sendCommand({ type: "qinggong.start", destinationId }, "qinggong")}
         />
         <ActionsPanel
           actionState={snapshot.actionState}
@@ -1208,7 +1300,6 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           transitions={snapshot.transitions}
           self={snapshot.self}
           locations={snapshot.locations}
-          qinggongTargets={snapshot.qinggongTargets}
           privateEvents={snapshot.privateEvents}
           combat={snapshot.combat}
           lootPiles={snapshot.lootPiles}
@@ -1219,7 +1310,6 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           onReorder={(jobIds) => sendCommand({ type: "action.queue.reorder", jobIds }, "action")}
           onCraft={(recipeId) => sendCommand({ type: "craft.start", recipeId }, "craft")}
           onFarm={(plotId, operation, cropId) => sendCommand({ type: "farm.start", plotId, operation, cropId }, "farm")}
-          onQinggong={(destinationId) => sendCommand({ type: "qinggong.start", destinationId }, "qinggong")}
           onCombatChoice={(combatId, choice) => sendCommand({ type: "combat.choose", combatId, choice }, "combat")}
           onRespawn={() => sendCommand({ type: "combat.respawn" }, "combat")}
           onTakeLoot={(lootPileId) => sendCommand({ type: "loot.take", lootPileId }, "loot")}
@@ -1244,6 +1334,7 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           onEquip={(itemId) => sendCommand({ type: "inventory.equip", itemId }, "inventory")}
           onUnequip={(itemId) => sendCommand({ type: "inventory.unequip", itemId }, "inventory")}
           onUseItem={(itemId) => sendCommand({ type: "inventory.use", itemId }, "inventory")}
+          onUseSkill={(skillId) => sendCommand({ type: "skill.use", skillId }, "skill")}
           onAdultUpdate={(adultStatus, adultContentEnabled) => sendCommand({ type: "profile.adult.update", adultStatus, adultContentEnabled }, "social")}
           onGreet={(targetPlayerId) => sendCommand({ type: "interaction.greet", targetPlayerId }, "social")}
           onInteractionRequest={(targetPlayerId, requestType) => sendCommand({ type: "interaction.request", targetPlayerId, requestType }, "social")}

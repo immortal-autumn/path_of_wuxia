@@ -246,8 +246,12 @@ export type PlayerSkill = {
   description: string;
   attributeKey: keyof BaseAttributes;
   category: string;
+  kind: "active" | "passive";
   level: number;
   experience: number;
+  cooldownUntil: string | null;
+  activeActionId: string | null;
+  activeActionName: string | null;
 };
 
 export type ItemDefinition = {
@@ -493,7 +497,8 @@ export type QinggongTarget = {
   locationName: string;
   direction: Direction;
   distance: number;
-  durationSeconds: number;
+  available: boolean;
+  cooldownUntil: string | null;
 };
 
 export type GameSnapshot = {

@@ -6,7 +6,7 @@ import { ensureNpcPopulation } from "./npc-seed";
 
 export type GameDatabase = DatabaseSync;
 
-export const MAP_SCHEMA_VERSION = 7;
+export const MAP_SCHEMA_VERSION = 8;
 
 export function openGameDatabase(databasePath = process.env.DATABASE_PATH ?? resolve("data/wuxia.db")) {
   if (databasePath !== ":memory:") mkdirSync(dirname(databasePath), { recursive: true });
@@ -192,13 +192,20 @@ function migrate(db: GameDatabase) {
     );
     CREATE TABLE IF NOT EXISTS skill_definitions(
       id TEXT PRIMARY KEY,name TEXT NOT NULL UNIQUE,description TEXT NOT NULL,attribute_key TEXT NOT NULL,
-      category TEXT NOT NULL,is_active INTEGER NOT NULL DEFAULT 1,seed_revision INTEGER NOT NULL DEFAULT 0
+      category TEXT NOT NULL,skill_kind TEXT NOT NULL DEFAULT 'passive',
+      is_active INTEGER NOT NULL DEFAULT 1,seed_revision INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS player_skills(
       player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
       skill_id TEXT NOT NULL REFERENCES skill_definitions(id),level INTEGER NOT NULL DEFAULT 0 CHECK(level BETWEEN 0 AND 100),
       experience INTEGER NOT NULL DEFAULT 0 CHECK(experience>=0),updated_at TEXT NOT NULL,
       PRIMARY KEY(player_id,skill_id)
+    );
+    CREATE TABLE IF NOT EXISTS player_action_cooldowns(
+      player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+      action_template_id TEXT NOT NULL REFERENCES action_templates(id) ON DELETE CASCADE,
+      available_at TEXT NOT NULL,updated_at TEXT NOT NULL,
+      PRIMARY KEY(player_id,action_template_id)
     );
     CREATE TABLE IF NOT EXISTS loot_piles(
       id TEXT PRIMARY KEY,location_id TEXT NOT NULL REFERENCES locations(id),silver INTEGER NOT NULL DEFAULT 0 CHECK(silver>=0),
@@ -336,6 +343,7 @@ function migrate(db: GameDatabase) {
   addColumn(db, "action_logs", "action_template_id TEXT REFERENCES action_templates(id)");
   addColumn(db, "action_logs", "action_job_id TEXT REFERENCES action_jobs(id)");
   addColumn(db, "action_jobs", "duration_seconds INTEGER NOT NULL DEFAULT 0");
+  addColumn(db, "skill_definitions", "skill_kind TEXT NOT NULL DEFAULT 'passive'");
 
   if (previousVersion < 2) db.exec("UPDATE routes SET is_active=0; UPDATE locations SET is_active=0;");
   if (previousVersion < 3) {
@@ -441,6 +449,18 @@ function migrate(db: GameDatabase) {
       WHERE action_id IS NOT NULL AND action_template_id IS NULL;
     `);
   }
+  if (previousVersion < 8) {
+    db.prepare(`
+      DELETE FROM item_reservations WHERE job_id IN (
+        SELECT id FROM action_jobs
+        WHERE action_template_id='action-qinggong' AND status IN ('running','queued','paused')
+      )
+    `).run();
+    db.prepare(`
+      UPDATE action_jobs SET status='cancelled',result_text='轻功已改为地图即时技能，旧排队行动已取消。',updated_at=?
+      WHERE action_template_id='action-qinggong' AND status IN ('running','queued','paused')
+    `).run(now);
+  }
 
   db.exec(`
     DROP INDEX IF EXISTS idx_active_grid;
@@ -463,6 +483,7 @@ function migrate(db: GameDatabase) {
     CREATE INDEX IF NOT EXISTS idx_action_bindings_location ON location_action_bindings(location_id,is_active,priority);
     CREATE INDEX IF NOT EXISTS idx_action_jobs_player ON action_jobs(player_id,status,queue_position);
     CREATE INDEX IF NOT EXISTS idx_action_jobs_completion ON action_jobs(status,completes_at);
+    CREATE INDEX IF NOT EXISTS idx_action_cooldowns_available ON player_action_cooldowns(available_at,player_id);
     CREATE INDEX IF NOT EXISTS idx_items_owner ON item_instances(owner_player_id,equipped_slot,definition_id);
     CREATE INDEX IF NOT EXISTS idx_items_loot ON item_instances(loot_pile_id,definition_id);
     CREATE INDEX IF NOT EXISTS idx_item_reservations_instance ON item_reservations(item_instance_id,job_id);

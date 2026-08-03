@@ -86,16 +86,19 @@ describe("GameService", () => {
     expect(validateWorldMap(db).ok).toBe(true);
   });
 
-  it("installs schema-v7 action-system storage without breaking legacy actions", () => {
+  it("installs schema-v8 skill cooldown storage without breaking legacy actions", () => {
     const requiredTables = [
       "action_templates", "location_facilities", "location_action_bindings", "action_jobs", "player_needs",
       "skill_definitions", "player_skills", "item_definitions", "item_instances", "recipe_definitions",
       "crop_definitions", "farm_plots", "interaction_requests", "player_relationships", "trade_sessions",
       "combat_sessions", "loot_piles", "npc_profiles", "agent_credentials",
+      "player_action_cooldowns",
     ];
     const tables = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>).map((row) => row.name));
     expect(requiredTables.every((table) => tables.has(table))).toBe(true);
     expect(db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: MAP_SCHEMA_VERSION });
+    expect(db.prepare("SELECT skill_kind FROM skill_definitions WHERE id='eagle-eye'").get()).toEqual({ skill_kind: "active" });
+    expect(db.prepare("SELECT skill_kind FROM skill_definitions WHERE id='perception'").get()).toEqual({ skill_kind: "passive" });
     expect(db.prepare("SELECT COUNT(*) AS count FROM action_templates WHERE is_active=1 AND category='legacy'").get()).toEqual({ count: 5 });
     expect(db.prepare(`
       SELECT COUNT(*) AS count FROM location_action_bindings b JOIN action_templates t ON t.id=b.action_template_id
@@ -279,22 +282,39 @@ describe("GameService", () => {
     expect(inventory.items.filter((item) => item.definitionId === "rice").reduce((sum, item) => sum + item.quantity, 0)).toBe(20);
   });
 
-  it("expands Eagle Eye vision temporarily without revealing locations in exploration history", () => {
+  it("activates Eagle Eye immediately, persists cooldown and keeps active skills out of the action queue", () => {
     const player = service.createSession().player;
     const before = service.getSnapshot(player.id, [player.id]);
     expect(before.self.visionDepth).toBe(3);
     expect(service.getVisitedMap(player.id).locations).toHaveLength(1);
+    expect(before.self.skills.filter((skill) => skill.kind === "active").map((skill) => skill.id).sort()).toEqual([
+      "eagle-eye", "qinggong", "stealth",
+    ]);
+    expect(before.self.skills.find((skill) => skill.id === "perception")).toMatchObject({ kind: "passive" });
+    expect(before.self.skills.find((skill) => skill.id === "eagle-eye")).toMatchObject({
+      kind: "active", activeActionId: "action-eagle-eye", cooldownUntil: null,
+    });
+    expect(before.actionState.available.some((action) => action.id === "action-eagle-eye")).toBe(false);
+    expect(() => service.startAction(player.id, "action-eagle-eye")).toThrow("技能页发动");
+    expect(() => service.useActiveSkill(player.id, "perception")).toThrow("不是可主动发动的技能");
 
-    service.startAction(player.id, "action-eagle-eye");
-    clock = new Date(clock.getTime() + 60_000);
-    expect(service.settleActionQueue(player.id).completed).toBe(1);
+    const result = service.useActiveSkill(player.id, "eagle-eye");
+    expect(result).toMatchObject({ success: true });
+    expect(service.getActionState(player.id).current).toBeNull();
+    expect(service.getActionState(player.id).queued).toEqual([]);
     const expanded = service.getSnapshot(player.id, [player.id]);
     expect(expanded.self.visionDepth).toBe(4);
     expect(expanded.locations.length).toBeGreaterThan(before.locations.length);
     expect(service.getVisitedMap(player.id).locations).toHaveLength(1);
+    expect(expanded.self.skills.find((skill) => skill.id === "eagle-eye")?.cooldownUntil)
+      .toBe("2026-08-03T12:30:00.000Z");
+    expect(db.prepare("SELECT available_at FROM player_action_cooldowns WHERE player_id=? AND action_template_id='action-eagle-eye'").get(player.id))
+      .toEqual({ available_at: "2026-08-03T12:30:00.000Z" });
+    expect(() => service.useActiveSkill(player.id, "eagle-eye")).toThrow("技能冷却中");
 
     clock = new Date(clock.getTime() + 30 * 60_000);
     expect(service.getPlayer(player.id).visionDepth).toBe(3);
+    expect(service.getPlayer(player.id).skills.find((skill) => skill.id === "eagle-eye")?.cooldownUntil).toBeNull();
   });
 
   it("keeps observation and listening private and filters private or adult traces", () => {
@@ -324,37 +344,45 @@ describe("GameService", () => {
     expect(db.prepare("SELECT COUNT(*) AS count FROM world_events WHERE player_id=? AND event_type='action'").get(player.id)).toEqual({ count: 0 });
   });
 
-  it("offers straight eight-direction Qinggong targets and moves only after a successful timed settlement", () => {
+  it("marks straight eight-direction Qinggong targets and resolves movement immediately with persistent cooldown", () => {
     const player = service.createSession().player;
     expect(service.getQinggongTargets(player.id)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ locationId: "home-main-bedroom", direction: "down", distance: 2, durationSeconds: 35 }),
+      expect.objectContaining({ locationId: "home-main-bedroom", direction: "down", distance: 2, available: true, cooldownUntil: null }),
     ]));
     expect(service.getQinggongTargets(player.id).some((target) => target.locationId === "home-garage")).toBe(false);
     db.prepare("UPDATE player_skills SET level=40 WHERE player_id=? AND skill_id='qinggong'").run(player.id);
     expect(service.getQinggongTargets(player.id)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ locationId: "home-garage", direction: "right", distance: 3, durationSeconds: 45 }),
-      expect.objectContaining({ locationId: "home-back-garden", direction: "down", distance: 4, durationSeconds: 55 }),
+      expect.objectContaining({ locationId: "home-garage", direction: "right", distance: 3, available: true }),
+      expect.objectContaining({ locationId: "home-back-garden", direction: "down", distance: 4, available: true }),
     ]));
 
-    service.startQinggong(player.id, "home-main-bedroom");
-    expect(service.getPlayer(player.id).currentLocation).toBe("home-entrance");
-    expect(service.getVisitedMap(player.id).locations).toHaveLength(1);
-    clock = new Date(clock.getTime() + 35_000);
-    expect(service.settleActionQueue(player.id).completed).toBe(1);
+    const result = service.useQinggong(player.id, "home-main-bedroom");
+    expect(result).toMatchObject({ success: true, cooldownUntil: "2026-08-03T12:01:00.000Z" });
     expect(service.getPlayer(player.id).currentLocation).toBe("home-main-bedroom");
+    expect(service.getActionState(player.id)).toMatchObject({ current: null, queued: [] });
     expect(service.getVisitedMap(player.id).locations.map((location) => location.id)).toContain("home-main-bedroom");
+    expect(db.prepare("SELECT available_at FROM player_action_cooldowns WHERE player_id=? AND action_template_id='action-qinggong'").get(player.id))
+      .toEqual({ available_at: "2026-08-03T12:01:00.000Z" });
+    expect(service.getQinggongTargets(player.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ locationId: "home-entrance", available: false, cooldownUntil: "2026-08-03T12:01:00.000Z" }),
+    ]));
+    expect(() => service.useQinggong(player.id, "home-entrance")).toThrow("轻功冷却中");
+    clock = new Date(clock.getTime() + 60_000);
+    expect(service.getQinggongTargets(player.id).find((target) => target.locationId === "home-entrance"))
+      .toMatchObject({ available: true, cooldownUntil: null });
 
     const failedPlayer = service.createSession().player;
     const initialHp = failedPlayer.hp;
     roll = 99;
-    service.startQinggong(failedPlayer.id, "home-main-bedroom");
-    clock = new Date(clock.getTime() + 35_000);
-    service.settleActionQueue(failedPlayer.id);
+    const failedResult = service.useQinggong(failedPlayer.id, "home-main-bedroom");
+    expect(failedResult).toMatchObject({ success: false });
     const failed = service.getPlayer(failedPlayer.id);
     expect(failed.currentLocation).toBe("home-entrance");
     expect(failed.hp).toBe(initialHp - 5);
     expect(failed.needs.fatigue).toBeGreaterThanOrEqual(5);
     expect(service.getVisitedMap(failedPlayer.id).locations).toHaveLength(1);
+    expect(service.getActionState(failedPlayer.id)).toMatchObject({ current: null, queued: [] });
+    expect(service.getQinggongTargets(failedPlayer.id).every((target) => !target.available)).toBe(true);
   });
 
   it("requires confirmed adult opt-in and fresh mutual consent for every private adult action", () => {
@@ -526,13 +554,23 @@ describe("GameService", () => {
       const versionThree = openGameDatabase(databasePath);
       const expectedLocations = versionThree.prepare("SELECT COUNT(*) AS count FROM locations WHERE is_active=1").get();
       const expectedRoutes = versionThree.prepare("SELECT COUNT(*) AS count FROM routes WHERE is_active=1").get();
+      const player = new GameService(versionThree, () => new Date(clock), () => roll).createSession().player;
+      versionThree.prepare(`
+        INSERT INTO action_jobs(
+          id,player_id,action_template_id,target_location_id,status,queue_position,started_at,completes_at,
+          duration_seconds,reserved_json,context_json,created_at,updated_at
+        ) VALUES ('old-queued-qinggong',?,'action-qinggong','home-main-bedroom','running',0,?,?,35,'{}','{}',?,?)
+      `).run(player.id, clock.toISOString(), new Date(clock.getTime() + 35_000).toISOString(), clock.toISOString(), clock.toISOString());
       versionThree.prepare("DELETE FROM schema_migrations").run();
-      versionThree.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (3,?)").run(clock.toISOString());
+      versionThree.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (7,?)").run(clock.toISOString());
       versionThree.close();
       const upgraded = openGameDatabase(databasePath);
       expect(upgraded.prepare("SELECT COUNT(*) AS count FROM locations WHERE is_active=1").get()).toEqual(expectedLocations);
       expect(upgraded.prepare("SELECT COUNT(*) AS count FROM routes WHERE is_active=1").get()).toEqual(expectedRoutes);
       expect(upgraded.prepare("SELECT route_type FROM routes WHERE id='route-home-door-v4'").get()).toEqual({ route_type: "transition" });
+      expect(upgraded.prepare("SELECT status,result_text FROM action_jobs WHERE id='old-queued-qinggong'").get()).toEqual({
+        status: "cancelled", result_text: "轻功已改为地图即时技能，旧排队行动已取消。",
+      });
       upgraded.close();
     } finally {
       rmSync(directory, { recursive: true, force: true });

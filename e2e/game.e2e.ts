@@ -182,15 +182,17 @@ test.describe("game map", () => {
   test("shows only the current map's three-step rectangular-node neighborhood and free direction controls", async ({ page }) => {
     await enterWorld(page);
     await expect(page.getByLabel("世界地图")).toBeVisible();
-    await expect(page.locator(".map-node")).toHaveCount(10);
-    await expect(page.locator(".map-node .node-name")).toHaveCount(10);
+    await expect(page.locator(".map-node")).toHaveCount(11);
+    await expect(page.locator('.map-node[data-ordinary-visible="true"]')).toHaveCount(10);
+    await expect(page.locator('.map-node[data-qinggong-target="true"]')).toHaveCount(2);
+    await expect(page.locator(".map-node .node-name")).toHaveCount(11);
     await expect(page.locator(".map-node .node-distance, .map-node .node-players")).toHaveCount(0);
     await expect(page.locator(".map-node.reachable")).toHaveCount(2);
     await expect(page.locator(".map-node.current")).toContainText("玄关");
     await expect(page.locator(".map-node.current .node-box")).toHaveAttribute("width", "120");
     await expect(page.locator(".map-node.current .node-box")).toHaveAttribute("height", "72");
     await expect(page.getByLabel("地图信息")).toContainText("当前位置玄关 · (0, 0)");
-    await expect(page.getByLabel("地图信息")).toContainText("三步视野10 处");
+    await expect(page.getByLabel("地图信息")).toContainText("三步视野10 处 · 轻功 2 处");
     expect(await page.locator(".map-node .node-name").allTextContents()).toEqual(expect.arrayContaining(["玄关", "前庭", "门厅", "客厅", "餐厅", "修炼房"]));
     await page.getByRole("button", { name: /嬴长嫚与楼夜秋之家·门厅.*可前往/ }).hover();
     await expect(page.getByLabel("地图信息")).toContainText("指向地点嬴长嫚与楼夜秋之家·门厅 · (0, 1)");
@@ -268,20 +270,35 @@ test.describe("game map", () => {
     await expect(page.getByLabel("行动队列")).toContainText("当前没有进行中的行动");
   });
 
-  test("uses timed Qinggong and exposes private perception results with temporary Eagle Eye vision", async ({ page }) => {
+  test("uses map-border Qinggong and attribute-panel active skills without queueing", async ({ page }) => {
     await enterWorld(page);
     await updatePlayer(page, "UPDATE action_templates SET check_json='{}' WHERE id IN ('action-qinggong','action-eagle-eye','action-observe') AND ? IS NOT NULL");
 
-    await page.getByRole("button", { name: /轻功前往.*主卧/ }).click();
-    await expect(page.getByRole("status")).toContainText("开始施展轻功");
-    await expect(page.getByLabel("行动队列")).toContainText("施展轻功");
-    await updatePlayer(page, "UPDATE action_jobs SET completes_at='2000-01-01T00:00:00.000Z' WHERE player_id=? AND status='running'");
-    await expect(page.getByRole("button", { name: /嬴长嫚与楼夜秋之家·主卧.*当前位置/ })).toBeVisible();
+    await page.getByRole("button", { name: "技能" }).click();
+    const skills = page.getByLabel("角色技能");
+    await expect(skills.getByLabel("主动技能")).toContainText("鹰眼");
+    await expect(skills.getByLabel("主动技能")).toContainText("在地图点击双线轻功边框立即发动");
+    await expect(skills.getByLabel("被动技能")).toContainText("观察");
 
-    await page.getByRole("button", { name: /开启鹰眼/ }).click();
-    await updatePlayer(page, "UPDATE action_jobs SET completes_at=? WHERE player_id=? AND status='running'", new Date(Date.now() - 1000).toISOString());
+    const qinggongTarget = page.locator('[data-location-id="home-main-bedroom"][data-qinggong-target="true"]');
+    await expect(qinggongTarget).toHaveClass(/qinggong-target/);
+    await expect(qinggongTarget).toHaveAttribute("aria-label", /轻功可达，立即发动/);
+    await qinggongTarget.click();
+    await expect(page.getByRole("status")).toContainText("施展轻功成功");
+    await expect(page.getByRole("button", { name: /嬴长嫚与楼夜秋之家·主卧.*当前位置/ })).toBeVisible();
+    await expect(page.getByLabel("行动队列").locator(".queue-job")).toHaveCount(0);
+    const coolingTarget = page.locator('[data-location-id="home-entrance"][data-qinggong-target="true"]');
+    await expect(coolingTarget).toHaveClass(/qinggong-cooling/);
+    await expect(coolingTarget).toHaveAttribute("aria-label", /冷却剩余/);
+    await expect(skills.getByLabel("主动技能")).toContainText("冷却剩余");
+
+    await expect(page.locator(".action-list")).not.toContainText("开启鹰眼");
+    await skills.getByRole("button", { name: "发动开启鹰眼" }).click();
+    await expect(page.getByRole("status")).toContainText("开启鹰眼成功");
     await expect(page.getByLabel("地图信息")).toContainText("四步视野");
     await expect(page.getByLabel("个人行动记录")).toContainText("开启鹰眼成功");
+    await expect(skills.getByRole("button", { name: /冷却剩余/ })).toBeDisabled();
+    await expect(page.getByLabel("行动队列").locator(".queue-job")).toHaveCount(0);
 
     await page.getByRole("button", { name: /观察四周/ }).click();
     await updatePlayer(page, "UPDATE action_jobs SET completes_at='2000-01-01T00:00:00.000Z' WHERE player_id=? AND status='running'");
@@ -563,7 +580,7 @@ test.describe("real-time multiplayer", () => {
     const hallNode = second.getByRole("button", { name: /嬴长嫚与楼夜秋之家·门厅.*可前往/ });
     await expect(hallNode.locator(".node-name")).toHaveText("门厅");
     await expect(hallNode).not.toContainText("在线");
-    await expect(second.getByLabel("地图信息")).toContainText("三步视野10 处 · 2 人");
+    await expect(second.getByLabel("地图信息")).toContainText("三步视野10 处 · 轻功 2 处 · 2 人");
     await firstContext.close();
     await expect(second.getByLabel("世界状态")).toContainText("1 位侠客在线");
     await secondContext.close();

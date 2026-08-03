@@ -19,21 +19,22 @@ type CatalogAction = {
   resultTemplate: string;
   visibility?: ActionVisibility;
   adult?: boolean;
+  cooldownSeconds?: number;
 };
 
 export const ACTION_SKILLS = [
-  ["perception", "观察", "发现环境细节、人物状态与隐蔽线索。", "spirit", "perception"],
-  ["hearing", "聆听", "辨别附近声响与行动痕迹。", "spirit", "perception"],
-  ["eagle-eye", "鹰眼", "长时间集中感知以扩大地图视野。", "spirit", "perception"],
-  ["qinggong", "轻功", "沿八方向越过多个网格。", "agility", "movement"],
-  ["stealth", "潜行", "隐蔽行动、追踪与偷窃。", "agility", "movement"],
-  ["farming", "农耕", "耕地、播种、照料与收获作物。", "constitution", "production"],
-  ["cooking", "烹饪", "处理食材并制作饮食。", "comprehension", "production"],
-  ["medicine", "医术", "疗伤、诊断与处理药材。", "comprehension", "production"],
-  ["alchemy", "炼丹", "以药材炼制丹药。", "root", "production"],
-  ["smithing", "锻造", "打造、修理武器与护具。", "strength", "production"],
-  ["crafting", "制作", "加工材料并使用工坊设施。", "comprehension", "production"],
-  ["unarmed", "拳掌", "徒手攻防与切磋。", "strength", "combat"],
+  ["perception", "观察", "发现环境细节、人物状态与隐蔽线索。", "spirit", "perception", "passive"],
+  ["hearing", "聆听", "辨别附近声响与行动痕迹。", "spirit", "perception", "passive"],
+  ["eagle-eye", "鹰眼", "立即扩大地图视野，效果结束后可再次发动。", "spirit", "perception", "active"],
+  ["qinggong", "轻功", "立即沿八方向越过多个网格，发动后进入冷却。", "agility", "movement", "active"],
+  ["stealth", "潜行", "隐蔽行动、追踪与偷窃。", "agility", "movement", "active"],
+  ["farming", "农耕", "耕地、播种、照料与收获作物。", "constitution", "production", "passive"],
+  ["cooking", "烹饪", "处理食材并制作饮食。", "comprehension", "production", "passive"],
+  ["medicine", "医术", "疗伤、诊断与处理药材。", "comprehension", "production", "passive"],
+  ["alchemy", "炼丹", "以药材炼制丹药。", "root", "production", "passive"],
+  ["smithing", "锻造", "打造、修理武器与护具。", "strength", "production", "passive"],
+  ["crafting", "制作", "加工材料并使用工坊设施。", "comprehension", "production", "passive"],
+  ["unarmed", "拳掌", "徒手攻防与切磋。", "strength", "combat", "passive"],
 ] as const;
 
 export const ACTION_CATALOG: CatalogAction[] = [
@@ -50,11 +51,11 @@ export const ACTION_CATALOG: CatalogAction[] = [
     failure: { skillExperience: 4 }, resultTemplate: "{name}凝神听取附近的动静。", visibility: "private",
   },
   {
-    id: "action-eagle-eye", name: "开启鹰眼", description: "集中感知一分钟，随后三十分钟内看见更远地点。", category: "perception",
-    durationSeconds: 60, facilityTypes: ["surroundings"], requirements: { skillId: "eagle-eye" },
+    id: "action-eagle-eye", name: "开启鹰眼", description: "立即扩展感知，随后三十分钟内看见更远地点。", category: "perception",
+    durationSeconds: 0, facilityTypes: ["surroundings"], requirements: { skillId: "eagle-eye" },
     check: { attribute: "spirit", skillId: "eagle-eye", difficulty: 30 },
     success: { skillExperience: 12, statusId: "eagle-eye", statusDurationSeconds: 1800 },
-    failure: { skillExperience: 5 }, resultTemplate: "{name}尝试将感知延伸至远方。", visibility: "private",
+    failure: { skillExperience: 5 }, resultTemplate: "{name}尝试将感知延伸至远方。", visibility: "private", cooldownSeconds: 1800,
   },
   {
     id: "action-drink-water", name: "饮水", description: "花两分钟慢慢补充水分。", category: "life",
@@ -131,7 +132,7 @@ export const ACTION_CATALOG: CatalogAction[] = [
     check: { attribute: "agility", skillId: "qinggong", difficulty: 30 },
     success: { skillExperience: 15, needDeltas: { fatigue: 3, hydration: -2 } },
     failure: { skillExperience: 6, hpDelta: -5, needDeltas: { fatigue: 5 } },
-    resultTemplate: "{name}施展轻功越过数格。",
+    resultTemplate: "{name}施展轻功越过数格。", cooldownSeconds: 60,
   },
   {
     id: "action-private-intimacy", name: "私密亲昵", description: "仅在双方确认成年、开启成人内容并逐次同意后进行。", category: "intimate",
@@ -185,9 +186,10 @@ export function seedActionCatalog(db: DatabaseSync, locations: CatalogLocation[]
   db.prepare("UPDATE location_action_bindings SET is_active=0 WHERE seed_revision>0 AND seed_revision<?").run(revision);
 
   const skillInsert = db.prepare(`
-    INSERT INTO skill_definitions(id,name,description,attribute_key,category,is_active,seed_revision)
-    VALUES (?,?,?,?,?,1,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description,
-      attribute_key=excluded.attribute_key,category=excluded.category,is_active=1,seed_revision=excluded.seed_revision
+    INSERT INTO skill_definitions(id,name,description,attribute_key,category,skill_kind,is_active,seed_revision)
+    VALUES (?,?,?,?,?,?,1,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description,
+      attribute_key=excluded.attribute_key,category=excluded.category,skill_kind=excluded.skill_kind,is_active=1,seed_revision=excluded.seed_revision
+    WHERE skill_definitions.seed_revision>0
   `);
   for (const skill of ACTION_SKILLS) skillInsert.run(...skill, revision);
 
@@ -208,11 +210,12 @@ export function seedActionCatalog(db: DatabaseSync, locations: CatalogLocation[]
     INSERT INTO action_templates(
       id,name,description,category,target_kind,duration_seconds,requirements_json,check_json,costs_json,
       outcomes_json,result_template,adult,visibility,cooldown_seconds,version,is_active,seed_revision,created_at,updated_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,1,1,?,?,?)
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,1,?,?,?)
     ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description,category=excluded.category,
       target_kind=excluded.target_kind,duration_seconds=excluded.duration_seconds,requirements_json=excluded.requirements_json,
       check_json=excluded.check_json,costs_json=excluded.costs_json,outcomes_json=excluded.outcomes_json,
-      result_template=excluded.result_template,visibility=excluded.visibility,is_active=1,
+      result_template=excluded.result_template,adult=excluded.adult,visibility=excluded.visibility,
+      cooldown_seconds=excluded.cooldown_seconds,is_active=1,
       seed_revision=excluded.seed_revision,updated_at=excluded.updated_at
     WHERE action_templates.seed_revision>0
   `);
@@ -230,7 +233,7 @@ export function seedActionCatalog(db: DatabaseSync, locations: CatalogLocation[]
       action.id, action.name, action.description, action.category, action.targetKind ?? "self", action.durationSeconds,
       JSON.stringify(requirements), JSON.stringify(action.check ?? {}), JSON.stringify(action.costs ?? {}),
       JSON.stringify({ success: action.success ?? {}, failure: action.failure ?? {} }),action.resultTemplate,
-      action.adult ? 1 : 0, action.visibility ?? "public", revision, now, now,
+      action.adult ? 1 : 0, action.visibility ?? "public", action.cooldownSeconds ?? 0, revision, now, now,
     );
     for (const location of locations) {
       const facility = facilities.get(location.id)?.find((item) => action.facilityTypes.includes(item.type));

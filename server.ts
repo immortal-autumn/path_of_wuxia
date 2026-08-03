@@ -82,7 +82,9 @@ async function main() {
 
   const sendSnapshot = (socket: WebSocket, context: SocketContext) => {
     const snapshot = service.getSnapshot(context.playerId, onlinePlayerIds());
-    context.visibleLocationIds = new Set(snapshot.locations.map((location) => location.id));
+    context.visibleLocationIds = new Set(
+      service.getNeighborhood(snapshot.self.currentLocation, snapshot.self.visionDepth).locations.map((location) => location.id),
+    );
     send(socket, { type: "snapshot", snapshot });
   };
 
@@ -285,8 +287,18 @@ async function main() {
         }
 
         if (command.type === "qinggong.start") {
-          const result = service.startQinggong(context.playerId, command.destinationId);
-          send(socket, { type: "action.updated", actionState: result.actionState });
+          const result = service.useQinggong(context.playerId, command.destinationId);
+          if (result.event) broadcast({ type: "world.event", event: result.event });
+          sendSnapshot(socket, context);
+          broadcastPresence();
+          send(socket, { type: "ack", requestId: command.requestId, message: result.message });
+          return;
+        }
+
+        if (command.type === "skill.use") {
+          const result = service.useActiveSkill(context.playerId, command.skillId);
+          if (result.event) broadcast({ type: "world.event", event: result.event });
+          sendSnapshot(socket, context);
           send(socket, { type: "ack", requestId: command.requestId, message: result.message });
           return;
         }
