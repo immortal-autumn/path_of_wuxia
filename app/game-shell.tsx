@@ -453,6 +453,7 @@ function VisitedMapDialog({
 
 function ActionsPanel({
   actionState,
+  inventory,
   transitions,
   self,
   locations,
@@ -461,13 +462,17 @@ function ActionsPanel({
   onStart,
   onCancel,
   onReorder,
+  onCraft,
+  onFarm,
   onTransition,
-}: Pick<GameSnapshot, "actionState" | "transitions" | "self" | "locations"> & {
+}: Pick<GameSnapshot, "actionState" | "inventory" | "transitions" | "self" | "locations"> & {
   pending: boolean;
   open: boolean;
   onStart: (actionId: string) => void;
   onCancel: (jobId: string) => void;
   onReorder: (jobIds: string[]) => void;
+  onCraft: (recipeId: string) => void;
+  onFarm: (plotId: string, operation: "plant" | "water" | "harvest", cropId?: string) => void;
   onTransition: (locationId: string) => void;
 }) {
   const [now, setNow] = useState(() => Date.now());
@@ -526,6 +531,36 @@ function ActionsPanel({
               <span><strong>{transition.label}</strong><small>跨地图层通道</small></span>
             </button>
           ))}
+          {inventory.recipes.map((recipe) => (
+            <button
+              className="action-card production-action"
+              key={recipe.id}
+              disabled={pending || !recipe.available || actionState.queued.length >= actionState.maxQueued}
+              onClick={() => onCraft(recipe.id)}
+              title={recipe.unavailableReason ?? undefined}
+            >
+              <span className="action-mark">制</span>
+              <span><strong>{recipe.name}</strong><small>{recipe.description}</small></span>
+              <em>{durationText(recipe.durationSeconds)} · 难度 {recipe.difficulty}</em>
+              <em>需 {recipe.inputs.map((item) => `${item.name}×${item.quantity}`).join("、")} → {recipe.outputs.map((item) => `${item.name}×${item.quantity}`).join("、")}</em>
+            </button>
+          ))}
+          {inventory.farmPlots.map((plot) => (
+            <div className="production-card" key={plot.id}>
+              <span className="action-mark">田</span>
+              <span>
+                <strong>{plot.cropName ?? "空农田"}</strong>
+                <small>{plot.state === "empty" ? "可以播种新作物" : plot.mature ? "作物已经成熟" : `成熟时间 ${plot.maturesAt ? new Date(plot.maturesAt).toLocaleString("zh-CN") : "未知"}`}</small>
+              </span>
+              <span className="production-controls">
+                {plot.state === "empty" ? (
+                  <><button disabled={pending} onClick={() => onFarm(plot.id, "plant", "crop-rice")}>播种水稻</button><button disabled={pending} onClick={() => onFarm(plot.id, "plant", "crop-herb")}>播种药草</button></>
+                ) : (
+                  <><button disabled={pending} onClick={() => onFarm(plot.id, "water")}>浇水</button><button disabled={pending || !plot.mature} onClick={() => onFarm(plot.id, "harvest")}>收获</button></>
+                )}
+              </span>
+            </div>
+          ))}
         </div>
         <aside className="action-queue" aria-label="行动队列">
           <div className="queue-heading"><strong>行动队列</strong><span>{actionState.queued.length} / {actionState.maxQueued}</span></div>
@@ -566,20 +601,28 @@ const ATTRIBUTE_LABELS: Array<[keyof BaseAttributes, string]> = [
 
 function CharacterPanel({
   self,
+  inventory,
   location,
   open,
   pending,
   onAllocate,
   onBreakthrough,
+  onEquip,
+  onUnequip,
+  onUseItem,
 }: {
   self: GameSnapshot["self"];
+  inventory: GameSnapshot["inventory"];
   location?: Location;
   open: boolean;
   pending: boolean;
   onAllocate: (allocations: BaseAttributes) => void;
   onBreakthrough: () => void;
+  onEquip: (itemId: string) => void;
+  onUnequip: (itemId: string) => void;
+  onUseItem: (itemId: string) => void;
 }) {
-  const [tab, setTab] = useState<"base" | "combat" | "cultivation">("base");
+  const [tab, setTab] = useState<"base" | "combat" | "cultivation" | "inventory">("base");
   const [draft, setDraft] = useState<BaseAttributes>({ strength: 0, agility: 0, constitution: 0, root: 0, comprehension: 0, spirit: 0 });
   const allocated = Object.values(draft).reduce((sum, value) => sum + value, 0);
   const progress = Math.min(100, (self.cultivation.progress / Math.max(1, self.cultivation.nextLevelCost)) * 100);
@@ -602,6 +645,7 @@ function CharacterPanel({
         <button className={tab === "base" ? "active" : ""} onClick={() => setTab("base")}>基础属性</button>
         <button className={tab === "combat" ? "active" : ""} onClick={() => setTab("combat")}>战斗属性</button>
         <button className={tab === "cultivation" ? "active" : ""} onClick={() => setTab("cultivation")}>修炼突破</button>
+        <button className={tab === "inventory" ? "active" : ""} onClick={() => setTab("inventory")}>物品装备</button>
       </div>
       {tab === "base" && (
         <div className="attribute-panel">
@@ -637,6 +681,26 @@ function CharacterPanel({
           <p>下一级 +{self.cultivation.nextMinorAttributePoints} 属性点</p>
           {self.cultivation.realmIndex < 12 && <p>突破成功率 {self.cultivation.breakthroughChance}% · 失败扣 {self.cultivation.breakthroughCost} · 新境界 +{self.cultivation.nextRealmAttributePoints} 点</p>}
           <button disabled={pending || !self.cultivation.canBreakthrough} onClick={onBreakthrough}>尝试突破</button>
+        </div>
+      )}
+      {tab === "inventory" && (
+        <div className="inventory-panel" aria-label="物品装备">
+          {inventory.items.map((item) => (
+            <div className="inventory-item" key={item.id}>
+              <span>
+                <strong>{item.name}{item.quantity > 1 ? ` ×${item.quantity}` : ""}</strong>
+                <small>品质 {item.quality}{item.bound ? " · 绑定" : ""}{item.equippedSlot ? ` · 已装备：${item.equippedSlot}` : ""}{item.reservedQuantity ? ` · 预留 ${item.reservedQuantity}` : ""}</small>
+              </span>
+              <span className="inventory-controls">
+                {item.equipmentSlot && (item.equippedSlot
+                  ? <button disabled={pending} onClick={() => onUnequip(item.id)}>卸下</button>
+                  : <button disabled={pending || item.quantity <= item.reservedQuantity} onClick={() => onEquip(item.id)}>装备</button>)}
+                {Object.keys(item.effects).some((key) => key === "needDeltas" || key === "hpDelta") && (
+                  <button disabled={pending || item.quantity <= item.reservedQuantity} onClick={() => onUseItem(item.id)}>使用</button>
+                )}
+              </span>
+            </div>
+          ))}
         </div>
       )}
       <div className="character-numbers"><div><span>银两</span><strong>{self.silver}</strong><small>枚</small></div></div>
@@ -761,6 +825,9 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
         }
         if (message.type === "action.updated") {
           setSnapshot((current) => ({ ...current, actionState: message.actionState }));
+        }
+        if (message.type === "inventory.updated") {
+          setSnapshot((current) => ({ ...current, inventory: message.inventory }));
         }
         if (message.type === "map.visited.snapshot" && message.requestId === visitedMapRequestRef.current) {
           const preferredLayerId = visitedLayerPreferenceRef.current;
@@ -901,6 +968,7 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
         />
         <ActionsPanel
           actionState={snapshot.actionState}
+          inventory={snapshot.inventory}
           transitions={snapshot.transitions}
           self={snapshot.self}
           locations={snapshot.locations}
@@ -909,6 +977,8 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           onStart={(actionId) => sendCommand({ type: "action.start", actionId }, "action")}
           onCancel={(jobId) => sendCommand({ type: "action.cancel", jobId }, "action")}
           onReorder={(jobIds) => sendCommand({ type: "action.queue.reorder", jobIds }, "action")}
+          onCraft={(recipeId) => sendCommand({ type: "craft.start", recipeId }, "craft")}
+          onFarm={(plotId, operation, cropId) => sendCommand({ type: "farm.start", plotId, operation, cropId }, "farm")}
           onTransition={(locationId) => sendCommand({ type: "move", locationId }, "move")}
         />
       </div>
@@ -919,11 +989,15 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
         </div>
         <CharacterPanel
           self={snapshot.self}
+          inventory={snapshot.inventory}
           location={currentLocation}
           open={drawer === "character"}
           pending={pending !== null || connection !== "online"}
           onAllocate={(allocations) => sendCommand({ type: "attributes.allocate", allocations }, "attributes")}
           onBreakthrough={() => sendCommand({ type: "cultivation.breakthrough" }, "breakthrough")}
+          onEquip={(itemId) => sendCommand({ type: "inventory.equip", itemId }, "inventory")}
+          onUnequip={(itemId) => sendCommand({ type: "inventory.unequip", itemId }, "inventory")}
+          onUseItem={(itemId) => sendCommand({ type: "inventory.use", itemId }, "inventory")}
         />
         <ChatPanel
           messages={snapshot.chatMessages}

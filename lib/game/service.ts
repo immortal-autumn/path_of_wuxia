@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import {
+  actionOutcomeSchema,
   actionSuccessChance,
   applyNeedDeltas,
   needPenalty,
@@ -22,6 +23,7 @@ import {
   type AttributeKey,
 } from "./progression";
 import { createWorldStatus } from "./time";
+import { ensureStarterInventory } from "./item-catalog";
 import type {
   ActionJob,
   ActionOutcome,
@@ -33,6 +35,8 @@ import type {
   Direction,
   GameMutation,
   GameSnapshot,
+  InventoryState,
+  ItemInstance,
   Location,
   MapEditOperation,
   MapEditSessionState,
@@ -93,7 +97,9 @@ type ActionTemplateRow = {
 type ActionJobRow = {
   id: string; action_name: string; player_id: string; action_template_id: string; target_player_id: string | null;
   target_location_id: string | null; status: ActionJob["status"]; queue_position: number;
+  duration_seconds: number;
   started_at: string | null; completes_at: string | null; result_text: string | null;
+  reserved_json: string; context_json: string;
 };
 
 function tokenHash(token: string) {
@@ -144,6 +150,7 @@ function mapActionJob(row: ActionJobRow): ActionJob {
     targetLocationId: row.target_location_id,
     status: row.status,
     queuePosition: row.queue_position,
+    durationSeconds: row.duration_seconds,
     startedAt: row.started_at,
     completesAt: row.completes_at,
     resultText: row.result_text,
@@ -256,6 +263,310 @@ export class GameService {
     }));
   }
 
+  private equipmentBonuses(playerId: string) {
+    const rows = this.db.prepare(`
+      SELECT d.effects_json FROM item_instances i JOIN item_definitions d ON d.id=i.definition_id
+      WHERE i.owner_player_id=? AND i.equipped_slot IS NOT NULL AND i.durability>=0
+    `).all(playerId) as Array<{ effects_json: string }>;
+    const bonuses = { attack: 0, defense: 0, speed: 0, maxHp: 0 };
+    for (const row of rows) {
+      const effects = JSON.parse(row.effects_json) as Record<string, unknown>;
+      for (const key of Object.keys(bonuses) as Array<keyof typeof bonuses>) {
+        const value = effects[key];
+        if (typeof value === "number" && Number.isFinite(value)) bonuses[key] += value;
+      }
+    }
+    return bonuses;
+  }
+
+  private grantItem(playerId: string, definitionId: string, quantity: number, quality: number, bound: boolean, at: string) {
+    const definition = this.db.prepare(`
+      SELECT stackable,max_stack,max_durability FROM item_definitions WHERE id=? AND is_active=1
+    `).get(definitionId) as { stackable: number; max_stack: number; max_durability: number } | undefined;
+    if (!definition) throw new Error(`物品定义 ${definitionId} 不存在。`);
+    let remaining = Math.max(0, Math.floor(quantity));
+    if (definition.stackable) {
+      const stacks = this.db.prepare(`
+        SELECT id,quantity FROM item_instances WHERE owner_player_id=? AND definition_id=?
+          AND quality=? AND bound=? AND equipped_slot IS NULL
+        ORDER BY quantity,id
+      `).all(playerId, definitionId, quality, bound ? 1 : 0) as Array<{ id: string; quantity: number }>;
+      const update = this.db.prepare("UPDATE item_instances SET quantity=?,updated_at=? WHERE id=?");
+      for (const stack of stacks) {
+        if (remaining <= 0) break;
+        const added = Math.min(remaining, definition.max_stack - stack.quantity);
+        if (added <= 0) continue;
+        update.run(stack.quantity + added, at, stack.id);
+        remaining -= added;
+      }
+    }
+    const insert = this.db.prepare(`
+      INSERT INTO item_instances(
+        id,definition_id,owner_player_id,quantity,quality,durability,affixes_json,bound,created_at,updated_at
+      ) VALUES (?,?,?,?,?,?,'[]',?,?,?)
+    `);
+    while (remaining > 0) {
+      const stackQuantity = definition.stackable ? Math.min(remaining, definition.max_stack) : 1;
+      insert.run(randomUUID(), definitionId, playerId, stackQuantity, quality, definition.max_durability, bound ? 1 : 0, at, at);
+      remaining -= stackQuantity;
+    }
+  }
+
+  private reserveItems(playerId: string, jobId: string, inputs: Record<string, number>) {
+    const reserve = this.db.prepare("INSERT INTO item_reservations(job_id,item_instance_id,quantity) VALUES (?,?,?)");
+    for (const [definitionId, requiredValue] of Object.entries(inputs)) {
+      let required = Math.max(0, Math.floor(requiredValue));
+      const rows = this.db.prepare(`
+        SELECT i.id,i.quantity-COALESCE(SUM(r.quantity),0) AS available
+        FROM item_instances i LEFT JOIN item_reservations r ON r.item_instance_id=i.id
+        WHERE i.owner_player_id=? AND i.definition_id=? AND i.equipped_slot IS NULL
+        GROUP BY i.id,i.quantity HAVING available>0 ORDER BY i.bound,i.quality,i.created_at
+      `).all(playerId, definitionId) as Array<{ id: string; available: number }>;
+      for (const row of rows) {
+        if (required <= 0) break;
+        const quantity = Math.min(required, row.available);
+        reserve.run(jobId, row.id, quantity);
+        required -= quantity;
+      }
+      if (required > 0) throw new Error("制作或行动所需物品不足。");
+    }
+  }
+
+  private consumeReservations(jobId: string, at: string) {
+    const rows = this.db.prepare(`
+      SELECT r.item_instance_id,r.quantity,i.quantity AS owned FROM item_reservations r
+      JOIN item_instances i ON i.id=r.item_instance_id WHERE r.job_id=?
+    `).all(jobId) as Array<{ item_instance_id: string; quantity: number; owned: number }>;
+    for (const row of rows) {
+      if (row.quantity >= row.owned) this.db.prepare("DELETE FROM item_instances WHERE id=?").run(row.item_instance_id);
+      else this.db.prepare("UPDATE item_instances SET quantity=quantity-?,updated_at=? WHERE id=?").run(row.quantity, at, row.item_instance_id);
+    }
+    this.db.prepare("DELETE FROM item_reservations WHERE job_id=?").run(jobId);
+  }
+
+  getInventoryState(playerId: string): InventoryState {
+    const player = this.getPlayer(playerId);
+    ensureStarterInventory(this.db, playerId, this.now().toISOString());
+    const items = (this.db.prepare(`
+      SELECT i.id,i.definition_id,d.name,d.description,d.category,i.quantity,i.quality,i.durability,
+        d.max_durability,i.affixes_json,i.bound,i.equipped_slot,d.equipment_slot,d.effects_json,
+        COALESCE(SUM(r.quantity),0) AS reserved_quantity
+      FROM item_instances i JOIN item_definitions d ON d.id=i.definition_id
+      LEFT JOIN item_reservations r ON r.item_instance_id=i.id
+      WHERE i.owner_player_id=? GROUP BY i.id ORDER BY i.equipped_slot DESC,d.category,d.name,i.quality DESC,i.id
+    `).all(playerId) as Array<{
+      id: string; definition_id: string; name: string; description: string; category: string; quantity: number;
+      quality: number; durability: number; max_durability: number; affixes_json: string; bound: number;
+      equipped_slot: string | null; equipment_slot: string | null; effects_json: string; reserved_quantity: number;
+    }>).map((row): ItemInstance => ({
+      id: row.id, definitionId: row.definition_id, name: row.name, description: row.description,
+      category: row.category, quantity: row.quantity, quality: row.quality, durability: row.durability,
+      maxDurability: row.max_durability, affixes: JSON.parse(row.affixes_json) as Array<Record<string, unknown>>,
+      bound: row.bound === 1, equippedSlot: row.equipped_slot, equipmentSlot: row.equipment_slot,
+      reservedQuantity: row.reserved_quantity, effects: JSON.parse(row.effects_json) as Record<string, unknown>,
+    }));
+    const counts = new Map<string, number>();
+    for (const item of items) counts.set(item.definitionId, (counts.get(item.definitionId) ?? 0) + item.quantity - item.reservedQuantity);
+    const facilities = new Set((this.db.prepare(`
+      SELECT facility_type FROM location_facilities WHERE location_id=? AND is_active=1
+    `).all(player.currentLocation) as Array<{ facility_type: string }>).map((row) => row.facility_type));
+    const itemNames = new Map((this.db.prepare("SELECT id,name FROM item_definitions WHERE is_active=1").all() as Array<{ id: string; name: string }>).map((row) => [row.id, row.name]));
+    const recipes = (this.db.prepare(`
+      SELECT id,name,description,facility_type,skill_id,duration_seconds,difficulty,inputs_json,outputs_json
+      FROM recipe_definitions WHERE is_active=1 ORDER BY facility_type,name
+    `).all() as Array<{
+      id: string; name: string; description: string; facility_type: string; skill_id: string | null;
+      duration_seconds: number; difficulty: number; inputs_json: string; outputs_json: string;
+    }>).map((row) => {
+      const inputs = Object.entries(JSON.parse(row.inputs_json) as Record<string, number>)
+        .map(([definitionId, quantity]) => ({ definitionId, name: itemNames.get(definitionId) ?? definitionId, quantity }));
+      const outputs = Object.entries(JSON.parse(row.outputs_json) as Record<string, number>)
+        .map(([definitionId, quantity]) => ({ definitionId, name: itemNames.get(definitionId) ?? definitionId, quantity }));
+      const facilityAvailable = facilities.has(row.facility_type);
+      const missing = inputs.find((input) => (counts.get(input.definitionId) ?? 0) < input.quantity);
+      return {
+        id: row.id, name: row.name, description: row.description, facilityType: row.facility_type,
+        skillId: row.skill_id, durationSeconds: row.duration_seconds, difficulty: row.difficulty, inputs, outputs,
+        available: facilityAvailable && !missing,
+        unavailableReason: !facilityAvailable ? `需要${row.facility_type}设施` : missing ? `缺少${missing.name}` : null,
+      };
+    }).filter((recipe) => facilities.has(recipe.facilityType));
+    const farmPlots = (this.db.prepare(`
+      SELECT p.id,f.location_id,p.state,p.crop_id,c.name AS crop_name,p.owner_player_id,p.matures_at,
+        p.water,p.fertility,p.disease FROM farm_plots p
+      JOIN location_facilities f ON f.id=p.facility_id LEFT JOIN crop_definitions c ON c.id=p.crop_id
+      WHERE f.location_id=? AND f.is_active=1 ORDER BY p.id
+    `).all(player.currentLocation) as Array<{
+      id: string; location_id: string; state: string; crop_id: string | null; crop_name: string | null;
+      owner_player_id: string | null; matures_at: string | null; water: number; fertility: number; disease: number;
+    }>).map((row) => ({
+      id: row.id, locationId: row.location_id, state: row.state, cropId: row.crop_id, cropName: row.crop_name,
+      ownerPlayerId: row.owner_player_id, maturesAt: row.matures_at,
+      mature: row.matures_at !== null && new Date(row.matures_at).getTime() <= this.now().getTime(),
+      water: row.water, fertility: row.fertility, disease: row.disease,
+    }));
+    return { items, recipes, farmPlots };
+  }
+
+  equipItem(playerId: string, itemInstanceId: string) {
+    return inTransaction(this.db, () => {
+      const row = this.db.prepare(`
+        SELECT i.id,i.equipped_slot,d.equipment_slot,
+          i.quantity-COALESCE((SELECT SUM(quantity) FROM item_reservations WHERE item_instance_id=i.id),0) AS available
+        FROM item_instances i JOIN item_definitions d ON d.id=i.definition_id
+        WHERE i.id=? AND i.owner_player_id=?
+      `).get(itemInstanceId, playerId) as { id: string; equipped_slot: string | null; equipment_slot: string | null; available: number } | undefined;
+      if (!row) throw new Error("未找到这件物品。");
+      if (!row.equipment_slot) throw new Error("这件物品不能装备。");
+      if (row.available <= 0) throw new Error("这件物品已被行动预留。");
+      const at = this.now().toISOString();
+      this.db.prepare("UPDATE item_instances SET equipped_slot=NULL,updated_at=? WHERE owner_player_id=? AND equipped_slot=?")
+        .run(at, playerId, row.equipment_slot);
+      this.db.prepare("UPDATE item_instances SET equipped_slot=?,updated_at=? WHERE id=?").run(row.equipment_slot, at, row.id);
+      return { inventory: this.getInventoryState(playerId), player: this.getPlayer(playerId), message: "装备已更新。" };
+    });
+  }
+
+  unequipItem(playerId: string, itemInstanceId: string) {
+    return inTransaction(this.db, () => {
+      const changed = this.db.prepare("UPDATE item_instances SET equipped_slot=NULL,updated_at=? WHERE id=? AND owner_player_id=? AND equipped_slot IS NOT NULL")
+        .run(this.now().toISOString(), itemInstanceId, playerId).changes;
+      if (!changed) throw new Error("这件物品当前没有装备。");
+      return { inventory: this.getInventoryState(playerId), player: this.getPlayer(playerId), message: "物品已卸下。" };
+    });
+  }
+
+  useItem(playerId: string, itemInstanceId: string) {
+    return inTransaction(this.db, () => {
+      const row = this.db.prepare(`
+        SELECT i.id,i.quantity,d.name,d.effects_json,
+          COALESCE((SELECT SUM(quantity) FROM item_reservations WHERE item_instance_id=i.id),0) AS reserved
+        FROM item_instances i JOIN item_definitions d ON d.id=i.definition_id
+        WHERE i.id=? AND i.owner_player_id=? AND i.equipped_slot IS NULL
+      `).get(itemInstanceId, playerId) as { id: string; quantity: number; name: string; effects_json: string; reserved: number } | undefined;
+      if (!row || row.quantity - row.reserved <= 0) throw new Error("这件物品当前无法使用。");
+      const effects = actionOutcomeSchema.parse(JSON.parse(row.effects_json));
+      if (Object.keys(effects).length === 0) throw new Error("这件物品不能直接使用。");
+      const at = this.now();
+      const player = this.getPlayerRow(playerId);
+      const needs = this.settleNeedsInternal(playerId, at);
+      const nextNeeds = applyNeedDeltas(needs, effects.needDeltas);
+      nextNeeds.updatedAt = at.toISOString();
+      this.writeNeeds(playerId, nextNeeds);
+      const derived = this.mapPlayer(player).derived;
+      this.db.prepare("UPDATE players SET hp=?,updated_at=?,last_seen_at=? WHERE id=?")
+        .run(Math.max(0, Math.min(derived.maxHp, player.hp + (effects.hpDelta ?? 0))), at.toISOString(), at.toISOString(), playerId);
+      if (row.quantity === 1) this.db.prepare("DELETE FROM item_instances WHERE id=?").run(row.id);
+      else this.db.prepare("UPDATE item_instances SET quantity=quantity-1,updated_at=? WHERE id=?").run(at.toISOString(), row.id);
+      this.db.prepare("INSERT INTO private_events(player_id,event_type,content,created_at) VALUES (?,'item',?,?)")
+        .run(playerId, `使用了${row.name}。`, at.toISOString());
+      return { inventory: this.getInventoryState(playerId), player: this.getPlayer(playerId), message: `已使用${row.name}。` };
+    });
+  }
+
+  private enqueueSystemJob({
+    playerId,
+    templateId,
+    durationSeconds,
+    context,
+    inputs = {},
+  }: {
+    playerId: string;
+    templateId: string;
+    durationSeconds: number;
+    context: Record<string, unknown>;
+    inputs?: Record<string, number>;
+  }) {
+    const now = this.now();
+    this.settleActionQueueInternal(playerId, now);
+    const player = this.getPlayerRow(playerId);
+    this.getTemplateRow(templateId);
+    const jobs = this.actionJobs(playerId);
+    const queuedCount = jobs.filter((job) => job.status === "queued").length;
+    if (queuedCount >= 8) throw new Error("等待队列最多只能安排8项行动。");
+    const running = jobs.some((job) => job.status === "running" || job.status === "paused");
+    const id = randomUUID();
+    const timestamp = now.toISOString();
+    this.db.prepare(`
+      INSERT INTO action_jobs(
+        id,player_id,action_template_id,target_location_id,status,queue_position,started_at,completes_at,
+        duration_seconds,reserved_json,context_json,created_at,updated_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,'{}',?,?,?)
+    `).run(
+      id, playerId, templateId, player.current_location, running ? "queued" : "running", running ? queuedCount + 1 : 0,
+      running ? null : timestamp,
+      running ? null : new Date(now.getTime() + durationSeconds * 1000).toISOString(),
+      durationSeconds, JSON.stringify(context), timestamp, timestamp,
+    );
+    this.reserveItems(playerId, id, inputs);
+    return { id, running };
+  }
+
+  startCraft(playerId: string, recipeId: string) {
+    return inTransaction(this.db, () => {
+      const player = this.getPlayerRow(playerId);
+      const recipe = this.db.prepare(`
+        SELECT id,name,facility_type,skill_id,duration_seconds,difficulty,inputs_json,outputs_json
+        FROM recipe_definitions WHERE id=? AND is_active=1
+      `).get(recipeId) as {
+        id: string; name: string; facility_type: string; skill_id: string | null; duration_seconds: number;
+        difficulty: number; inputs_json: string; outputs_json: string;
+      } | undefined;
+      if (!recipe) throw new Error("配方不存在或已停用。");
+      if (!this.db.prepare("SELECT 1 FROM location_facilities WHERE location_id=? AND facility_type=? AND is_active=1").get(player.current_location, recipe.facility_type)) {
+        throw new Error("当前位置缺少配方所需设施。");
+      }
+      const queued = this.enqueueSystemJob({
+        playerId,
+        templateId: "action-craft-recipe",
+        durationSeconds: recipe.duration_seconds,
+        context: { recipeId: recipe.id, skillId: recipe.skill_id, difficulty: recipe.difficulty, outputs: JSON.parse(recipe.outputs_json) },
+        inputs: JSON.parse(recipe.inputs_json) as Record<string, number>,
+      });
+      return {
+        actionState: this.readActionState(playerId), inventory: this.getInventoryState(playerId),
+        message: queued.running ? `${recipe.name}已加入等待队列。` : `${recipe.name}已经开始。`,
+      };
+    });
+  }
+
+  startFarmAction(playerId: string, plotId: string, operation: "plant" | "water" | "harvest", cropId?: string) {
+    return inTransaction(this.db, () => {
+      const player = this.getPlayerRow(playerId);
+      const plot = this.db.prepare(`
+        SELECT p.id,p.state,p.crop_id,p.matures_at,f.location_id FROM farm_plots p
+        JOIN location_facilities f ON f.id=p.facility_id WHERE p.id=? AND f.is_active=1
+      `).get(plotId) as { id: string; state: string; crop_id: string | null; matures_at: string | null; location_id: string } | undefined;
+      if (!plot || plot.location_id !== player.current_location) throw new Error("农田不在当前位置。");
+      let templateId: string;
+      let durationSeconds: number;
+      let inputs: Record<string, number> = {};
+      const context: Record<string, unknown> = { farmOperation: operation, plotId };
+      if (operation === "plant") {
+        if (plot.state !== "empty" || !cropId) throw new Error("这块农田当前不能播种。");
+        const crop = this.db.prepare("SELECT seed_item_id FROM crop_definitions WHERE id=? AND is_active=1").get(cropId) as { seed_item_id: string } | undefined;
+        if (!crop) throw new Error("作物不存在或已停用。");
+        templateId = "action-farm-plant";
+        durationSeconds = 1800;
+        inputs = { [crop.seed_item_id]: 1 };
+        context.cropId = cropId;
+      } else if (operation === "water") {
+        if (plot.state !== "growing") throw new Error("这块农田没有正在生长的作物。");
+        templateId = "action-farm-water";
+        durationSeconds = 1200;
+      } else {
+        if (plot.state !== "growing" || !plot.matures_at || new Date(plot.matures_at).getTime() > this.now().getTime()) throw new Error("作物尚未成熟。");
+        templateId = "action-farm-harvest";
+        durationSeconds = 1800;
+      }
+      const queued = this.enqueueSystemJob({ playerId, templateId, durationSeconds, context, inputs });
+      return {
+        actionState: this.readActionState(playerId), inventory: this.getInventoryState(playerId),
+        message: queued.running ? "农耕行动已加入等待队列。" : "农耕行动已经开始。",
+      };
+    });
+  }
+
   private playerSelect() {
     return `
       SELECT p.id,p.name,p.title,p.hp,p.silver,p.current_location,
@@ -278,7 +589,16 @@ export class GameService {
       strength: row.strength, agility: row.agility, constitution: row.constitution,
       root: row.root, comprehension: row.comprehension, spirit: row.spirit,
     };
-    const derived = deriveStats(attributes, row.realm_index);
+    const baseDerived = deriveStats(attributes, row.realm_index);
+    const equipment = this.equipmentBonuses(row.id);
+    const derived = {
+      ...baseDerived,
+      maxHp: baseDerived.maxHp + equipment.maxHp,
+      minAttack: baseDerived.minAttack + equipment.attack,
+      maxAttack: baseDerived.maxAttack + equipment.attack,
+      defense: baseDerived.defense + equipment.defense,
+      speed: baseDerived.speed + equipment.speed,
+    };
     const levelCost = cultivationForNextLevel(row.realm_index, row.realm_level);
     const breakthroughCost = Math.ceil(levelCost * 0.3);
     const chance = breakthroughChance(row.realm_level);
@@ -368,6 +688,7 @@ export class GameService {
         VALUES (?,?,'初入世界',?,?,?, ?,0,20,'home-entrance',?,?,?)
       `).run(playerId, name, initial.maxHp, initial.maxHp, initial.maxEndurance, initial.maxEndurance, createdAt, createdAt, createdAt);
       this.db.prepare("INSERT INTO player_progression(player_id,endurance,updated_at) VALUES (?,?,?)").run(playerId, initial.maxEndurance, createdAt);
+      ensureStarterInventory(this.db, playerId, createdAt);
       this.db.prepare("INSERT INTO player_visited_locations(player_id,location_id,first_visited_at,last_visited_at) VALUES (?,'home-entrance',?,?)")
         .run(playerId, createdAt, createdAt);
       this.db.prepare("INSERT INTO sessions(token_hash,player_id,created_at,expires_at) VALUES (?,?,?,?)")
@@ -588,7 +909,7 @@ export class GameService {
   private actionJobs(playerId: string) {
     return (this.db.prepare(`
       SELECT j.id,t.name AS action_name,j.player_id,j.action_template_id,j.target_player_id,j.target_location_id,
-        j.status,j.queue_position,j.started_at,j.completes_at,j.result_text
+        j.status,j.queue_position,j.duration_seconds,j.started_at,j.completes_at,j.result_text,j.reserved_json,j.context_json
       FROM action_jobs j JOIN action_templates t ON t.id=j.action_template_id
       WHERE j.player_id=? AND j.status IN ('running','queued','paused')
       ORDER BY CASE j.status WHEN 'running' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END,j.queue_position,j.created_at
@@ -622,8 +943,30 @@ export class GameService {
     this.settleCultivationInternal(playerId, completedAt, false);
     const template = this.getTemplateRow(job.action_template_id);
     const requirements = parseRequirements(template.requirements_json);
-    const check = parseCheck(template.check_json);
-    const outcomes = parseOutcomes(template.outcomes_json);
+    const context = JSON.parse(job.context_json) as Record<string, unknown>;
+    let check = parseCheck(template.check_json);
+    let outcomes = parseOutcomes(template.outcomes_json);
+    let resultDetail = template.name;
+    if (typeof context.recipeId === "string") {
+      const recipe = this.db.prepare("SELECT name,skill_id,difficulty,outputs_json FROM recipe_definitions WHERE id=?").get(context.recipeId) as {
+        name: string; skill_id: string | null; difficulty: number; outputs_json: string;
+      } | undefined;
+      if (!recipe) throw new Error("行动使用的配方已经不存在。");
+      check = { skillId: recipe.skill_id ?? undefined, attribute: "comprehension", difficulty: recipe.difficulty };
+      outcomes = {
+        success: {
+          skillExperience: Math.max(8, Math.floor(job.duration_seconds / 300)),
+          items: Object.entries(JSON.parse(recipe.outputs_json) as Record<string, number>)
+            .map(([definitionId, quantity]) => ({ definitionId, quantity })),
+        },
+        failure: { skillExperience: Math.max(3, Math.floor(job.duration_seconds / 900)) },
+      };
+      resultDetail = recipe.name;
+    } else if (typeof context.farmOperation === "string") {
+      check = { skillId: "farming", attribute: "constitution", difficulty: context.farmOperation === "harvest" ? 35 : 25 };
+      outcomes = { success: { skillExperience: 10 }, failure: { skillExperience: 4 } };
+      resultDetail = context.farmOperation === "plant" ? "播种" : context.farmOperation === "water" ? "浇水" : "收获";
+    }
     const row = this.getPlayerRow(playerId);
     const attributes: BaseAttributes = {
       strength: row.strength, agility: row.agility, constitution: row.constitution,
@@ -657,7 +1000,42 @@ export class GameService {
     }
     this.addSkillExperience(playerId, skillId, outcome.skillExperience ?? 0, timestamp);
 
-    const content = template.result_template.replaceAll("{name}", row.name);
+    this.consumeReservations(job.id, timestamp);
+    for (const item of outcome.items ?? []) {
+      this.grantItem(playerId, item.definitionId, item.quantity, item.quality ?? 1, item.bound ?? false, timestamp);
+    }
+
+    if (success && typeof context.farmOperation === "string" && typeof context.plotId === "string") {
+      if (context.farmOperation === "plant" && typeof context.cropId === "string") {
+        const crop = this.db.prepare("SELECT growth_seconds FROM crop_definitions WHERE id=?").get(context.cropId) as { growth_seconds: number };
+        this.db.prepare(`
+          UPDATE farm_plots SET owner_player_id=?,crop_id=?,planted_at=?,matures_at=?,water=100,disease=0,
+            state='growing',version=version+1,updated_at=? WHERE id=? AND state='empty'
+        `).run(
+          playerId, context.cropId, timestamp,
+          new Date(completedAt.getTime() + crop.growth_seconds * 1000).toISOString(),timestamp, context.plotId,
+        );
+      } else if (context.farmOperation === "water") {
+        this.db.prepare("UPDATE farm_plots SET water=MIN(100,water+50),version=version+1,updated_at=? WHERE id=? AND state='growing'")
+          .run(timestamp, context.plotId);
+      } else if (context.farmOperation === "harvest") {
+        const crop = this.db.prepare(`
+          SELECT c.harvest_item_id,c.stages_json,p.fertility,p.water,p.disease FROM farm_plots p
+          JOIN crop_definitions c ON c.id=p.crop_id WHERE p.id=? AND p.state='growing'
+        `).get(context.plotId) as { harvest_item_id: string; stages_json: string; fertility: number; water: number; disease: number } | undefined;
+        if (crop) {
+          const baseYield = Number((JSON.parse(crop.stages_json) as { yield?: number }).yield ?? 1);
+          const modifier = Math.max(0.25, (crop.fertility + crop.water + (100 - crop.disease)) / 300);
+          this.grantItem(playerId, crop.harvest_item_id, Math.max(1, Math.floor(baseYield * modifier)), 1, false, timestamp);
+          this.db.prepare(`
+            UPDATE farm_plots SET owner_player_id=NULL,crop_id=NULL,planted_at=NULL,matures_at=NULL,
+              water=100,disease=0,state='empty',version=version+1,updated_at=? WHERE id=?
+          `).run(timestamp, context.plotId);
+        }
+      }
+    }
+
+    const content = `${template.result_template.replaceAll("{name}", row.name)} ${resultDetail}${success ? "成功" : "失败"}。`;
     this.db.prepare(`
       INSERT INTO action_logs(player_id,kind,action_template_id,action_job_id,from_location,to_location,result_text,created_at)
       VALUES (?,'action',?,?,?,?,?,?)
@@ -675,7 +1053,8 @@ export class GameService {
 
   private startNextQueuedJob(playerId: string, at: Date) {
     const next = this.db.prepare(`
-      SELECT j.id,t.duration_seconds FROM action_jobs j JOIN action_templates t ON t.id=j.action_template_id
+      SELECT j.id,CASE WHEN j.duration_seconds>0 THEN j.duration_seconds ELSE t.duration_seconds END AS duration_seconds
+      FROM action_jobs j JOIN action_templates t ON t.id=j.action_template_id
       WHERE j.player_id=? AND j.status='queued' ORDER BY j.queue_position,j.created_at LIMIT 1
     `).get(playerId) as { id: string; duration_seconds: number } | undefined;
     if (!next) return false;
@@ -695,7 +1074,7 @@ export class GameService {
     for (let guard = 0; guard < 32; guard += 1) {
       const running = this.db.prepare(`
         SELECT j.id,t.name AS action_name,j.player_id,j.action_template_id,j.target_player_id,j.target_location_id,
-          j.status,j.queue_position,j.started_at,j.completes_at,j.result_text
+          j.status,j.queue_position,j.duration_seconds,j.started_at,j.completes_at,j.result_text,j.reserved_json,j.context_json
         FROM action_jobs j JOIN action_templates t ON t.id=j.action_template_id
         WHERE j.player_id=? AND j.status='running' LIMIT 1
       `).get(playerId) as ActionJobRow | undefined;
@@ -817,11 +1196,11 @@ export class GameService {
       this.db.prepare(`
         INSERT INTO action_jobs(
           id,player_id,action_template_id,binding_id,target_location_id,status,queue_position,
-          started_at,completes_at,reserved_json,context_json,created_at,updated_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,'{}','{}',?,?)
+          started_at,completes_at,duration_seconds,reserved_json,context_json,created_at,updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,'{}','{}',?,?)
       `).run(
         id, playerId, template.id, template.binding_id, player.current_location, status, position,
-        running ? null : timestamp, completesAt, timestamp, timestamp,
+        running ? null : timestamp, completesAt, template.duration_seconds, timestamp, timestamp,
       );
       if (!running && template.duration_seconds === 0) this.settleActionQueueInternal(playerId, now);
       return {
@@ -842,6 +1221,7 @@ export class GameService {
       const job = this.db.prepare("SELECT status FROM action_jobs WHERE id=? AND player_id=?").get(jobId, playerId) as { status: string } | undefined;
       if (!job || !["running", "queued", "paused"].includes(job.status)) throw new Error("这项行动已经无法取消。");
       this.db.prepare("UPDATE action_jobs SET status='cancelled',updated_at=? WHERE id=?").run(now.toISOString(), jobId);
+      this.db.prepare("DELETE FROM item_reservations WHERE job_id=?").run(jobId);
       if (job.status === "running") this.startNextQueuedJob(playerId, now);
       const queued = this.db.prepare("SELECT id FROM action_jobs WHERE player_id=? AND status='queued' ORDER BY queue_position,created_at").all(playerId) as Array<{ id: string }>;
       const update = this.db.prepare("UPDATE action_jobs SET queue_position=? WHERE id=?");
@@ -941,6 +1321,7 @@ export class GameService {
       regions: neighborhood.regions, locations: neighborhood.locations, routes: neighborhood.routes,
       transitions: this.getTransitions(self.currentLocation), actions: this.getActions([self.currentLocation]),
       actionState: this.readActionState(playerId),
+      inventory: this.getInventoryState(playerId),
       onlinePlayers, recentEvents: this.getRecentEvents(), chatMessages: this.getRecentChat(),
     };
   }

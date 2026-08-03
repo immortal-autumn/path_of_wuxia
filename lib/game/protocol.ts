@@ -3,6 +3,7 @@ import type {
   ActionSystemState,
   ChatMessage,
   GameSnapshot,
+  InventoryState,
   MapEditSessionState,
   MapHistoryState,
   MapLock,
@@ -103,6 +104,14 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("action.start"), requestId, actionId: id }),
   z.object({ type: z.literal("action.cancel"), requestId, jobId: id }),
   z.object({ type: z.literal("action.queue.reorder"), requestId, jobIds: z.array(id).max(8) }),
+  z.object({ type: z.literal("inventory.equip"), requestId, itemId: id }),
+  z.object({ type: z.literal("inventory.unequip"), requestId, itemId: id }),
+  z.object({ type: z.literal("inventory.use"), requestId, itemId: id }),
+  z.object({ type: z.literal("craft.start"), requestId, recipeId: id }),
+  z.object({
+    type: z.literal("farm.start"), requestId, plotId: id,
+    operation: z.enum(["plant", "water", "harvest"]), cropId: id.optional(),
+  }),
   z.object({ type: z.literal("attributes.allocate"), requestId, allocations }),
   z.object({ type: z.literal("cultivation.breakthrough"), requestId }),
   z.object({ type: z.literal("chat.send"), requestId, content: z.string().min(1).max(240) }),
@@ -131,6 +140,7 @@ export type ServerMessage =
   | { type: "ack"; requestId: string; message?: string }
   | { type: "self.updated"; player: PlayerSelf }
   | { type: "action.updated"; actionState: ActionSystemState }
+  | { type: "inventory.updated"; inventory: InventoryState }
   | { type: "cultivation.updated"; player: PlayerSelf; delta: number; offline: boolean; message: string }
   | { type: "players.updated"; players: OnlinePlayer[] }
   | { type: "world.event"; event: WorldEvent }

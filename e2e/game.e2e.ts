@@ -190,6 +190,25 @@ test.describe("game map", () => {
     await expect(page.getByLabel("行动队列")).toContainText("当前没有进行中的行动");
   });
 
+  test("equips persistent items and starts a real-time farm action", async ({ page }) => {
+    await enterWorld(page);
+    await page.getByRole("button", { name: "物品装备" }).click();
+    const inventory = page.getByLabel("物品装备");
+    await expect(inventory).toContainText("木剑");
+    await expect(inventory).toContainText("已装备：weapon");
+    await inventory.getByRole("button", { name: "卸下" }).first().click();
+    await expect(page.getByRole("status")).toContainText("物品已卸下");
+    await inventory.getByRole("button", { name: "装备" }).first().click();
+    await expect(page.getByRole("status")).toContainText("装备已更新");
+
+    await moveTo(page, "嬴长嫚与楼夜秋之家·前庭");
+    await page.getByRole("button", { name: "播种水稻" }).click();
+    await expect(page.getByRole("status")).toContainText("农耕行动已经开始");
+    await expect(page.getByLabel("行动队列")).toContainText("播种");
+    await page.getByRole("button", { name: "取消播种" }).click();
+    await expect(page.getByRole("status")).toContainText("行动已取消");
+  });
+
   test("executes seed actions and crosses the continuous Song and Palos overworld", async ({ page }) => {
     await enterWorld(page);
     await performAction(page, "整理衣装");
@@ -234,7 +253,7 @@ test.describe("game map", () => {
     `);
     await moveTo(page, "嬴长嫚与楼夜秋之家·门厅");
     await page.getByRole("button", { name: "战斗属性" }).click();
-    await expect(page.locator(".derived-grid")).toContainText("最大攻击40");
+    await expect(page.locator(".derived-grid")).toContainText("最大攻击45");
     await expect(page.locator(".derived-grid")).toContainText("境界倍率 ×1.00");
     await page.getByRole("button", { name: "修炼突破" }).click();
     await expect(page.locator(".cultivation-panel")).toContainText("突破成功率 100%");

@@ -230,7 +230,30 @@ async function main() {
               ? service.cancelAction(context.playerId, command.jobId)
               : service.reorderActionQueue(context.playerId, command.jobIds);
           send(socket, { type: "action.updated", actionState: result.actionState });
+          send(socket, { type: "inventory.updated", inventory: service.getInventoryState(context.playerId) });
           send(socket, { type: "self.updated", player: service.getPlayer(context.playerId) });
+          send(socket, { type: "ack", requestId: command.requestId, message: result.message });
+          return;
+        }
+
+        if (command.type === "inventory.equip" || command.type === "inventory.unequip" || command.type === "inventory.use") {
+          const result = command.type === "inventory.equip"
+            ? service.equipItem(context.playerId, command.itemId)
+            : command.type === "inventory.unequip"
+              ? service.unequipItem(context.playerId, command.itemId)
+              : service.useItem(context.playerId, command.itemId);
+          send(socket, { type: "inventory.updated", inventory: result.inventory });
+          send(socket, { type: "self.updated", player: result.player });
+          send(socket, { type: "ack", requestId: command.requestId, message: result.message });
+          return;
+        }
+
+        if (command.type === "craft.start" || command.type === "farm.start") {
+          const result = command.type === "craft.start"
+            ? service.startCraft(context.playerId, command.recipeId)
+            : service.startFarmAction(context.playerId, command.plotId, command.operation, command.cropId);
+          send(socket, { type: "action.updated", actionState: result.actionState });
+          send(socket, { type: "inventory.updated", inventory: result.inventory });
           send(socket, { type: "ack", requestId: command.requestId, message: result.message });
           return;
         }

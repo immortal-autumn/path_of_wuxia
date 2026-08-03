@@ -177,6 +177,7 @@ export type ActionJob = {
   targetLocationId: string | null;
   status: ActionJobStatus;
   queuePosition: number;
+  durationSeconds: number;
   startedAt: string | null;
   completesAt: string | null;
   resultText: string | null;
@@ -244,6 +245,8 @@ export type ItemInstance = {
   id: string;
   definitionId: string;
   name: string;
+  description: string;
+  category: string;
   quantity: number;
   quality: number;
   durability: number;
@@ -251,6 +254,43 @@ export type ItemInstance = {
   affixes: Array<Record<string, unknown>>;
   bound: boolean;
   equippedSlot: string | null;
+  equipmentSlot: string | null;
+  reservedQuantity: number;
+  effects: Record<string, unknown>;
+};
+
+export type RecipeDefinition = {
+  id: string;
+  name: string;
+  description: string;
+  facilityType: string;
+  skillId: string | null;
+  durationSeconds: number;
+  difficulty: number;
+  inputs: Array<{ definitionId: string; name: string; quantity: number }>;
+  outputs: Array<{ definitionId: string; name: string; quantity: number }>;
+  available: boolean;
+  unavailableReason: string | null;
+};
+
+export type FarmPlotState = {
+  id: string;
+  locationId: string;
+  state: string;
+  cropId: string | null;
+  cropName: string | null;
+  ownerPlayerId: string | null;
+  maturesAt: string | null;
+  mature: boolean;
+  water: number;
+  fertility: number;
+  disease: number;
+};
+
+export type InventoryState = {
+  items: ItemInstance[];
+  recipes: RecipeDefinition[];
+  farmPlots: FarmPlotState[];
 };
 
 export type Relationship = {
@@ -371,6 +411,7 @@ export type GameSnapshot = {
   transitions: MapTransition[];
   actions: ActionDefinition[];
   actionState: ActionSystemState;
+  inventory: InventoryState;
   onlinePlayers: OnlinePlayer[];
   recentEvents: WorldEvent[];
   chatMessages: ChatMessage[];

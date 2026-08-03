@@ -492,6 +492,42 @@ h2 {
   cursor: pointer;
 }
 
+.production-card {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 11px;
+  border: 1px solid var(--border);
+  background: #fff;
+}
+
+.production-card strong,
+.production-card small {
+  display: block;
+}
+
+.production-card small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.production-controls {
+  grid-column: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.production-controls button,
+.inventory-controls button {
+  padding: 4px 7px;
+  border: 1px solid var(--border);
+  background: #fff;
+  cursor: pointer;
+}
+
 .action-card:hover:not(:disabled) {
   background: var(--disabled);
 }
@@ -681,7 +717,7 @@ h2 {
 
 .character-tabs {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   margin-bottom: 10px;
 }
 
@@ -711,8 +747,41 @@ h2 {
 
 .attribute-panel,
 .derived-grid,
-.cultivation-panel {
+.cultivation-panel,
+.inventory-panel {
   margin-bottom: 10px;
+}
+
+.inventory-panel {
+  display: grid;
+  gap: 5px;
+}
+
+.inventory-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid var(--border-light);
+  font-size: 11px;
+}
+
+.inventory-item strong,
+.inventory-item small {
+  display: block;
+}
+
+.inventory-item small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.inventory-controls {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
 }
 
 .attribute-panel > p {

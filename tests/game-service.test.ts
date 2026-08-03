@@ -158,6 +158,67 @@ describe("GameService", () => {
     expect(service.getActionState(player.id).needPenalty).toBe(25);
   });
 
+  it("persists starter inventory, equipment bonuses, consumables and atomic recipe reservations", () => {
+    const player = service.createSession().player;
+    let inventory = service.getInventoryState(player.id);
+    expect(inventory.items.map((item) => item.name)).toEqual(expect.arrayContaining(["棉布衣", "布靴", "木剑", "清水", "家常饭"]));
+    const sword = inventory.items.find((item) => item.definitionId === "wooden-sword")!;
+    expect(sword).toMatchObject({ bound: true, equippedSlot: "weapon", durability: 80 });
+    expect(player.derived.maxAttack).toBe(45);
+    service.unequipItem(player.id, sword.id);
+    expect(service.getPlayer(player.id).derived.maxAttack).toBe(40);
+    service.equipItem(player.id, sword.id);
+    expect(service.getPlayer(player.id).derived.maxAttack).toBe(45);
+
+    db.prepare("UPDATE player_needs SET hydration=30,updated_at=? WHERE player_id=?").run(clock.toISOString(), player.id);
+    const water = inventory.items.find((item) => item.definitionId === "water-flask")!;
+    service.useItem(player.id, water.id);
+    expect(service.getPlayer(player.id).needs).toMatchObject({ hydration: 60, bladder: 10 });
+
+    service.move(player.id, "home-hall");
+    service.move(player.id, "home-living-room");
+    service.move(player.id, "home-dining-room");
+    service.move(player.id, "home-kitchen");
+    db.prepare(`
+      INSERT INTO item_instances(id,definition_id,owner_player_id,quantity,quality,durability,affixes_json,bound,created_at,updated_at)
+      VALUES ('test-rice','rice',?,2,1,0,'[]',0,?,?)
+    `).run(player.id, clock.toISOString(), clock.toISOString());
+    const craft = service.startCraft(player.id, "recipe-simple-meal");
+    expect(craft.actionState.current).toMatchObject({ name: "按配方制作", durationSeconds: 1800 });
+    expect(service.getInventoryState(player.id).items.find((item) => item.id === "test-rice")?.reservedQuantity).toBe(2);
+    service.cancelAction(player.id, craft.actionState.current!.id);
+    expect(service.getInventoryState(player.id).items.find((item) => item.id === "test-rice")?.reservedQuantity).toBe(0);
+
+    service.startCraft(player.id, "recipe-simple-meal");
+    clock = new Date(clock.getTime() + 30 * 60_000);
+    expect(service.settleActionQueue(player.id).completed).toBe(1);
+    inventory = service.getInventoryState(player.id);
+    expect(inventory.items.find((item) => item.id === "test-rice")).toBeUndefined();
+    expect(inventory.items.filter((item) => item.definitionId === "simple-meal").reduce((sum, item) => sum + item.quantity, 0)).toBe(4);
+  });
+
+  it("plants and harvests persistent real-time farm plots", () => {
+    const player = service.createSession().player;
+    service.move(player.id, "home-front-garden");
+    let inventory = service.getInventoryState(player.id);
+    const plot = inventory.farmPlots[0];
+    expect(plot).toMatchObject({ state: "empty", mature: false });
+    service.startFarmAction(player.id, plot.id, "plant", "crop-rice");
+    clock = new Date(clock.getTime() + 30 * 60_000);
+    service.settleActionQueue(player.id);
+    inventory = service.getInventoryState(player.id);
+    expect(inventory.farmPlots[0]).toMatchObject({ state: "growing", cropName: "水稻", mature: false });
+    expect(new Date(inventory.farmPlots[0].maturesAt!).getTime() - clock.getTime()).toBe(120 * 24 * 60 * 60_000);
+
+    db.prepare("UPDATE farm_plots SET matures_at=? WHERE id=?").run(clock.toISOString(), plot.id);
+    service.startFarmAction(player.id, plot.id, "harvest");
+    clock = new Date(clock.getTime() + 30 * 60_000);
+    service.settleActionQueue(player.id);
+    inventory = service.getInventoryState(player.id);
+    expect(inventory.farmPlots[0]).toMatchObject({ state: "empty", cropId: null });
+    expect(inventory.items.filter((item) => item.definitionId === "rice").reduce((sum, item) => sum + item.quantity, 0)).toBe(20);
+  });
+
   it("upgrades the former public-map hierarchy into one continuous overworld", () => {
     db.prepare(`INSERT INTO map_layers(id,name,description,parent_layer_id,version,is_active,seed_revision,created_at,updated_at)
       VALUES ('song-legacy-layer','旧大宋层','旧层级。','world-root',1,1,2,?,?)`).run(clock.toISOString(), clock.toISOString());
@@ -378,7 +439,7 @@ describe("GameService", () => {
     const result = service.allocateAttributes(player.id, { strength: 5, agility: 0, constitution: 0, root: 0, comprehension: 0, spirit: 0 });
     expect(result.player.attributes.strength).toBe(15);
     expect(result.player.cultivation.unspentAttributePoints).toBe(5);
-    expect(result.player.derived.maxAttack).toBe(55);
+    expect(result.player.derived.maxAttack).toBe(60);
     expect(() => service.allocateAttributes(player.id, { strength: 6, agility: 0, constitution: 0, root: 0, comprehension: 0, spirit: 0 })).toThrow("属性点不足");
   });
 

@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { seedActionCatalog } from "./action-catalog";
+import { seedItemCatalog } from "./item-catalog";
 import { CHUNK_SIZE, GRID_SIZE } from "./map";
 import { buildWorldSeed, WORLD_SEED_REVISION } from "./world-data";
 
@@ -186,6 +187,7 @@ export function applyWorldSeed(db: DatabaseSync): WorldSeedReport {
   }
 
   seedActionCatalog(db, seed.locations, WORLD_SEED_REVISION, now);
+  seedItemCatalog(db, WORLD_SEED_REVISION, now);
 
   const sourceLinkInsert = db.prepare(`
     INSERT INTO location_sources(location_id,source_id,source_key) VALUES (?,?,?)

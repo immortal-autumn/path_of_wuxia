@@ -177,6 +177,7 @@ function migrate(db: GameDatabase) {
       action_template_id TEXT NOT NULL REFERENCES action_templates(id),binding_id TEXT REFERENCES location_action_bindings(id),
       target_player_id TEXT REFERENCES players(id) ON DELETE SET NULL,target_location_id TEXT REFERENCES locations(id),
       status TEXT NOT NULL,queue_position INTEGER NOT NULL DEFAULT 0,started_at TEXT,completes_at TEXT,
+      duration_seconds INTEGER NOT NULL DEFAULT 0 CHECK(duration_seconds>=0),
       reserved_json TEXT NOT NULL DEFAULT '{}',context_json TEXT NOT NULL DEFAULT '{}',result_text TEXT,
       created_at TEXT NOT NULL,updated_at TEXT NOT NULL
     );
@@ -217,6 +218,11 @@ function migrate(db: GameDatabase) {
       bound INTEGER NOT NULL DEFAULT 0 CHECK(bound IN (0,1)),equipped_slot TEXT,locked_by_job_id TEXT REFERENCES action_jobs(id) ON DELETE SET NULL,
       created_at TEXT NOT NULL,updated_at TEXT NOT NULL,
       CHECK((owner_player_id IS NOT NULL) <> (loot_pile_id IS NOT NULL))
+    );
+    CREATE TABLE IF NOT EXISTS item_reservations(
+      job_id TEXT NOT NULL REFERENCES action_jobs(id) ON DELETE CASCADE,
+      item_instance_id TEXT NOT NULL REFERENCES item_instances(id) ON DELETE CASCADE,
+      quantity INTEGER NOT NULL CHECK(quantity>0),PRIMARY KEY(job_id,item_instance_id)
     );
     CREATE TABLE IF NOT EXISTS recipe_definitions(
       id TEXT PRIMARY KEY,name TEXT NOT NULL,description TEXT NOT NULL,facility_type TEXT NOT NULL,
@@ -328,6 +334,7 @@ function migrate(db: GameDatabase) {
   addColumn(db, "players", "vision_depth_bonus INTEGER NOT NULL DEFAULT 0");
   addColumn(db, "action_logs", "action_template_id TEXT REFERENCES action_templates(id)");
   addColumn(db, "action_logs", "action_job_id TEXT REFERENCES action_jobs(id)");
+  addColumn(db, "action_jobs", "duration_seconds INTEGER NOT NULL DEFAULT 0");
 
   if (previousVersion < 2) db.exec("UPDATE routes SET is_active=0; UPDATE locations SET is_active=0;");
   if (previousVersion < 3) {
@@ -457,6 +464,7 @@ function migrate(db: GameDatabase) {
     CREATE INDEX IF NOT EXISTS idx_action_jobs_completion ON action_jobs(status,completes_at);
     CREATE INDEX IF NOT EXISTS idx_items_owner ON item_instances(owner_player_id,equipped_slot,definition_id);
     CREATE INDEX IF NOT EXISTS idx_items_loot ON item_instances(loot_pile_id,definition_id);
+    CREATE INDEX IF NOT EXISTS idx_item_reservations_instance ON item_reservations(item_instance_id,job_id);
     CREATE INDEX IF NOT EXISTS idx_background_jobs_completion ON background_jobs(status,completes_at);
     CREATE INDEX IF NOT EXISTS idx_interactions_target ON interaction_requests(to_player_id,status,expires_at);
     CREATE INDEX IF NOT EXISTS idx_relationships_a ON player_relationships(player_a_id,status);
