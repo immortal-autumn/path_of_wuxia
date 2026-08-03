@@ -249,7 +249,10 @@ export type PlayerSkill = {
   kind: "active" | "passive";
   level: number;
   experience: number;
+  effectDurationSeconds: number;
   cooldownUntil: string | null;
+  activeStartedAt: string | null;
+  activeUntil: string | null;
   activeActionId: string | null;
   activeActionName: string | null;
 };

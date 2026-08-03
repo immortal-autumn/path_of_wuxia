@@ -86,13 +86,13 @@ describe("GameService", () => {
     expect(validateWorldMap(db).ok).toBe(true);
   });
 
-  it("installs schema-v8 skill cooldown storage without breaking legacy actions", () => {
+  it("installs schema-v9 active-skill duration storage without breaking legacy actions", () => {
     const requiredTables = [
       "action_templates", "location_facilities", "location_action_bindings", "action_jobs", "player_needs",
       "skill_definitions", "player_skills", "item_definitions", "item_instances", "recipe_definitions",
       "crop_definitions", "farm_plots", "interaction_requests", "player_relationships", "trade_sessions",
       "combat_sessions", "loot_piles", "npc_profiles", "agent_credentials",
-      "player_action_cooldowns",
+      "player_action_cooldowns", "player_active_skills",
     ];
     const tables = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>).map((row) => row.name));
     expect(requiredTables.every((table) => tables.has(table))).toBe(true);
@@ -282,7 +282,7 @@ describe("GameService", () => {
     expect(inventory.items.filter((item) => item.definitionId === "rice").reduce((sum, item) => sum + item.quantity, 0)).toBe(20);
   });
 
-  it("activates Eagle Eye immediately, persists cooldown and keeps active skills out of the action queue", () => {
+  it("tracks Eagle Eye duration, supports active stop, preserves cooldown and expires effects", () => {
     const player = service.createSession().player;
     const before = service.getSnapshot(player.id, [player.id]);
     expect(before.self.visionDepth).toBe(3);
@@ -292,7 +292,8 @@ describe("GameService", () => {
     ]);
     expect(before.self.skills.find((skill) => skill.id === "perception")).toMatchObject({ kind: "passive" });
     expect(before.self.skills.find((skill) => skill.id === "eagle-eye")).toMatchObject({
-      kind: "active", activeActionId: "action-eagle-eye", cooldownUntil: null,
+      kind: "active", activeActionId: "action-eagle-eye", effectDurationSeconds: 1800,
+      cooldownUntil: null, activeStartedAt: null, activeUntil: null,
     });
     expect(before.actionState.available.some((action) => action.id === "action-eagle-eye")).toBe(false);
     expect(() => service.startAction(player.id, "action-eagle-eye")).toThrow("技能页发动");
@@ -308,13 +309,35 @@ describe("GameService", () => {
     expect(service.getVisitedMap(player.id).locations).toHaveLength(1);
     expect(expanded.self.skills.find((skill) => skill.id === "eagle-eye")?.cooldownUntil)
       .toBe("2026-08-03T12:30:00.000Z");
+    expect(expanded.self.skills.find((skill) => skill.id === "eagle-eye")).toMatchObject({
+      effectDurationSeconds: 1800,
+      activeStartedAt: "2026-08-03T12:00:00.000Z",
+      activeUntil: "2026-08-03T12:30:00.000Z",
+    });
+    expect(db.prepare("SELECT skill_id,expires_at FROM player_active_skills WHERE player_id=?").get(player.id)).toEqual({
+      skill_id: "eagle-eye", expires_at: "2026-08-03T12:30:00.000Z",
+    });
     expect(db.prepare("SELECT available_at FROM player_action_cooldowns WHERE player_id=? AND action_template_id='action-eagle-eye'").get(player.id))
       .toEqual({ available_at: "2026-08-03T12:30:00.000Z" });
+    expect(() => service.useActiveSkill(player.id, "eagle-eye")).toThrow("技能正在持续中");
+
+    const expiringPlayer = service.createSession().player;
+    service.useActiveSkill(expiringPlayer.id, "eagle-eye");
+    expect(service.stopActiveSkill(player.id, "eagle-eye").message).toContain("主动停止了鹰眼");
+    expect(service.getPlayer(player.id)).toMatchObject({ visionDepth: 3 });
+    expect(service.getPlayer(player.id).skills.find((skill) => skill.id === "eagle-eye")).toMatchObject({
+      activeStartedAt: null, activeUntil: null, cooldownUntil: "2026-08-03T12:30:00.000Z",
+    });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM player_active_skills WHERE player_id=?").get(player.id)).toEqual({ count: 0 });
+    expect(service.getPrivateEvents(player.id)[0].content).toContain("冷却保持不变");
+    expect(() => service.stopActiveSkill(player.id, "eagle-eye")).toThrow("没有持续中的效果");
     expect(() => service.useActiveSkill(player.id, "eagle-eye")).toThrow("技能冷却中");
 
     clock = new Date(clock.getTime() + 30 * 60_000);
     expect(service.getPlayer(player.id).visionDepth).toBe(3);
     expect(service.getPlayer(player.id).skills.find((skill) => skill.id === "eagle-eye")?.cooldownUntil).toBeNull();
+    expect(service.getPlayer(expiringPlayer.id).visionDepth).toBe(3);
+    expect(service.getPlayer(expiringPlayer.id).skills.find((skill) => skill.id === "eagle-eye")?.activeUntil).toBeNull();
   });
 
   it("keeps observation and listening private and filters private or adult traces", () => {
@@ -561,6 +584,9 @@ describe("GameService", () => {
           duration_seconds,reserved_json,context_json,created_at,updated_at
         ) VALUES ('old-queued-qinggong',?,'action-qinggong','home-main-bedroom','running',0,?,?,35,'{}','{}',?,?)
       `).run(player.id, clock.toISOString(), new Date(clock.getTime() + 35_000).toISOString(), clock.toISOString(), clock.toISOString());
+      const legacyEffectUntil = "2099-08-03T12:15:00.000Z";
+      versionThree.prepare("UPDATE players SET vision_bonus_until=?,vision_depth_bonus=1 WHERE id=?")
+        .run(legacyEffectUntil, player.id);
       versionThree.prepare("DELETE FROM schema_migrations").run();
       versionThree.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (7,?)").run(clock.toISOString());
       versionThree.close();
@@ -570,6 +596,9 @@ describe("GameService", () => {
       expect(upgraded.prepare("SELECT route_type FROM routes WHERE id='route-home-door-v4'").get()).toEqual({ route_type: "transition" });
       expect(upgraded.prepare("SELECT status,result_text FROM action_jobs WHERE id='old-queued-qinggong'").get()).toEqual({
         status: "cancelled", result_text: "轻功已改为地图即时技能，旧排队行动已取消。",
+      });
+      expect(upgraded.prepare("SELECT skill_id,expires_at FROM player_active_skills WHERE player_id=?").get(player.id)).toEqual({
+        skill_id: "eagle-eye", expires_at: legacyEffectUntil,
       });
       upgraded.close();
     } finally {

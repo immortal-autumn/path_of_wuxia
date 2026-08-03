@@ -126,6 +126,7 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("action.start"), requestId, actionId: id }),
   z.object({ type: z.literal("qinggong.start"), requestId, destinationId: id }),
   z.object({ type: z.literal("skill.use"), requestId, skillId: id }),
+  z.object({ type: z.literal("skill.stop"), requestId, skillId: id }),
   z.object({
     type: z.literal("profile.adult.update"), requestId,
     adultStatus: z.enum(["unknown", "adult", "minor"]), adultContentEnabled: z.boolean(),

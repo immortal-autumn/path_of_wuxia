@@ -303,6 +303,13 @@ async function main() {
           return;
         }
 
+        if (command.type === "skill.stop") {
+          const result = service.stopActiveSkill(context.playerId, command.skillId);
+          sendSnapshot(socket, context);
+          send(socket, { type: "ack", requestId: command.requestId, message: result.message });
+          return;
+        }
+
         if (command.type === "profile.adult.update") {
           const result = service.updateAdultProfile(context.playerId, command.adultStatus, command.adultContentEnabled);
           send(socket, { type: "social.updated", social: result.social });

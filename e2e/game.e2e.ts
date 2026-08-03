@@ -153,10 +153,13 @@ test.describe("game map", () => {
     const form = page.getByLabel("行动规则表单");
     await form.getByLabel("行动名称").fill("Playwright整理玄关");
     await form.getByLabel("行动说明").fill("由端到端测试创建的结构化行动规则。");
-    await form.getByLabel("现实秒数").fill("60");
+    await form.getByLabel("行动耗时秒数").fill("60");
+    await form.getByLabel("技能持续秒数").fill("120");
     await form.getByLabel("结果文本").fill("{name}完成了Playwright整理。");
     await form.getByRole("button", { name: "保存规则" }).click();
     await expect(page.getByRole("status")).toContainText("行动规则已创建");
+    await expect(form.getByLabel("技能持续秒数")).toHaveValue("120");
+    await expect(form.getByLabel("成功结果 JSON")).toHaveValue(/statusDurationSeconds/);
 
     const binding = page.getByLabel("地点行动绑定");
     await binding.getByLabel("地图").selectOption("home-ground");
@@ -293,12 +296,29 @@ test.describe("game map", () => {
     await expect(skills.getByLabel("主动技能")).toContainText("冷却剩余");
 
     await expect(page.locator(".action-list")).not.toContainText("开启鹰眼");
-    await skills.getByRole("button", { name: "发动开启鹰眼" }).click();
+    const eagleSkill = skills.getByRole("button", { name: "查看技能详情：鹰眼" });
+    await eagleSkill.click();
+    let detail = page.getByRole("dialog", { name: "技能详情：鹰眼" });
+    await expect(detail).toContainText("效果持续30分钟");
+    await expect(detail).toContainText("冷却可以发动");
+    await detail.getByRole("button", { name: "确认发动开启鹰眼" }).click();
     await expect(page.getByRole("status")).toContainText("开启鹰眼成功");
     await expect(page.getByLabel("地图信息")).toContainText("四步视野");
     await expect(page.getByLabel("个人行动记录")).toContainText("开启鹰眼成功");
-    await expect(skills.getByRole("button", { name: /冷却剩余/ })).toBeDisabled();
+    await expect(eagleSkill).toContainText("持续中");
     await expect(page.getByLabel("行动队列").locator(".queue-job")).toHaveCount(0);
+
+    await eagleSkill.click();
+    detail = page.getByRole("dialog", { name: "技能详情：鹰眼" });
+    await expect(detail).toContainText("效果剩余");
+    await detail.getByRole("button", { name: "停止鹰眼" }).click();
+    await expect(page.getByRole("status")).toContainText("主动停止了鹰眼");
+    await expect(page.getByLabel("地图信息")).toContainText("三步视野");
+    await expect(eagleSkill).toContainText("冷却剩余");
+    await eagleSkill.click();
+    detail = page.getByRole("dialog", { name: "技能详情：鹰眼" });
+    await expect(detail.getByRole("button", { name: /冷却剩余/ })).toBeDisabled();
+    await detail.getByRole("button", { name: "关闭" }).click();
 
     await page.getByRole("button", { name: /观察四周/ }).click();
     await updatePlayer(page, "UPDATE action_jobs SET completes_at='2000-01-01T00:00:00.000Z' WHERE player_id=? AND status='running'");
@@ -311,9 +331,17 @@ test.describe("game map", () => {
     const inventory = page.getByLabel("物品装备");
     await expect(inventory).toContainText("木剑");
     await expect(inventory).toContainText("已装备：weapon");
-    await inventory.getByRole("button", { name: "卸下" }).first().click();
+    let sword = inventory.getByRole("button", { name: "查看物品详情：木剑" });
+    await sword.click();
+    let itemDetail = page.getByRole("dialog", { name: "物品详情：木剑" });
+    await expect(itemDetail).toContainText("品质1");
+    await expect(itemDetail).toContainText("装备位置weapon");
+    await itemDetail.getByRole("button", { name: "确认卸下" }).click();
     await expect(page.getByRole("status")).toContainText("物品已卸下");
-    await inventory.getByRole("button", { name: "装备" }).first().click();
+    sword = inventory.getByRole("button", { name: "查看物品详情：木剑" });
+    await sword.click();
+    itemDetail = page.getByRole("dialog", { name: "物品详情：木剑" });
+    await itemDetail.getByRole("button", { name: "确认装备" }).click();
     await expect(page.getByRole("status")).toContainText("装备已更新");
 
     await moveTo(page, "嬴长嫚与楼夜秋之家·前庭");

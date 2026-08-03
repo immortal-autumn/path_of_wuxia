@@ -895,6 +895,19 @@ h2 {
   gap: 5px;
   padding: 8px;
   border: 1px solid var(--border-light);
+  outline: none;
+  cursor: pointer;
+}
+
+.skill-card:hover,
+.skill-card:focus-visible,
+.inventory-item:hover,
+.inventory-item:focus-visible {
+  background: var(--disabled);
+}
+
+.skill-card.skill-running {
+  border: 2px solid #0b5e75;
 }
 
 .skill-card header {
@@ -917,26 +930,24 @@ h2 {
   line-height: 1.45;
 }
 
-.skill-card button {
-  min-height: 30px;
-  border: 1px solid var(--border);
-  background: #fff;
-  cursor: pointer;
-}
-
-.skill-card button:hover:not(:disabled) {
-  background: var(--disabled);
-}
-
-.skill-card button:disabled {
-  cursor: not-allowed;
-  background: var(--disabled);
-}
-
 .skill-card .skill-instruction {
   padding: 6px;
   border: 1px solid #0b5e75;
   color: #0b5e75;
+  text-align: center;
+}
+
+.skill-active-status {
+  color: #0b5e75 !important;
+  font-weight: 700;
+}
+
+.skill-card-cta,
+.item-detail-hint {
+  padding: 5px 6px;
+  border: 1px solid var(--border-light);
+  color: var(--muted);
+  font-size: 9px;
   text-align: center;
 }
 
@@ -1039,6 +1050,8 @@ h2 {
   gap: 8px;
   padding: 6px;
   border: 1px solid var(--border-light);
+  outline: none;
+  cursor: pointer;
   font-size: 11px;
 }
 
@@ -1057,6 +1070,120 @@ h2 {
   display: flex;
   flex: 0 0 auto;
   gap: 4px;
+}
+
+.item-detail-hint {
+  flex: 0 0 auto;
+}
+
+.detail-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 180;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgb(255 255 255 / 90%);
+}
+
+.detail-modal {
+  width: min(560px, calc(100vw - 32px));
+  max-height: min(760px, calc(100dvh - 32px));
+  overflow: auto;
+  border: 2px solid #000;
+  background: #fff;
+}
+
+.detail-modal > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.detail-modal > header h2 {
+  font-size: 20px;
+}
+
+.detail-modal button {
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  background: #fff;
+  cursor: pointer;
+}
+
+.detail-modal button:hover:not(:disabled) {
+  background: var(--disabled);
+}
+
+.detail-modal button:disabled {
+  cursor: not-allowed;
+  background: var(--disabled);
+}
+
+.detail-modal-body {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.detail-modal-body > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.detail-modal-body dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+  border-top: 1px solid var(--border-light);
+  border-left: 1px solid var(--border-light);
+}
+
+.detail-modal-body dl > div {
+  padding: 8px;
+  border-right: 1px solid var(--border-light);
+  border-bottom: 1px solid var(--border-light);
+}
+
+.detail-modal-body dt {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.detail-modal-body dd {
+  margin: 3px 0 0;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.detail-modal-body pre {
+  max-height: 180px;
+  margin: 0;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--border-light);
+  background: #fff;
+  font-size: 10px;
+  white-space: pre-wrap;
+}
+
+.detail-modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.detail-note {
+  padding: 8px;
+  border: 1px solid #0b5e75;
+  color: #0b5e75 !important;
 }
 
 .attribute-panel > p {

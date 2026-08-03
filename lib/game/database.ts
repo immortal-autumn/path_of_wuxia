@@ -6,7 +6,7 @@ import { ensureNpcPopulation } from "./npc-seed";
 
 export type GameDatabase = DatabaseSync;
 
-export const MAP_SCHEMA_VERSION = 8;
+export const MAP_SCHEMA_VERSION = 9;
 
 export function openGameDatabase(databasePath = process.env.DATABASE_PATH ?? resolve("data/wuxia.db")) {
   if (databasePath !== ":memory:") mkdirSync(dirname(databasePath), { recursive: true });
@@ -206,6 +206,13 @@ function migrate(db: GameDatabase) {
       action_template_id TEXT NOT NULL REFERENCES action_templates(id) ON DELETE CASCADE,
       available_at TEXT NOT NULL,updated_at TEXT NOT NULL,
       PRIMARY KEY(player_id,action_template_id)
+    );
+    CREATE TABLE IF NOT EXISTS player_active_skills(
+      player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+      skill_id TEXT NOT NULL REFERENCES skill_definitions(id),
+      action_template_id TEXT NOT NULL REFERENCES action_templates(id),
+      started_at TEXT NOT NULL,expires_at TEXT NOT NULL,updated_at TEXT NOT NULL,
+      PRIMARY KEY(player_id,skill_id)
     );
     CREATE TABLE IF NOT EXISTS loot_piles(
       id TEXT PRIMARY KEY,location_id TEXT NOT NULL REFERENCES locations(id),silver INTEGER NOT NULL DEFAULT 0 CHECK(silver>=0),
@@ -461,6 +468,17 @@ function migrate(db: GameDatabase) {
       WHERE action_template_id='action-qinggong' AND status IN ('running','queued','paused')
     `).run(now);
   }
+  if (previousVersion < 9) {
+    db.prepare(`
+      INSERT OR IGNORE INTO player_active_skills(
+        player_id,skill_id,action_template_id,started_at,expires_at,updated_at
+      )
+      SELECT p.id,'eagle-eye','action-eagle-eye',p.updated_at,p.vision_bonus_until,?
+      FROM players p
+      WHERE p.vision_bonus_until>? AND EXISTS (SELECT 1 FROM skill_definitions WHERE id='eagle-eye')
+        AND EXISTS (SELECT 1 FROM action_templates WHERE id='action-eagle-eye')
+    `).run(now, now);
+  }
 
   db.exec(`
     DROP INDEX IF EXISTS idx_active_grid;
@@ -484,6 +502,7 @@ function migrate(db: GameDatabase) {
     CREATE INDEX IF NOT EXISTS idx_action_jobs_player ON action_jobs(player_id,status,queue_position);
     CREATE INDEX IF NOT EXISTS idx_action_jobs_completion ON action_jobs(status,completes_at);
     CREATE INDEX IF NOT EXISTS idx_action_cooldowns_available ON player_action_cooldowns(available_at,player_id);
+    CREATE INDEX IF NOT EXISTS idx_active_skills_expiry ON player_active_skills(expires_at,player_id);
     CREATE INDEX IF NOT EXISTS idx_items_owner ON item_instances(owner_player_id,equipped_slot,definition_id);
     CREATE INDEX IF NOT EXISTS idx_items_loot ON item_instances(loot_pile_id,definition_id);
     CREATE INDEX IF NOT EXISTS idx_item_reservations_instance ON item_reservations(item_instance_id,job_id);

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 import type { ClientMessage, ServerMessage } from "@/lib/game/protocol";
 import type {
@@ -83,6 +84,12 @@ function cooldownRemainingText(until: string | null, now: number) {
   if (!until) return "可以发动";
   const seconds = Math.max(0, Math.ceil((new Date(until).getTime() - now) / 1000));
   return seconds === 0 ? "可以发动" : `冷却剩余 ${durationText(seconds)}`;
+}
+
+function effectRemainingText(until: string | null, now: number) {
+  if (!until) return "没有持续中的效果";
+  const seconds = Math.max(0, Math.ceil((new Date(until).getTime() - now) / 1000));
+  return seconds === 0 ? "效果正在结束" : `效果剩余 ${durationText(seconds)}`;
 }
 
 function isCoolingDown(until: string | null, now: number) {
@@ -737,6 +744,7 @@ function CharacterPanel({
   onUnequip,
   onUseItem,
   onUseSkill,
+  onStopSkill,
   onAdultUpdate,
   onGreet,
   onInteractionRequest,
@@ -763,6 +771,7 @@ function CharacterPanel({
   onUnequip: (itemId: string) => void;
   onUseItem: (itemId: string) => void;
   onUseSkill: (skillId: string) => void;
+  onStopSkill: (skillId: string) => void;
   onAdultUpdate: (status: "unknown" | "adult" | "minor", enabled: boolean) => void;
   onGreet: (targetPlayerId: string) => void;
   onInteractionRequest: (targetPlayerId: string, requestType: "relationship.friend" | "relationship.sworn" | "relationship.mentor" | "relationship.lover" | "relationship.spouse" | "intimate") => void;
@@ -786,13 +795,33 @@ function CharacterPanel({
   const [adultStatus, setAdultStatus] = useState(social.adultProfile.status);
   const [adultEnabled, setAdultEnabled] = useState(social.adultProfile.contentEnabled);
   const [tradeDrafts, setTradeDrafts] = useState<Record<string, { silver: string; itemId: string; quantity: string }>>({});
+  const [detail, setDetail] = useState<{ kind: "skill" | "item"; id: string } | null>(null);
   const allocated = Object.values(draft).reduce((sum, value) => sum + value, 0);
   const progress = Math.min(100, (self.cultivation.progress / Math.max(1, self.cultivation.nextLevelCost)) * 100);
   const tradableItems = inventory.items.filter((item) => !item.bound && !item.equippedSlot && item.quantity > item.reservedQuantity);
   const activeSkills = self.skills.filter((skill) => skill.kind === "active");
   const passiveSkills = self.skills.filter((skill) => skill.kind === "passive");
+  const detailSkill = detail?.kind === "skill" ? self.skills.find((skill) => skill.id === detail.id) ?? null : null;
+  const detailItem = detail?.kind === "item" ? inventory.items.find((item) => item.id === detail.id) ?? null : null;
+
+  useEffect(() => {
+    if (!detail) return;
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") setDetail(null);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [detail]);
+
+  const openDetailOnKey = (event: KeyboardEvent<HTMLElement>, kind: "skill" | "item", id: string) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      setDetail({ kind, id });
+    }
+  };
 
   return (
+    <>
     <section className={`character-panel side-section mobile-drawer ${open ? "drawer-open" : ""}`} aria-label="角色状态">
       <div className="character-heading">
         <div className="avatar" aria-hidden="true">侠</div>
@@ -856,25 +885,31 @@ function CharacterPanel({
             <h3>主动技能</h3>
             {activeSkills.map((skill) => {
               const cooling = isCoolingDown(skill.cooldownUntil, now);
+              const active = isCoolingDown(skill.activeUntil, now);
               return (
-                <article className="skill-card active-skill" key={skill.id}>
+                <article
+                  className={`skill-card active-skill ${active ? "skill-running" : ""}`}
+                  key={skill.id}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`查看技能详情：${skill.name}`}
+                  onClick={() => setDetail({ kind: "skill", id: skill.id })}
+                  onKeyDown={(event) => openDetailOnKey(event, "skill", skill.id)}
+                >
                   <header><strong>{skill.name}</strong><span>{ATTRIBUTE_LABELS.find(([key]) => key === skill.attributeKey)?.[1] ?? skill.attributeKey} · {SKILL_CATEGORY_LABELS[skill.category] ?? skill.category}</span></header>
                   <p>{skill.description}</p>
-                  <small>等级 {skill.level} · 经验 {skill.experience}</small>
+                  <small>等级 {skill.level} · 经验 {skill.experience} · {skill.effectDurationSeconds > 0 ? `持续 ${durationText(skill.effectDurationSeconds)}` : "瞬时效果"}</small>
+                  {active && <p className="skill-active-status">持续中 · {effectRemainingText(skill.activeUntil, now)}</p>}
                   {skill.id === "qinggong" ? (
                     <p className="skill-instruction">{cooling ? cooldownRemainingText(skill.cooldownUntil, now) : "在地图点击双线轻功边框立即发动"}</p>
                   ) : (
-                    <button
-                      type="button"
-                      disabled={pending || cooling || skill.activeActionId === null}
-                      onClick={() => onUseSkill(skill.id)}
-                    >
-                      {cooling
-                        ? cooldownRemainingText(skill.cooldownUntil, now)
+                    <span className="skill-card-cta">{active
+                      ? `查看并停止${skill.name}`
+                      : cooling
+                        ? `${cooldownRemainingText(skill.cooldownUntil, now)} · 查看详情`
                         : skill.activeActionId
-                          ? `发动${skill.activeActionName ?? skill.name}`
-                          : "尚未配置可发动规则"}
-                    </button>
+                          ? `查看并发动${skill.activeActionName ?? skill.name}`
+                          : "查看详情 · 尚未配置可发动规则"}</span>
                   )}
                 </article>
               );
@@ -883,10 +918,19 @@ function CharacterPanel({
           <section aria-label="被动技能">
             <h3>被动技能</h3>
             {passiveSkills.map((skill) => (
-              <article className="skill-card passive-skill" key={skill.id}>
+              <article
+                className="skill-card passive-skill"
+                key={skill.id}
+                role="button"
+                tabIndex={0}
+                aria-label={`查看技能详情：${skill.name}`}
+                onClick={() => setDetail({ kind: "skill", id: skill.id })}
+                onKeyDown={(event) => openDetailOnKey(event, "skill", skill.id)}
+              >
                 <header><strong>{skill.name}</strong><span>{ATTRIBUTE_LABELS.find(([key]) => key === skill.attributeKey)?.[1] ?? skill.attributeKey} · {SKILL_CATEGORY_LABELS[skill.category] ?? skill.category}</span></header>
                 <p>{skill.description}</p>
                 <small>等级 {skill.level} · 经验 {skill.experience}</small>
+                <span className="skill-card-cta">查看完整详情</span>
               </article>
             ))}
           </section>
@@ -895,19 +939,20 @@ function CharacterPanel({
       {tab === "inventory" && (
         <div className="inventory-panel" aria-label="物品装备">
           {inventory.items.map((item) => (
-            <div className="inventory-item" key={item.id}>
+            <div
+              className="inventory-item"
+              key={item.id}
+              role="button"
+              tabIndex={0}
+              aria-label={`查看物品详情：${item.name}`}
+              onClick={() => setDetail({ kind: "item", id: item.id })}
+              onKeyDown={(event) => openDetailOnKey(event, "item", item.id)}
+            >
               <span>
                 <strong>{item.name}{item.quantity > 1 ? ` ×${item.quantity}` : ""}</strong>
                 <small>品质 {item.quality}{item.bound ? " · 绑定" : ""}{item.equippedSlot ? ` · 已装备：${item.equippedSlot}` : ""}{item.reservedQuantity ? ` · 预留 ${item.reservedQuantity}` : ""}</small>
               </span>
-              <span className="inventory-controls">
-                {item.equipmentSlot && (item.equippedSlot
-                  ? <button disabled={pending} onClick={() => onUnequip(item.id)}>卸下</button>
-                  : <button disabled={pending || item.quantity <= item.reservedQuantity} onClick={() => onEquip(item.id)}>装备</button>)}
-                {Object.keys(item.effects).some((key) => key === "needDeltas" || key === "hpDelta") && (
-                  <button disabled={pending || item.quantity <= item.reservedQuantity} onClick={() => onUseItem(item.id)}>使用</button>
-                )}
-              </span>
+              <span className="item-detail-hint">查看详情</span>
             </div>
           ))}
         </div>
@@ -1022,6 +1067,71 @@ function CharacterPanel({
       )}
       <div className="character-numbers"><div><span>银两</span><strong>{self.silver}</strong><small>枚</small></div></div>
     </section>
+    {detail && typeof document !== "undefined" && createPortal(
+      <div className="detail-modal-backdrop" onMouseDown={(event) => {
+        if (event.target === event.currentTarget) setDetail(null);
+      }}>
+        <section className="detail-modal" role="dialog" aria-modal="true" aria-label={detailSkill ? `技能详情：${detailSkill.name}` : `物品详情：${detailItem?.name ?? "未知"}`}>
+          <header><div><p className="eyebrow">完整资料</p><h2>{detailSkill?.name ?? detailItem?.name ?? "详情"}</h2></div><button type="button" onClick={() => setDetail(null)}>关闭</button></header>
+          {detailSkill && (
+            <div className="detail-modal-body">
+              <p>{detailSkill.description}</p>
+              <dl>
+                <div><dt>类型</dt><dd>{detailSkill.kind === "active" ? "主动技能" : "被动技能"}</dd></div>
+                <div><dt>关联属性</dt><dd>{ATTRIBUTE_LABELS.find(([key]) => key === detailSkill.attributeKey)?.[1] ?? detailSkill.attributeKey}</dd></div>
+                <div><dt>等级 / 经验</dt><dd>{detailSkill.level} / {detailSkill.experience}</dd></div>
+                <div><dt>效果持续</dt><dd>{detailSkill.effectDurationSeconds > 0 ? durationText(detailSkill.effectDurationSeconds) : "瞬时"}</dd></div>
+                <div><dt>当前效果</dt><dd>{isCoolingDown(detailSkill.activeUntil, now) ? effectRemainingText(detailSkill.activeUntil, now) : "未持续"}</dd></div>
+                <div><dt>冷却</dt><dd>{cooldownRemainingText(detailSkill.cooldownUntil, now)}</dd></div>
+              </dl>
+              {detailSkill.kind === "active" && detailSkill.id === "qinggong" && <p className="detail-note">请关闭弹窗后，在地图点击双线轻功落点发动。</p>}
+              {detailSkill.kind === "active" && detailSkill.id !== "qinggong" && (
+                <div className="detail-modal-actions">
+                  {isCoolingDown(detailSkill.activeUntil, now) ? (
+                    <button disabled={pending} onClick={() => { onStopSkill(detailSkill.id); setDetail(null); }}>停止{detailSkill.name}</button>
+                  ) : (
+                    <button
+                      disabled={pending || isCoolingDown(detailSkill.cooldownUntil, now) || detailSkill.activeActionId === null}
+                      onClick={() => { onUseSkill(detailSkill.id); setDetail(null); }}
+                    >
+                      {isCoolingDown(detailSkill.cooldownUntil, now)
+                        ? cooldownRemainingText(detailSkill.cooldownUntil, now)
+                        : detailSkill.activeActionId
+                          ? `确认发动${detailSkill.activeActionName ?? detailSkill.name}`
+                          : "尚未配置可发动规则"}
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+          {detailItem && (
+            <div className="detail-modal-body">
+              <p>{detailItem.description}</p>
+              <dl>
+                <div><dt>类别</dt><dd>{detailItem.category}</dd></div>
+                <div><dt>数量 / 预留</dt><dd>{detailItem.quantity} / {detailItem.reservedQuantity}</dd></div>
+                <div><dt>品质</dt><dd>{detailItem.quality}</dd></div>
+                <div><dt>耐久</dt><dd>{detailItem.maxDurability > 0 ? `${detailItem.durability} / ${detailItem.maxDurability}` : "不适用"}</dd></div>
+                <div><dt>绑定</dt><dd>{detailItem.bound ? "是" : "否"}</dd></div>
+                <div><dt>装备位置</dt><dd>{detailItem.equippedSlot ?? detailItem.equipmentSlot ?? "不可装备"}</dd></div>
+              </dl>
+              <pre>{JSON.stringify(detailItem.effects, null, 2)}</pre>
+              <div className="detail-modal-actions">
+                {detailItem.equipmentSlot && (detailItem.equippedSlot
+                  ? <button disabled={pending} onClick={() => { onUnequip(detailItem.id); setDetail(null); }}>确认卸下</button>
+                  : <button disabled={pending || detailItem.quantity <= detailItem.reservedQuantity} onClick={() => { onEquip(detailItem.id); setDetail(null); }}>确认装备</button>)}
+                {Object.keys(detailItem.effects).some((key) => key === "needDeltas" || key === "hpDelta") && (
+                  <button disabled={pending || detailItem.quantity <= detailItem.reservedQuantity} onClick={() => { onUseItem(detailItem.id); setDetail(null); }}>确认使用</button>
+                )}
+              </div>
+            </div>
+          )}
+        </section>
+      </div>,
+      document.body,
+    )}
+    </>
   );
 }
 
@@ -1335,6 +1445,7 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           onUnequip={(itemId) => sendCommand({ type: "inventory.unequip", itemId }, "inventory")}
           onUseItem={(itemId) => sendCommand({ type: "inventory.use", itemId }, "inventory")}
           onUseSkill={(skillId) => sendCommand({ type: "skill.use", skillId }, "skill")}
+          onStopSkill={(skillId) => sendCommand({ type: "skill.stop", skillId }, "skill")}
           onAdultUpdate={(adultStatus, adultContentEnabled) => sendCommand({ type: "profile.adult.update", adultStatus, adultContentEnabled }, "social")}
           onGreet={(targetPlayerId) => sendCommand({ type: "interaction.greet", targetPlayerId }, "social")}
           onInteractionRequest={(targetPlayerId, requestType) => sendCommand({ type: "interaction.request", targetPlayerId, requestType }, "social")}

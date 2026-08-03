@@ -10,7 +10,7 @@ type FormState = {
   id: string; name: string; description: string; category: ActionRule["category"];
   targetKind: ActionRule["targetKind"]; durationSeconds: string; requirements: string; check: string;
   costs: string; success: string; failure: string; resultTemplate: string; adult: boolean;
-  visibility: ActionRule["visibility"]; cooldownSeconds: string; version: number | null;
+  visibility: ActionRule["visibility"]; cooldownSeconds: string; effectDurationSeconds: string; version: number | null;
 };
 type CommandWithoutId = ClientMessage extends infer Message
   ? Message extends { requestId: string }
@@ -21,7 +21,8 @@ type CommandWithoutId = ClientMessage extends infer Message
 const EMPTY_FORM: FormState = {
   id: "", name: "", description: "", category: "life", targetKind: "self", durationSeconds: "60",
   requirements: "{}", check: "{}", costs: "{}", success: "{}", failure: "{}",
-  resultTemplate: "{name}完成了行动。", adult: false, visibility: "public", cooldownSeconds: "0", version: null,
+  resultTemplate: "{name}完成了行动。", adult: false, visibility: "public", cooldownSeconds: "0",
+  effectDurationSeconds: "0", version: null,
 };
 
 function toForm(action: ActionRule): FormState {
@@ -31,7 +32,8 @@ function toForm(action: ActionRule): FormState {
     requirements: JSON.stringify(action.requirements, null, 2), check: JSON.stringify(action.check, null, 2),
     costs: JSON.stringify(action.costs, null, 2), success: JSON.stringify(action.success, null, 2),
     failure: JSON.stringify(action.failure, null, 2), resultTemplate: action.resultTemplate,
-    adult: action.adult, visibility: action.visibility, cooldownSeconds: String(action.cooldownSeconds), version: action.version,
+    adult: action.adult, visibility: action.visibility, cooldownSeconds: String(action.cooldownSeconds),
+    effectDurationSeconds: String(action.success.statusDurationSeconds ?? 0), version: action.version,
   };
 }
 
@@ -90,11 +92,15 @@ export default function ActionRuleEditor({ initialRules }: { initialRules: Actio
 
   const save = () => {
     try {
+      const success = parseObject(form.success, "成功结果");
+      const effectDurationSeconds = Number.parseInt(form.effectDurationSeconds, 10);
+      if (effectDurationSeconds > 0) success.statusDurationSeconds = effectDurationSeconds;
+      else delete success.statusDurationSeconds;
       const action = {
         name: form.name, description: form.description, category: form.category, targetKind: form.targetKind,
         durationSeconds: Number.parseInt(form.durationSeconds, 10), requirements: parseObject(form.requirements, "需求"),
         check: parseObject(form.check, "检定"), costs: parseObject(form.costs, "成本"),
-        success: parseObject(form.success, "成功结果"), failure: parseObject(form.failure, "失败结果"),
+        success, failure: parseObject(form.failure, "失败结果"),
         resultTemplate: form.resultTemplate, adult: form.adult, visibility: form.visibility,
         cooldownSeconds: Number.parseInt(form.cooldownSeconds, 10),
       };
@@ -139,8 +145,9 @@ export default function ActionRuleEditor({ initialRules }: { initialRules: Actio
             <label>目标<select value={form.targetKind} onChange={(event) => setForm({ ...form, targetKind: event.target.value as ActionRule["targetKind"] })}>
               {["self", "location", "player", "item", "plot"].map((value) => <option key={value}>{value}</option>)}
             </select></label>
-            <label>现实秒数<input type="number" min="0" value={form.durationSeconds} onChange={(event) => setForm({ ...form, durationSeconds: event.target.value })} /></label>
+            <label>行动耗时秒数<input type="number" min="0" value={form.durationSeconds} onChange={(event) => setForm({ ...form, durationSeconds: event.target.value })} /></label>
             <label>冷却秒数<input type="number" min="0" value={form.cooldownSeconds} onChange={(event) => setForm({ ...form, cooldownSeconds: event.target.value })} /></label>
+            <label>技能持续秒数<input type="number" min="0" value={form.effectDurationSeconds} onChange={(event) => setForm({ ...form, effectDurationSeconds: event.target.value })} /></label>
           </div>
           <div className="rule-fields-row">
             <label>可见性<select value={form.visibility} onChange={(event) => setForm({ ...form, visibility: event.target.value as ActionRule["visibility"] })}>

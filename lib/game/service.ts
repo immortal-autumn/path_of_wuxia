@@ -298,6 +298,7 @@ export class GameService {
 
   private getPlayerSkills(playerId: string): PlayerSkill[] {
     this.ensurePlayerSystems(playerId);
+    const now = this.now().getTime();
     return (this.db.prepare(`
       SELECT s.id,s.name,s.description,s.attribute_key,s.category,s.skill_kind,ps.level,ps.experience
       FROM player_skills ps JOIN skill_definitions s ON s.id=ps.skill_id
@@ -307,7 +308,7 @@ export class GameService {
       category: string; skill_kind: "active" | "passive"; level: number; experience: number;
     }>).map((row) => {
       const activeAction = row.skill_kind === "active" ? this.db.prepare(`
-        SELECT t.id,t.name,c.available_at FROM action_templates t
+        SELECT t.id,t.name,t.outcomes_json,c.available_at FROM action_templates t
         LEFT JOIN player_action_cooldowns c ON c.player_id=? AND c.action_template_id=t.id
         WHERE t.is_active=1 AND t.adult=0 AND t.target_kind='self'
           AND json_extract(t.requirements_json,'$.skillId')=?
@@ -316,12 +317,25 @@ export class GameService {
             WHERE p.id=? AND b.action_template_id=t.id AND b.is_active=1
           ))
         ORDER BY t.id LIMIT 1
-      `).get(playerId, row.id, playerId) as { id: string; name: string; available_at: string | null } | undefined : undefined;
+      `).get(playerId, row.id, playerId) as {
+        id: string; name: string; outcomes_json: string; available_at: string | null;
+      } | undefined : undefined;
+      const activeState = row.skill_kind === "active" ? this.db.prepare(`
+        SELECT active.action_template_id,active.started_at,active.expires_at,template.outcomes_json
+        FROM player_active_skills active JOIN action_templates template ON template.id=active.action_template_id
+        WHERE active.player_id=? AND active.skill_id=? AND active.expires_at>?
+      `).get(playerId, row.id, new Date(now).toISOString()) as {
+        action_template_id: string; started_at: string; expires_at: string; outcomes_json: string;
+      } | undefined : undefined;
+      const durationSource = activeAction?.outcomes_json ?? activeState?.outcomes_json;
       return {
         id: row.id, name: row.name, description: row.description, attributeKey: row.attribute_key,
         category: row.category, kind: row.skill_kind, level: row.level, experience: row.experience,
-        cooldownUntil: activeAction?.available_at && new Date(activeAction.available_at).getTime() > this.now().getTime()
+        effectDurationSeconds: durationSource ? parseOutcomes(durationSource).success.statusDurationSeconds ?? 0 : 0,
+        cooldownUntil: activeAction?.available_at && new Date(activeAction.available_at).getTime() > now
           ? activeAction.available_at : null,
+        activeStartedAt: activeState?.started_at ?? null,
+        activeUntil: activeState?.expires_at ?? null,
         activeActionId: activeAction?.id ?? null, activeActionName: activeAction?.name ?? null,
       };
     });
@@ -1477,6 +1491,13 @@ export class GameService {
     return row && new Date(row.available_at).getTime() > this.now().getTime() ? row.available_at : null;
   }
 
+  private activeSkillUntil(playerId: string, skillId: string) {
+    const row = this.db.prepare(`
+      SELECT expires_at FROM player_active_skills WHERE player_id=? AND skill_id=?
+    `).get(playerId, skillId) as { expires_at: string } | undefined;
+    return row && new Date(row.expires_at).getTime() > this.now().getTime() ? row.expires_at : null;
+  }
+
   private resolveInstantSkillAction(playerId: string, template: ActionTemplateRow, destination: Location | null = null) {
     const now = this.now();
     const timestamp = now.toISOString();
@@ -1516,6 +1537,16 @@ export class GameService {
     }
     this.addSkillExperience(playerId, skillId, outcome.skillExperience ?? 0, timestamp);
     for (const item of outcome.items ?? []) this.grantItem(playerId, item.definitionId, item.quantity, item.quality ?? 1, item.bound ?? false, timestamp);
+    const activeSkillId = this.activeSkillIdForTemplate(template);
+    if (success && activeSkillId && outcome.statusDurationSeconds) {
+      const expiresAt = new Date(now.getTime() + outcome.statusDurationSeconds * 1000).toISOString();
+      this.db.prepare(`
+        INSERT INTO player_active_skills(player_id,skill_id,action_template_id,started_at,expires_at,updated_at)
+        VALUES (?,?,?,?,?,?) ON CONFLICT(player_id,skill_id) DO UPDATE SET
+          action_template_id=excluded.action_template_id,started_at=excluded.started_at,
+          expires_at=excluded.expires_at,updated_at=excluded.updated_at
+      `).run(playerId, activeSkillId, template.id, timestamp, expiresAt, timestamp);
+    }
     if (success && outcome.statusId === "eagle-eye") {
       const level = this.skillLevel(playerId, "eagle-eye");
       const bonus = Math.min(5, 1 + Math.floor(level / 20));
@@ -1620,9 +1651,39 @@ export class GameService {
       if (!template) throw new Error("当前位置没有可发动的主动技能规则。");
       const reason = this.unavailableReason(playerId, template);
       if (reason) throw new Error(reason);
+      const activeUntil = this.activeSkillUntil(playerId, skillId);
+      if (activeUntil) throw new Error(`技能正在持续中，可先主动停止或等待至${activeUntil}。`);
       const cooldownUntil = this.activeCooldownUntil(playerId, template.id);
       if (cooldownUntil) throw new Error(`技能冷却中，请等待至${cooldownUntil}。`);
       return this.resolveInstantSkillAction(playerId, template);
+    });
+  }
+
+  stopActiveSkill(playerId: string, skillId: string) {
+    return inTransaction(this.db, () => {
+      const player = this.getPlayerRow(playerId);
+      const active = this.db.prepare(`
+        SELECT active.action_template_id,active.expires_at,skill.name
+        FROM player_active_skills active JOIN skill_definitions skill ON skill.id=active.skill_id
+        WHERE active.player_id=? AND active.skill_id=? AND active.expires_at>?
+      `).get(playerId, skillId, this.now().toISOString()) as {
+        action_template_id: string; expires_at: string; name: string;
+      } | undefined;
+      if (!active) throw new Error("这项技能当前没有持续中的效果。");
+      const timestamp = this.now().toISOString();
+      this.db.prepare("DELETE FROM player_active_skills WHERE player_id=? AND skill_id=?").run(playerId, skillId);
+      if (skillId === "eagle-eye") {
+        this.db.prepare("UPDATE players SET vision_bonus_until=NULL,vision_depth_bonus=0,updated_at=? WHERE id=?")
+          .run(timestamp, playerId);
+      }
+      const content = `${player.name}主动停止了${active.name}，技能冷却保持不变。`;
+      this.db.prepare(`
+        INSERT INTO action_logs(player_id,kind,action_template_id,from_location,to_location,result_text,created_at)
+        VALUES (?,'skill-stop',?,?,?,?,?)
+      `).run(playerId, active.action_template_id, player.current_location, player.current_location, content, timestamp);
+      this.db.prepare("INSERT INTO private_events(player_id,event_type,content,created_at) VALUES (?,'skill-stop',?,?)")
+        .run(playerId, content, timestamp);
+      return { message: content };
     });
   }
 

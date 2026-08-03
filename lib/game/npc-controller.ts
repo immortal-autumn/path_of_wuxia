@@ -5,6 +5,7 @@ export type NpcDecision =
   | { type: "action.start"; actionId: string }
   | { type: "qinggong.start"; destinationId: string }
   | { type: "skill.use"; skillId: string }
+  | { type: "skill.stop"; skillId: string }
   | { type: "combat.choose"; combatId: string; choice: "attack" | "power" | "defend" | "flee" }
   | { type: "combat.respawn" }
   | { type: "loot.take"; lootPileId: string }
@@ -23,6 +24,7 @@ function validDecision(value: unknown): value is NpcDecision {
   if (decision.type === "action.start") return typeof decision.actionId === "string";
   if (decision.type === "qinggong.start") return typeof decision.destinationId === "string";
   if (decision.type === "skill.use") return typeof decision.skillId === "string";
+  if (decision.type === "skill.stop") return typeof decision.skillId === "string";
   if (decision.type === "combat.respawn") return true;
   if (decision.type === "loot.take") return typeof decision.lootPileId === "string";
   if (decision.type === "chat.send") return typeof decision.content === "string" && decision.content.length >= 1 && decision.content.length <= 120;
