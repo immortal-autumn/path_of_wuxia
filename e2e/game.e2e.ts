@@ -180,26 +180,22 @@ test.describe("game map", () => {
     await moveToId(page, "loumen-road-west", "楼门路");
     await moveTo(page, "大宋入口");
     await performAction(page, "眺望大宋");
-    await moveTo(page, "大宋官道");
-    await moveToId(page, "song-hub-jingji", "京畿路官道");
-    await moveToId(page, "song-entry-jingji", "京畿路官道");
+    await moveTo(page, "大宋东关官道");
+    await moveToId(page, "song-atlas-road-m1-p1", "大宋官道");
     await expect(page.getByRole("heading", { name: "八方世界 · 局部地图" })).toBeVisible();
 
-    await moveToId(page, "song-hub-jingji", "京畿路官道");
-    await moveTo(page, "大宋官道");
+    await moveTo(page, "大宋东关官道");
     await moveTo(page, "大宋入口");
     await moveToId(page, "loumen-road-west", "楼门路");
     await moveToId(page, "loumen-road", "楼门路");
     await moveToId(page, "loumen-road-east", "楼门路");
     await moveTo(page, "帕洛斯入口");
     await performAction(page, "眺望帕洛斯");
-    await moveTo(page, "帕洛斯群岛海岸");
-    await moveToId(page, "palos-hub-travel", "帕洛斯传送点道路");
-    await moveToId(page, "palos-entry-travel", "帕洛斯传送点道路");
-    await moveTo(page, "帕洛斯传送点·初始台地");
+    await moveTo(page, "帕洛斯西部航路");
+    await moveToId(page, "palos-map-road-p7-p3", "帕洛斯道路");
     await expect(page.getByRole("heading", { name: "八方世界 · 局部地图" })).toBeVisible();
     await page.reload();
-    await expect(page.getByRole("button", { name: /帕洛斯传送点·初始台地.*当前位置/ })).toBeVisible();
+    await expect(page.locator('[data-location-id="palos-map-road-p7-p3"]')).toHaveClass(/current/);
   });
 
   test("moves when crypto.randomUUID is unavailable over plain HTTP", async ({ page }) => {

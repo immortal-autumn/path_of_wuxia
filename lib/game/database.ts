@@ -284,7 +284,7 @@ function seed(db: GameDatabase) {
     const now = new Date().toISOString();
     db.prepare(`
       INSERT INTO world_state(id,era,seed,announcement,updated_at)
-      VALUES (1,'北宋大观四年与帕洛斯世界','path-of-wuxia-world-v4','单层住宅之外是一张连续大地图：楼门路向左通往北宋，向右通往帕洛斯。',?)
+      VALUES (1,'北宋大观四年与帕洛斯世界','path-of-wuxia-world-v5','单层住宅之外是一张连续地理大地图：楼门路向西接入北宋二十四路舆图，向东接入帕洛斯群岛坐标图。',?)
       ON CONFLICT(id) DO UPDATE SET era=excluded.era,seed=excluded.seed,announcement=excluded.announcement,updated_at=excluded.updated_at
     `).run(now);
 

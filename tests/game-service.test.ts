@@ -45,17 +45,29 @@ describe("GameService", () => {
     expect(service.getLocation("home-exterior")).toMatchObject({ layerId: "world-root", name: "嬴长嫚与楼夜秋之家·入口" });
     expect(service.getLocation("loumen-road")).toMatchObject({ layerId: "world-root", name: "楼门路" });
     expect(service.getLocation("song-jingji-1-seat")).toMatchObject({ layerId: "world-root", regionId: "song" });
-    expect(service.getLocation("palos-fasttravel-1001")).toMatchObject({ layerId: "world-root", regionId: "palos" });
+    expect(service.getLocation("song-hub-hebei-east")).toMatchObject({ gridX: -13, gridY: -27 });
+    expect(service.getLocation("song-hub-guangnan-west")).toMatchObject({ gridX: -37, gridY: 50 });
+    expect(service.getLocation("palos-fasttravel-1001")).toMatchObject({ layerId: "world-root", regionId: "palos", gridX: 20, gridY: 2 });
+    expect(service.getLocation("palos-fasttravel-1057")).toMatchObject({ gridX: 67, gridY: -11 });
     expect(service.getLocation("home-training-room")).toMatchObject({ layerId: "home-ground" });
     expect(service.searchMapLocations("world-root", "楼门路", 10)).toHaveLength(3);
     expect(db.prepare("SELECT COUNT(*) AS count FROM locations WHERE name='楼门路' AND is_active=1").get()).toEqual({ count: 3 });
     const validation = validateWorldMap(db);
     expect(validation.errors).toEqual([]);
-    expect(validation.counts).toMatchObject({ songLocations: expect.any(Number), palosLocations: 279 });
+    expect(validation.counts).toMatchObject({
+      locations: 1342,
+      routes: 1373,
+      songLocations: 618,
+      palosLocations: 510,
+      overworldLocations: 1321,
+    });
     expect(validation.counts.songLocations).toBeGreaterThanOrEqual(250);
     expect(validation.counts.locations).toBeGreaterThanOrEqual(500);
     expect(validation.counts.reachableLocations).toBe(validation.counts.locations);
     expect(validation.counts.overworldLocations).toBeGreaterThanOrEqual(890);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM world_sources WHERE id='source-song-map'").get()).toEqual({ count: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM locations WHERE is_active=1 AND name='大宋官道'").get()).toEqual({ count: 189 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM locations WHERE is_active=1 AND name='帕洛斯道路'").get()).toEqual({ count: 241 });
     expect((db.prepare("SELECT COUNT(*) AS count FROM location_direction_slots").get() as { count: number }).count).toBeGreaterThan(500);
     expect((db.prepare("SELECT COUNT(*) AS count FROM routes r JOIN locations f ON f.id=r.from_location JOIN locations t ON t.id=r.to_location WHERE r.is_active=1 AND r.route_type<>'normal' AND f.layer_id='world-root' AND t.layer_id='world-root'").get() as { count: number }).count).toBe(0);
     expect(validation.counts.layers).toBe(2);

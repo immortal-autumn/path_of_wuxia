@@ -1,7 +1,8 @@
 import { directionBetween, OPPOSITE_DIRECTION } from "./map";
+import { PALWORLD_MARKER_COORDINATES } from "./palworld-coordinates";
 import type { Direction, RouteType, TransitionKind } from "./types";
 
-export const WORLD_SEED_REVISION = 4;
+export const WORLD_SEED_REVISION = 5;
 export const WORLD_SEED_RETRIEVED_AT = "2026-08-03";
 
 export type WorldSeedSource = {
@@ -75,30 +76,30 @@ export type WorldSeedData = {
 };
 
 const SONG_CIRCUITS = [
-  ["jingji", "京畿路", ["开封府"]],
-  ["jingdong-east", "京东东路", ["青州", "密州", "沂州", "登州", "莱州", "潍州", "淄州"]],
-  ["jingdong-west", "京东西路", ["应天府", "兖州", "徐州", "曹州", "郓州", "济州", "单州", "濮州"]],
-  ["jingxi-south", "京西南路", ["襄州", "邓州", "随州", "金州", "房州", "均州", "郢州", "唐州", "光化军"]],
-  ["jingxi-north", "京西北路", ["河南府", "颍昌府", "郑州", "滑州", "孟州", "蔡州", "陈州", "颍州", "汝州", "信阳军"]],
-  ["hebei-east", "河北东路", ["大名府", "开德府", "河间府", "沧州", "冀州", "博州", "棣州", "莫州", "雄州", "霸州", "德州", "滨州", "恩州", "清州", "信安军", "保定军"]],
-  ["hebei-west", "河北西路", ["真定府", "中山府", "信德府", "庆源府", "相州", "浚州", "怀州", "卫州", "磁州", "深州", "祁州", "保州", "邢州", "赵州"]],
-  ["hedong", "河东路", ["太原府", "隆德府", "平阳府", "府州", "绛州", "泽州", "代州", "忻州", "汾州", "辽州", "宪州", "岚州", "石州", "隰州", "慈州", "麟州", "火山军", "宁化军", "岢岚军", "保德军"]],
-  ["yongxing", "永兴军路", ["京兆府", "河中府", "延安府", "庆阳府", "同州", "华州", "耀州", "陕州", "邠州", "宁州", "坊州", "鄜州", "丹州", "环州", "银州", "醴州", "保安军", "定边军", "绥德军", "清平军"]],
-  ["qinfeng", "秦凤路", ["凤翔府", "秦州", "陇州", "泾州", "渭州", "原州", "熙州", "河州", "岷州", "兰州", "阶州", "成州", "西宁州", "镇戎军", "通远军"]],
-  ["huainan-east", "淮南东路", ["扬州", "亳州", "宿州", "楚州", "海州", "泰州", "泗州", "滁州", "真州", "通州"]],
-  ["huainan-west", "淮南西路", ["寿春府", "庐州", "舒州", "蕲州", "和州", "濠州", "光州", "黄州", "六安军", "无为军", "安庆军", "广德军", "镇巢军", "怀远军"]],
-  ["liangzhe", "两浙路", ["杭州", "越州", "湖州", "婺州", "明州", "温州", "台州", "处州", "衢州", "睦州", "秀州", "常州", "苏州", "润州"]],
-  ["jiangnan-east", "江南东路", ["江宁府", "宣州", "徽州", "池州", "饶州", "信州", "太平州", "南康军", "广德军东境", "铅山场"]],
-  ["jiangnan-west", "江南西路", ["洪州", "虔州", "吉州", "袁州", "抚州", "筠州", "兴国军", "临江军", "南安军", "建昌军"]],
-  ["jinghu-north", "荆湖北路", ["江陵府", "鄂州", "复州", "澧州", "峡州", "归州", "岳州", "辰州", "沅州", "荆门军"]],
-  ["jinghu-south", "荆湖南路", ["潭州", "衡州", "道州", "永州", "郴州", "邵州", "全州", "桂阳监"]],
-  ["fujian", "福建路", ["福州", "建州", "泉州", "南剑州", "漳州", "汀州", "邵武军", "兴化军"]],
-  ["chengdu", "成都府路", ["成都府", "眉州", "蜀州", "彭州", "绵州", "汉州", "嘉州", "邛州", "简州", "黎州", "雅州", "茂州"]],
-  ["zizhou", "梓州路", ["潼川府", "遂州", "果州", "资州", "普州", "昌州", "叙州", "泸州", "合州", "荣州", "渠州", "长宁军"]],
-  ["lizhou", "利州路", ["兴元府", "利州", "洋州", "阆州", "剑州", "巴州", "文州", "龙州", "蓬州", "政州"]],
-  ["kuizhou", "夔州路", ["夔州", "黔州", "施州", "忠州", "万州", "开州", "达州", "涪州", "渝州", "珍州", "南平军", "云安军"]],
-  ["guangnan-east", "广南东路", ["广州", "韶州", "循州", "潮州", "连州", "梅州", "南雄州", "英州", "贺州", "封州", "端州", "新州", "康州", "惠州"]],
-  ["guangnan-west", "广南西路", ["桂州", "容州", "邕州", "融州", "象州", "昭州", "梧州", "藤州", "龚州", "浔州", "柳州", "贵州", "宾州", "横州", "化州", "高州", "雷州", "钦州", "廉州", "琼州"]],
+  ["jingji", "京畿路", ["开封府"], [-14, 0]],
+  ["jingdong-east", "京东东路", ["青州", "密州", "沂州", "登州", "莱州", "潍州", "淄州"], [-4, -8]],
+  ["jingdong-west", "京东西路", ["应天府", "兖州", "徐州", "曹州", "郓州", "济州", "单州", "濮州"], [-16, -8]],
+  ["jingxi-south", "京西南路", ["襄州", "邓州", "随州", "金州", "房州", "均州", "郢州", "唐州", "光化军"], [-28, 12]],
+  ["jingxi-north", "京西北路", ["河南府", "颍昌府", "郑州", "滑州", "孟州", "蔡州", "陈州", "颍州", "汝州", "信阳军"], [-27, 0]],
+  ["hebei-east", "河北东路", ["大名府", "开德府", "河间府", "沧州", "冀州", "博州", "棣州", "莫州", "雄州", "霸州", "德州", "滨州", "恩州", "清州", "信安军", "保定军"], [-10, -24]],
+  ["hebei-west", "河北西路", ["真定府", "中山府", "信德府", "庆源府", "相州", "浚州", "怀州", "卫州", "磁州", "深州", "祁州", "保州", "邢州", "赵州"], [-24, -24]],
+  ["hedong", "河东路", ["太原府", "隆德府", "平阳府", "府州", "绛州", "泽州", "代州", "忻州", "汾州", "辽州", "宪州", "岚州", "石州", "隰州", "慈州", "麟州", "火山军", "宁化军", "岢岚军", "保德军"], [-40, -24]],
+  ["yongxing", "永兴军路", ["京兆府", "河中府", "延安府", "庆阳府", "同州", "华州", "耀州", "陕州", "邠州", "宁州", "坊州", "鄜州", "丹州", "环州", "银州", "醴州", "保安军", "定边军", "绥德军", "清平军"], [-52, -10]],
+  ["qinfeng", "秦凤路", ["凤翔府", "秦州", "陇州", "泾州", "渭州", "原州", "熙州", "河州", "岷州", "兰州", "阶州", "成州", "西宁州", "镇戎军", "通远军"], [-68, -10]],
+  ["huainan-east", "淮南东路", ["扬州", "亳州", "宿州", "楚州", "海州", "泰州", "泗州", "滁州", "真州", "通州"], [-10, 15]],
+  ["huainan-west", "淮南西路", ["寿春府", "庐州", "舒州", "蕲州", "和州", "濠州", "光州", "黄州", "六安军", "无为军", "安庆军", "广德军", "镇巢军", "怀远军"], [-22, 15]],
+  ["liangzhe", "两浙路", ["杭州", "越州", "湖州", "婺州", "明州", "温州", "台州", "处州", "衢州", "睦州", "秀州", "常州", "苏州", "润州"], [-5, 28]],
+  ["jiangnan-east", "江南东路", ["江宁府", "宣州", "徽州", "池州", "饶州", "信州", "太平州", "南康军", "广德军东境", "铅山场"], [-17, 29]],
+  ["jiangnan-west", "江南西路", ["洪州", "虔州", "吉州", "袁州", "抚州", "筠州", "兴国军", "临江军", "南安军", "建昌军"], [-30, 30]],
+  ["jinghu-north", "荆湖北路", ["江陵府", "鄂州", "复州", "澧州", "峡州", "归州", "岳州", "辰州", "沅州", "荆门军"], [-36, 21]],
+  ["jinghu-south", "荆湖南路", ["潭州", "衡州", "道州", "永州", "郴州", "邵州", "全州", "桂阳监"], [-37, 36]],
+  ["fujian", "福建路", ["福州", "建州", "泉州", "南剑州", "漳州", "汀州", "邵武军", "兴化军"], [-7, 42]],
+  ["chengdu", "成都府路", ["成都府", "眉州", "蜀州", "彭州", "绵州", "汉州", "嘉州", "邛州", "简州", "黎州", "雅州", "茂州"], [-61, 22]],
+  ["zizhou", "梓州路", ["潼川府", "遂州", "果州", "资州", "普州", "昌州", "叙州", "泸州", "合州", "荣州", "渠州", "长宁军"], [-51, 28]],
+  ["lizhou", "利州路", ["兴元府", "利州", "洋州", "阆州", "剑州", "巴州", "文州", "龙州", "蓬州", "政州"], [-55, 8]],
+  ["kuizhou", "夔州路", ["夔州", "黔州", "施州", "忠州", "万州", "开州", "达州", "涪州", "渝州", "珍州", "南平军", "云安军"], [-43, 28]],
+  ["guangnan-east", "广南东路", ["广州", "韶州", "循州", "潮州", "连州", "梅州", "南雄州", "英州", "贺州", "封州", "端州", "新州", "康州", "惠州"], [-18, 51]],
+  ["guangnan-west", "广南西路", ["桂州", "容州", "邕州", "融州", "象州", "昭州", "梧州", "藤州", "龚州", "浔州", "柳州", "贵州", "宾州", "横州", "化州", "高州", "雷州", "钦州", "廉州", "琼州"], [-34, 53]],
 ] as const;
 
 const PAL_FAST_TRAVEL = [
@@ -128,26 +129,21 @@ const PAL_CATEGORIES = [
   ["memos", "帕洛斯手记", "漂流者与高塔首领留下的39份手记。"],
 ] as const;
 
-function westwardSerpentine(index: number, width: number, startX: number, startY: number) {
+function compactSerpentine(index: number, count: number, centerX: number, centerY: number) {
+  const width = Math.ceil(Math.sqrt(count));
+  const height = Math.ceil(count / width);
   const row = Math.floor(index / width);
   const column = index % width;
-  return {
-    gridX: row % 2 === 0 ? startX - column : startX - (width - 1 - column),
-    gridY: startY + row,
-  };
-}
-
-function eastwardSerpentine(index: number, width: number, startX: number, startY: number) {
-  const row = Math.floor(index / width);
-  const column = index % width;
+  const startX = centerX - Math.floor(width / 2);
+  const startY = centerY - Math.floor(height / 2);
   return {
     gridX: row % 2 === 0 ? startX + column : startX + (width - 1 - column),
     gridY: startY + row,
   };
 }
 
-function slug(value: string) {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+function coordinateToken(value: number) {
+  return value < 0 ? `m${Math.abs(value)}` : `p${value}`;
 }
 
 export function buildWorldSeed(): WorldSeedData {
@@ -166,7 +162,15 @@ export function buildWorldSeed(): WorldSeedData {
       url: "https://zh.wikipedia.org/w/index.php?title=宋朝行政区划&oldid=39684822",
       contentVersion: "revid-39684822@2016-04-11T06:09:51Z",
       retrievedAt: WORLD_SEED_RETRIEVED_AT,
-      notes: "用于约1110年北宋路、府、州、军层级；游戏内驿市节点为便于行走的抽象。",
+      notes: "用于约1110年北宋路、府、州、军名录；游戏内驿市节点为便于行走的抽象。",
+    },
+    {
+      id: "source-song-map",
+      title: "Wikimedia Commons：北宋行政区划（1123年）（简）",
+      url: "https://commons.wikimedia.org/w/index.php?curid=18369695",
+      contentVersion: "commons-curid-18369695@2012-02-13",
+      retrievedAt: WORLD_SEED_RETRIEVED_AT,
+      notes: "CC BY 3.0，作者玖巧仔；用于二十四路及州府的相对地理布局，不作为现代精确经纬度。",
     },
     {
       id: "source-palworld-map",
@@ -174,7 +178,7 @@ export function buildWorldSeed(): WorldSeedData {
       url: "https://github.com/fa0311/palworld-map/blob/31eb23472af96061ac868950a985f83ad5406298/public/pin_data.json",
       contentVersion: "blob-1f8f90525b9463870630758fc066da493432bff0",
       retrievedAt: WORLD_SEED_RETRIEVED_AT,
-      notes: "267个具名帕洛斯公开地图标记：57传送点、5高塔、43野外头目、123洞窟与39手记。中文地名为演示译名。",
+      notes: "MIT许可坐标数据；267个具名帕洛斯公开地图标记：57传送点、5高塔、43野外头目、123洞窟与39手记。中文地名为演示译名。",
     },
   ];
 
@@ -196,10 +200,16 @@ export function buildWorldSeed(): WorldSeedData {
   ];
   const baseLocationSources: WorldSeedData["baseLocationSources"] = [];
   const coordinates = new Map<string, { gridX: number; gridY: number; layerId: string }>();
+  const locationIdsByCell = new Map<string, string>();
+  const normalEdges = new Set<string>();
+  const cellKey = (layerId: string, gridX: number, gridY: number) => `${layerId}:${gridX},${gridY}`;
 
   const addLocation = (location: WorldSeedLocation) => {
+    const occupiedBy = locationIdsByCell.get(cellKey(location.layerId, location.gridX, location.gridY));
+    if (occupiedBy) throw new Error(`地点 ${location.id} 与 ${occupiedBy} 占用同一网格。`);
     locations.push(location);
     coordinates.set(location.id, { gridX: location.gridX, gridY: location.gridY, layerId: location.layerId });
+    locationIdsByCell.set(cellKey(location.layerId, location.gridX, location.gridY), location.id);
   };
   const addNormal = (id: string, fromLocation: string, toLocation: string) => {
     const from = coordinates.get(fromLocation);
@@ -207,6 +217,9 @@ export function buildWorldSeed(): WorldSeedData {
     if (!from || !to || from.layerId !== to.layerId) throw new Error(`普通路线 ${id} 的地点无效。`);
     const fromDirection = directionBetween(from, to);
     if (!fromDirection) throw new Error(`普通路线 ${id} 的地点不相邻。`);
+    const edgeKey = [fromLocation, toLocation].sort().join("|");
+    if (normalEdges.has(edgeKey)) return;
+    normalEdges.add(edgeKey);
     routes.push({
       id, fromLocation, toLocation, routeType: "normal", transitionKind: null,
       fromDirection, toDirection: OPPOSITE_DIRECTION[fromDirection],
@@ -214,6 +227,84 @@ export function buildWorldSeed(): WorldSeedData {
   };
   const addTransition = (id: string, fromLocation: string, toLocation: string, transitionKind: TransitionKind) => {
     routes.push({ id, fromLocation, toLocation, routeType: "transition", transitionKind, fromDirection: null, toDirection: null });
+  };
+  const reserveNearestCell = (layerId: string, targetX: number, targetY: number) => {
+    for (let radius = 0; ; radius += 1) {
+      for (let offsetY = -radius; offsetY <= radius; offsetY += 1) {
+        for (let offsetX = -radius; offsetX <= radius; offsetX += 1) {
+          if (Math.max(Math.abs(offsetX), Math.abs(offsetY)) !== radius) continue;
+          const gridX = targetX + offsetX;
+          const gridY = targetY + offsetY;
+          if (!locationIdsByCell.has(cellKey(layerId, gridX, gridY))) return { gridX, gridY };
+        }
+      }
+    }
+  };
+  const addGeographicRoadNetwork = ({
+    pointIds,
+    roadPrefix,
+    roadName,
+    description,
+    regionId,
+    sourceId,
+    sourceKeyPrefix,
+  }: {
+    pointIds: string[];
+    roadPrefix: string;
+    roadName: string;
+    description: string;
+    regionId: string;
+    sourceId: string;
+    sourceKeyPrefix: string;
+  }) => {
+    if (pointIds.length < 2) return;
+    const connected = [pointIds[0]];
+    const remaining = new Set(pointIds.slice(1));
+    const links: Array<[string, string]> = [];
+    while (remaining.size > 0) {
+      let nearest: { fromId: string; toId: string; distance: number } | null = null;
+      for (const fromId of connected) {
+        const from = coordinates.get(fromId)!;
+        for (const toId of remaining) {
+          const to = coordinates.get(toId)!;
+          const distance = Math.max(Math.abs(from.gridX - to.gridX), Math.abs(from.gridY - to.gridY));
+          if (!nearest || distance < nearest.distance) nearest = { fromId, toId, distance };
+        }
+      }
+      if (!nearest) throw new Error(`${roadName}无法连接全部地点。`);
+      links.push([nearest.fromId, nearest.toId]);
+      connected.push(nearest.toId);
+      remaining.delete(nearest.toId);
+    }
+
+    const ensureRoadCell = (gridX: number, gridY: number) => {
+      const existing = locationIdsByCell.get(cellKey("world-root", gridX, gridY));
+      if (existing) return existing;
+      const id = `${roadPrefix}-${coordinateToken(gridX)}-${coordinateToken(gridY)}`;
+      addLocation({
+        id, layerId: "world-root", name: roadName, description, regionId, gridX, gridY,
+        sourceId, sourceKey: `${sourceKeyPrefix}/${gridX}/${gridY}`,
+      });
+      return id;
+    };
+
+    for (const [fromId, toId] of links) {
+      const destination = coordinates.get(toId)!;
+      let currentId = fromId;
+      let current = coordinates.get(currentId)!;
+      while (current.gridX !== destination.gridX || current.gridY !== destination.gridY) {
+        const nextX = current.gridX + Math.sign(destination.gridX - current.gridX);
+        const nextY = current.gridY + Math.sign(destination.gridY - current.gridY);
+        const nextId = ensureRoadCell(nextX, nextY);
+        addNormal(
+          `route-${roadPrefix}-${coordinateToken(current.gridX)}-${coordinateToken(current.gridY)}-${coordinateToken(nextX)}-${coordinateToken(nextY)}`,
+          currentId,
+          nextId,
+        );
+        currentId = nextId;
+        current = coordinates.get(currentId)!;
+      }
+    }
   };
   addLocation({ id: "home-entrance", layerId: "home-ground", name: "玄关", description: "嬴长嫚与楼夜秋之家的内外分界。", regionId: "home", gridX: 0, gridY: 0, sourceId: "source-home-design", sourceKey: "home/ground/entrance" });
   addLocation({ id: "home-exterior", layerId: "world-root", name: "嬴长嫚与楼夜秋之家·入口", description: "从楼门路进入住宅的门前。", regionId: "world-home", gridX: 3, gridY: 1, sourceId: "source-home-design", sourceKey: "outside/home-entrance" });
@@ -272,55 +363,68 @@ export function buildWorldSeed(): WorldSeedData {
     resultTemplate: "{name}在修炼房中静心吐纳。",
   });
 
-  let songIndex = 0;
   addLocation({
-    id: "song-overview-entry", layerId: "world-root", name: "大宋官道", description: "通往北宋二十四路的连续官道。",
-    regionId: "song", ...westwardSerpentine(songIndex, 36, 0, 2), sourceId: "source-song-wikipedia", sourceKey: "song/overview",
+    id: "song-overview-entry", layerId: "world-root", name: "大宋东关官道", description: "由楼门路进入北宋二十四路地理舆图的东关。",
+    regionId: "song", gridX: 0, gridY: 2, sourceId: "source-song-wikipedia", sourceKey: "song/overview",
   });
-  songIndex += 1;
   addNormal("route-world-song-v3", "song-gate", "song-overview-entry");
-  let songTail = "song-overview-entry";
-  SONG_CIRCUITS.forEach(([circuitSlug, circuitName, prefectures], circuitIndex) => {
+  const songNetworkPoints = ["song-overview-entry"];
+  SONG_CIRCUITS.forEach(([circuitSlug, circuitName, prefectures, anchor]) => {
     const hubId = `song-hub-${circuitSlug}`;
     const entryId = `song-entry-${circuitSlug}`;
-    addLocation({ id: hubId, layerId: "world-root", name: `${circuitName}官道`, description: `${circuitName}官道的东段界标。`, regionId: "song", ...westwardSerpentine(songIndex, 36, 0, 2), sourceId: "source-song-wikipedia", sourceKey: `route/${circuitName}` });
-    songIndex += 1;
-    addNormal(`route-song-circuit-${circuitIndex + 1}-v3`, songTail, hubId);
-    addLocation({ id: entryId, layerId: "world-root", name: `${circuitName}官道`, description: `${circuitName}官道的西段，串联府、州、军。`, regionId: "song", ...westwardSerpentine(songIndex, 36, 0, 2), sourceId: "source-song-wikipedia", sourceKey: `route/${circuitName}/entry` });
-    songIndex += 1;
-    addNormal(`route-song-entry-${circuitSlug}-v3`, hubId, entryId);
-    songTail = entryId;
+    const circuitLocationCount = 2 + prefectures.length * 2;
+    const circuitIds: string[] = [];
+    const addCircuitLocation = (location: Omit<WorldSeedLocation, "layerId" | "regionId" | "sourceId">) => {
+      addLocation({ ...location, layerId: "world-root", regionId: "song", sourceId: "source-song-wikipedia" });
+      const previousId = circuitIds.at(-1);
+      circuitIds.push(location.id);
+      if (previousId) addNormal(`route-song-${circuitSlug}-atlas-${circuitIds.length - 1}-v5`, previousId, location.id);
+    };
+    addCircuitLocation({
+      id: hubId, name: `${circuitName}官道`, description: `${circuitName}在北宋地理舆图上的官道入口。`,
+      ...compactSerpentine(0, circuitLocationCount, anchor[0], anchor[1]), sourceKey: `route/${circuitName}`,
+    });
+    addCircuitLocation({
+      id: entryId, name: `${circuitName}官道`, description: `${circuitName}官道内段，串联所属府、州、军。`,
+      ...compactSerpentine(1, circuitLocationCount, anchor[0], anchor[1]), sourceKey: `route/${circuitName}/entry`,
+    });
+    songNetworkPoints.push(hubId);
     prefectures.forEach((prefecture, prefectureIndex) => {
       const cityId = `song-${circuitSlug}-${prefectureIndex + 1}-seat`;
       const marketId = `song-${circuitSlug}-${prefectureIndex + 1}-post`;
-      addLocation({ id: cityId, layerId: "world-root", name: `${circuitName}·${prefecture}治所`, description: `${prefecture}的行政治所。`, regionId: "song", ...westwardSerpentine(songIndex, 36, 0, 2), sourceId: "source-song-wikipedia", sourceKey: `${circuitName}/${prefecture}` });
-      songIndex += 1;
-      addNormal(`route-song-${circuitSlug}-${prefectureIndex + 1}-seat-v3`, songTail, cityId);
-      addLocation({ id: marketId, layerId: "world-root", name: `${circuitName}·${prefecture}驿市`, description: `连接${prefecture}治所与下一处州府的驿路市集。`, regionId: "song", ...westwardSerpentine(songIndex, 36, 0, 2), sourceId: "source-song-wikipedia", sourceKey: `${circuitName}/${prefecture}/game-post` });
-      songIndex += 1;
-      addNormal(`route-song-${circuitSlug}-${prefectureIndex + 1}-post-v3`, cityId, marketId);
-      songTail = marketId;
+      const cityIndex = 2 + prefectureIndex * 2;
+      addCircuitLocation({
+        id: cityId, name: `${circuitName}·${prefecture}治所`, description: `${prefecture}的行政治所。`,
+        ...compactSerpentine(cityIndex, circuitLocationCount, anchor[0], anchor[1]), sourceKey: `${circuitName}/${prefecture}`,
+      });
+      addCircuitLocation({
+        id: marketId, name: `${circuitName}·${prefecture}驿市`, description: `连接${prefecture}治所与邻近州府的驿路市集。`,
+        ...compactSerpentine(cityIndex + 1, circuitLocationCount, anchor[0], anchor[1]), sourceKey: `${circuitName}/${prefecture}/game-post`,
+      });
     });
   });
-
-  let palosIndex = 0;
-  addLocation({
-    id: "palos-overview-entry", layerId: "world-root", name: "帕洛斯群岛海岸", description: "通往帕洛斯各处地标的连续海岸路线。",
-    regionId: "palos", ...eastwardSerpentine(palosIndex, 36, 6, 2), sourceId: "source-palworld-map", sourceKey: "palos/overview",
+  addGeographicRoadNetwork({
+    pointIds: songNetworkPoints,
+    roadPrefix: "song-atlas-road",
+    roadName: "大宋官道",
+    description: "依北宋行政舆图连接二十四路的跨路官道。",
+    regionId: "song",
+    sourceId: "source-song-map",
+    sourceKeyPrefix: "atlas-road",
   });
-  palosIndex += 1;
+  for (const location of locations) {
+    if (location.regionId === "song" && location.sourceId === "source-song-wikipedia") {
+      baseLocationSources.push({ locationId: location.id, sourceId: "source-song-map", sourceKey: "atlas-1123-layout" });
+    }
+  }
+
+  addLocation({
+    id: "palos-overview-entry", layerId: "world-root", name: "帕洛斯西部航路", description: "由楼门路抵达帕洛斯群岛西缘的航路。",
+    regionId: "palos", gridX: 6, gridY: 2, sourceId: "source-palworld-map", sourceKey: "palos/overview",
+  });
   addNormal("route-world-palos-v3", "palos-gate", "palos-overview-entry");
-  let palosTail = "palos-overview-entry";
-  PAL_CATEGORIES.forEach(([category, name, description], categoryIndex) => {
-    const hubId = `palos-hub-${category}`;
-    const entryId = `palos-entry-${category}`;
-    addLocation({ id: hubId, layerId: "world-root", name: `${name}道路`, description: `${name}道路的西段界标。`, regionId: "palos", ...eastwardSerpentine(palosIndex, 36, 6, 2), sourceId: "source-palworld-map", sourceKey: `category/${category}` });
-    palosIndex += 1;
-    addNormal(`route-palos-category-${categoryIndex + 1}-v3`, palosTail, hubId);
-    addLocation({ id: entryId, layerId: "world-root", name: `${name}道路`, description: `${description}这里是道路东段。`, regionId: "palos", ...eastwardSerpentine(palosIndex, 36, 6, 2), sourceId: "source-palworld-map", sourceKey: `category/${category}/entry` });
-    palosIndex += 1;
-    addNormal(`route-palos-entry-${category}-v3`, hubId, entryId);
-    palosTail = entryId;
+  const palosNetworkPoints = ["palos-overview-entry"];
+  PAL_CATEGORIES.forEach(([category, name]) => {
     const markers: Array<{ id: string; name: string; description: string; sourceKey: string }> = [];
     if (category === "travel") {
       PAL_FAST_TRAVEL.forEach((markerName, index) => markers.push({ id: `palos-fasttravel-${1001 + index}`, name: markerName, description: "公开地图传送点。", sourceKey: String(1001 + index) }));
@@ -333,15 +437,29 @@ export function buildWorldSeed(): WorldSeedData {
     } else {
       for (let marker = 10001; marker <= 10039; marker += 1) markers.push({ id: `palos-memo-${marker}`, name: `帕洛斯手记 ${marker - 10000}`, description: "公开地图手记标记。", sourceKey: String(marker) });
     }
-    markers.forEach((marker, index) => {
+    markers.forEach((marker) => {
+      const rawCoordinate = PALWORLD_MARKER_COORDINATES[marker.sourceKey as keyof typeof PALWORLD_MARKER_COORDINATES];
+      if (!rawCoordinate) throw new Error(`帕洛斯地点 ${marker.id} 缺少公开地图坐标。`);
+      const point = reserveNearestCell(
+        "world-root",
+        43 + Math.round(rawCoordinate[0] * 0.5),
+        13 - Math.round(rawCoordinate[1] * 0.5),
+      );
       addLocation({
         id: marker.id, layerId: "world-root", name: `${name}·${marker.name}`, description: marker.description,
-        regionId: "palos", ...eastwardSerpentine(palosIndex, 36, 6, 2), sourceId: "source-palworld-map", sourceKey: marker.sourceKey,
+        regionId: "palos", ...point, sourceId: "source-palworld-map", sourceKey: marker.sourceKey,
       });
-      palosIndex += 1;
-      addNormal(`route-palos-${slug(category)}-${index + 1}-v3`, palosTail, marker.id);
-      palosTail = marker.id;
+      palosNetworkPoints.push(marker.id);
     });
+  });
+  addGeographicRoadNetwork({
+    pointIds: palosNetworkPoints,
+    roadPrefix: "palos-map-road",
+    roadName: "帕洛斯道路",
+    description: "依公开帕洛斯地图坐标连接邻近地标的道路。",
+    regionId: "palos",
+    sourceId: "source-palworld-map",
+    sourceKeyPrefix: "coordinate-road",
   });
 
   const addRegionBounds = (id: string, name: string, description: string) => {
@@ -352,8 +470,8 @@ export function buildWorldSeed(): WorldSeedData {
     const maxY = Math.max(...members.map((location) => location.gridY)) * 160 + 80;
     regions.push({ id, layerId: "world-root", name, description, x: minX, y: minY, width: maxX - minX, height: maxY - minY });
   };
-  addRegionBounds("song", "大宋", "楼门路以西连续展开的北宋二十四路大区域。");
-  addRegionBounds("palos", "帕洛斯", "楼门路以东连续展开的帕洛斯群岛大区域。");
+  addRegionBounds("song", "大宋", "依1123年北宋行政舆图展开的二十四路地理大区域。");
+  addRegionBounds("palos", "帕洛斯", "依公开地图标记坐标展开的帕洛斯群岛大区域。");
 
   return { sources, layers, regions, locations, routes, actions, baseLocationSources };
 }

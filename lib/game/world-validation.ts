@@ -135,10 +135,10 @@ export function validateWorldMap(db: DatabaseSync): MapValidationReport {
   `).get() as { id: string; multiplier: number } | undefined;
   if (!training || training.multiplier <= 1) errors.push("住宅修炼房不存在或没有有效修炼倍率。");
 
-  const expectedSeedIds = [
+  const expectedSeedIds = [...new Set([
     ...buildWorldSeed().locations.map((location) => location.id),
     ...buildWorldSeed().baseLocationSources.map((link) => link.locationId),
-  ];
+  ])];
   const missingSources = db.prepare(`
     SELECT l.id FROM locations l LEFT JOIN location_sources s ON s.location_id=l.id
     WHERE l.seed_revision>=? AND l.is_active=1 GROUP BY l.id HAVING COUNT(s.source_id)=0
@@ -181,6 +181,25 @@ export function validateWorldMap(db: DatabaseSync): MapValidationReport {
   if (counts.songLocations < 250) errors.push(`北宋来源地点只有 ${counts.songLocations} 个，至少需要250个。`);
   if (counts.palosLocations < 250) errors.push(`帕洛斯来源地点只有 ${counts.palosLocations} 个，至少需要250个。`);
   if (counts.locations < 500) errors.push(`地图地点总数只有 ${counts.locations} 个，至少需要500个。`);
+  const geographicBounds = db.prepare(`
+    SELECT region_id,MIN(grid_x) AS min_x,MAX(grid_x) AS max_x,MIN(grid_y) AS min_y,MAX(grid_y) AS max_y
+    FROM locations WHERE is_active=1 AND region_id IN ('song','palos') GROUP BY region_id
+  `).all() as Array<{ region_id: string; min_x: number; max_x: number; min_y: number; max_y: number }>;
+  const boundsByRegion = new Map(geographicBounds.map((bounds) => [bounds.region_id, bounds]));
+  const songBounds = boundsByRegion.get("song");
+  const palosBounds = boundsByRegion.get("palos");
+  if (!songBounds || songBounds.max_x - songBounds.min_x < 60 || songBounds.max_y - songBounds.min_y < 70) {
+    errors.push("大宋地图没有按历史舆图展开为足够宽高的地理布局。");
+  }
+  if (!palosBounds || palosBounds.max_x - palosBounds.min_x < 55 || palosBounds.max_y - palosBounds.min_y < 55) {
+    errors.push("帕洛斯地图没有按公开坐标展开为足够宽高的群岛布局。");
+  }
+  if (scalar("SELECT COUNT(*) AS count FROM locations WHERE is_active=1 AND name='大宋官道'") < 100) {
+    errors.push("大宋地理布局缺少连接二十四路的官道路网。");
+  }
+  if (scalar("SELECT COUNT(*) AS count FROM locations WHERE is_active=1 AND name='帕洛斯道路'") < 100) {
+    errors.push("帕洛斯地理布局缺少连接公开地标的道路网。");
+  }
   if (counts.sourcedLocations < expectedSeedIds.length) warnings.push("部分非种子地点没有来源记录；编辑器自建地点允许无来源。");
 
   return { ok: errors.length === 0, errors: [...new Set(errors)], warnings: [...new Set(warnings)], counts };
