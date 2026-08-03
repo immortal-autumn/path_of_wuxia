@@ -25,6 +25,13 @@ export function applyWorldSeed(db: DatabaseSync): WorldSeedReport {
     sourceInsert.run(source.id, source.title, source.url, source.contentVersion, source.retrievedAt, source.notes);
   }
 
+  // These base records predate seed_revision and therefore look like user data.
+  // Their stable IDs are reserved by the bundled world, so only these known
+  // revision-1 hierarchy artifacts are retired explicitly.
+  db.exec("UPDATE map_layers SET is_active=0 WHERE id IN ('song-overview','palos-overview')");
+  db.prepare("DELETE FROM location_direction_slots WHERE route_id='route-entrance-road'").run();
+  db.prepare("UPDATE routes SET is_active=0 WHERE id='route-entrance-road'").run();
+
   const deactivateMissing = (table: "map_layers" | "map_regions" | "locations", desiredIds: Set<string>) => {
     const rows = db.prepare(`SELECT id FROM ${table} WHERE seed_revision>0 AND seed_revision<?`).all(WORLD_SEED_REVISION) as Array<{ id: string }>;
     const deactivate = db.prepare(`UPDATE ${table} SET is_active=0 WHERE id=?`);

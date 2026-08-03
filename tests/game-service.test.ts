@@ -70,10 +70,18 @@ describe("GameService", () => {
     db.prepare("UPDATE map_regions SET seed_revision=2 WHERE seed_revision>0").run();
     db.prepare("UPDATE locations SET seed_revision=2 WHERE seed_revision>0").run();
     db.prepare("UPDATE routes SET seed_revision=2 WHERE seed_revision>0").run();
+    db.prepare(`INSERT INTO map_layers(id,name,description,parent_layer_id,version,is_active,seed_revision,created_at,updated_at)
+      VALUES ('song-overview','北宋舆图','旧总览。','world-root',1,1,0,?,?),
+             ('palos-overview','帕洛斯群岛','旧总览。','world-root',1,1,0,?,?)`)
+      .run(clock.toISOString(), clock.toISOString(), clock.toISOString(), clock.toISOString());
+    db.prepare(`INSERT INTO routes(from_location,to_location,stamina_cost,id,route_type,transition_kind,version,is_active,seed_revision)
+      VALUES ('home-entrance','loumen-road',0,'route-entrance-road','transition','door',1,1,0)`).run();
 
     importWorldSeed(db);
 
     expect(db.prepare("SELECT is_active FROM map_layers WHERE id='song-legacy-layer'").get()).toEqual({ is_active: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM map_layers WHERE id IN ('song-overview','palos-overview') AND is_active=1").get()).toEqual({ count: 0 });
+    expect(db.prepare("SELECT is_active FROM routes WHERE id='route-entrance-road'").get()).toEqual({ is_active: 0 });
     expect(service.getLocation("song-jingji-1-seat")).toMatchObject({ layerId: "world-root", regionId: "song" });
     expect(service.getLayers()).toHaveLength(6);
     expect(validateWorldMap(db).errors).toEqual([]);

@@ -57,7 +57,7 @@ export function validateWorldMap(db: DatabaseSync): MapValidationReport {
     }
   }
   const canonicalLayers = new Set(["world-root", "home-ground", "home-upper", "home-basement", "home-yard", "home-roof"]);
-  const obsoleteSeedLayers = db.prepare("SELECT id FROM map_layers WHERE is_active=1 AND seed_revision>0").all() as Array<{ id: string }>;
+  const obsoleteSeedLayers = db.prepare("SELECT id FROM map_layers WHERE is_active=1 AND (seed_revision>0 OR id IN ('song-overview','palos-overview'))").all() as Array<{ id: string }>;
   for (const layer of obsoleteSeedLayers) {
     if (!canonicalLayers.has(layer.id)) errors.push(`种子地图层 ${layer.id} 不应在连续大地图中保持活动。`);
   }
@@ -68,6 +68,9 @@ export function validateWorldMap(db: DatabaseSync): MapValidationReport {
   `).all() as Array<{ id: string; layer_id: string }>;
   if (publicLocationsOutsideOverworld.length > 0) {
     errors.push(`${publicLocationsOutsideOverworld.length} 个大宋或帕洛斯地点没有位于连续大地图：${publicLocationsOutsideOverworld.slice(0, 8).map((item) => item.id).join("、")}。`);
+  }
+  if (db.prepare("SELECT 1 FROM routes WHERE id='route-entrance-road' AND is_active=1").get()) {
+    errors.push("旧版玄关直达楼门路路线仍处于活动状态。住宅应通过大地图上的房屋入口进出。");
   }
 
   const routes = db.prepare(`
