@@ -6,7 +6,7 @@ This is the canonical inventory of implemented project behavior. Update it in th
 
 | Entry | Function | Persistence / real-time | Automated coverage |
 | --- | --- | --- | --- |
-| `/` | Loads the shared-world game from玄关 and renders China time, a layer-local square-node map, actions, attribute/combat/cultivation status, and chat. | Reads a local SQLite neighborhood and authoritative progression; opens `/ws`. | Unit progression tests and Playwright game, direction-control, seed-tour, multiplayer, and mobile tests. |
+| `/` | Loads the shared-world game from玄关 and renders China time, a layer-local square-node map, actions, attribute/combat/cultivation status, and chat. | Reads a local SQLite neighborhood from the 500+ location source-tracked world and authoritative progression; opens `/ws`. | Unit world validation/progression tests and Playwright game, direction-control, multiplayer, and mobile tests. |
 | `/map-editor` | Loads the collaborative drag/drop map designer with chunk controls, inspector, locks, and history. | Reads bounded map viewports and writes through authenticated WebSocket commands. | Playwright drop, route, undo/redo, region-drag, and lock-contention tests. |
 | `/api/session` | Restores or creates a random player and HttpOnly browser session, then performs a same-origin redirect. | Writes `players`, `sessions`, and an arrival event. | Unit identity test and Playwright entry test. |
 | `/ws` | Authenticates the session and runs game, chat, presence, map viewport, lock, editing, and history protocols. | Uses SQLite transactions and broadcasts incremental invalidations. | Live smoke and Playwright real-time/editor tests. |
@@ -43,6 +43,8 @@ This is the canonical inventory of implemented project behavior. Update it in th
 | Incremental synchronization | `map.chunks.invalidated` | Broadcasts affected chunk keys; clients reload only bounded local data. | Playwright editor-to-game visibility test. |
 | Safe map schema upgrades | SQLite startup migration | Preserves active version-2 locations and routes while applying non-overlapping default-region geometry only to untouched seed regions. | Unit version-2 upgrade regression test. |
 | Layered map storage | `map_layers`, layer-scoped chunks and editor layer selector | Separates world, house, Northern Song and Palos maps; ordinary grid occupancy is unique within a layer. | Unit v3→v4 migration, viewport and transition tests. |
+| Source-tracked complete demo world | SQLite startup / `npm run map:seed` | Idempotently installs a 29-location modern house, 250+ Northern Song nodes and 267 public Palworld markers with stable IDs, source URL/version/retrieval date, hierarchical layers and full reachability from玄关. | Unit idempotent-import and `validateWorldMap` topology/source/count tests. |
+| Map integrity validation | `npm run map:validate` | Checks layer cycles, source records, eight-direction adjacency, reciprocal direction slots, cross-layer transitions, training-room effect, 500+/per-world minimums and full reachability. | Unit source-tracked seed validation test; command exits non-zero on errors. |
 
 ## Callable protocol messages
 
@@ -64,4 +66,6 @@ This is the canonical inventory of implemented project behavior. Update it in th
 | `npm run test:all` | Runs unit and Playwright suites. |
 | `npm run smoke:live` | Verifies two-client chat and movement against a running server. |
 | `npm run db:backup` | Creates an online SQLite backup. |
+| `npm run map:seed` | Idempotently imports the bundled source-tracked house, Northern Song and Palworld world, validates it, and prints a JSON report. |
+| `npm run map:validate` | Validates the active SQLite world topology, provenance, minimum location counts and reachability. |
 | `npm run map:seed-load -- --locations=50000` | Generates repeatable large-map data and reports indexed viewport-query performance. |

@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openGameDatabase, type GameDatabase } from "../lib/game/database";
 import { directionBetween } from "../lib/game/map";
@@ -11,6 +12,8 @@ import {
   minorAttributePoints,
 } from "../lib/game/progression";
 import { GameService } from "../lib/game/service";
+import { importWorldSeed } from "../lib/game/world-seed";
+import { validateWorldMap } from "../lib/game/world-validation";
 
 describe("GameService", () => {
   let db: GameDatabase;
@@ -27,15 +30,30 @@ describe("GameService", () => {
 
   afterEach(() => db.close());
 
-  it("seeds layered entrance maps and preserves all ordinary direction slots", () => {
+  it("seeds a source-tracked 500+ location world and preserves all ordinary direction slots", () => {
     expect(service.getLayers().map((layer) => layer.id)).toEqual(expect.arrayContaining([
-      "world-root", "home-ground", "song-overview", "palos-overview",
+      "world-root", "home-ground", "home-basement", "song-overview", "palos-overview", "palos-dungeons",
     ]));
     expect(service.getLocation("home-entrance")).toMatchObject({ layerId: "home-ground", name: "玄关" });
     expect(service.getLocation("loumen-road")).toMatchObject({ layerId: "world-root", name: "楼门路" });
-    expect(service.getRoutes()).toHaveLength(5);
-    expect(db.prepare("SELECT COUNT(*) AS count FROM location_direction_slots").get()).toEqual({ count: 4 });
+    expect(service.getLocation("home-training-room")).toMatchObject({ layerId: "home-basement" });
+    const validation = validateWorldMap(db);
+    expect(validation.errors).toEqual([]);
+    expect(validation.counts).toMatchObject({ songLocations: expect.any(Number), palosLocations: 279 });
+    expect(validation.counts.songLocations).toBeGreaterThanOrEqual(250);
+    expect(validation.counts.locations).toBeGreaterThanOrEqual(500);
+    expect(validation.counts.reachableLocations).toBe(validation.counts.locations);
+    expect((db.prepare("SELECT COUNT(*) AS count FROM location_direction_slots").get() as { count: number }).count).toBeGreaterThan(500);
     expect(service.getTransitions("home-entrance")[0]).toMatchObject({ destinationName: "楼门路", transitionKind: "door" });
+  });
+
+  it("reapplies the bundled world seed idempotently", () => {
+    const before = db.prepare("SELECT COUNT(*) AS locations FROM locations").get();
+    const first = importWorldSeed(db);
+    const second = importWorldSeed(db);
+    expect(first).toEqual(second);
+    expect(db.prepare("SELECT COUNT(*) AS locations FROM locations").get()).toEqual(before);
+    expect(validateWorldMap(db).ok).toBe(true);
   });
 
   it("preserves active locations and routes while upgrading a version-3 database", () => {
@@ -43,13 +61,41 @@ describe("GameService", () => {
     const databasePath = join(directory, "game.db");
     try {
       const versionThree = openGameDatabase(databasePath);
+      const expectedLocations = versionThree.prepare("SELECT COUNT(*) AS count FROM locations WHERE is_active=1").get();
+      const expectedRoutes = versionThree.prepare("SELECT COUNT(*) AS count FROM routes WHERE is_active=1").get();
       versionThree.prepare("DELETE FROM schema_migrations").run();
       versionThree.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (3,?)").run(clock.toISOString());
       versionThree.close();
       const upgraded = openGameDatabase(databasePath);
-      expect(upgraded.prepare("SELECT COUNT(*) AS count FROM locations WHERE is_active=1").get()).toEqual({ count: 6 });
-      expect(upgraded.prepare("SELECT COUNT(*) AS count FROM routes WHERE is_active=1").get()).toEqual({ count: 5 });
+      expect(upgraded.prepare("SELECT COUNT(*) AS count FROM locations WHERE is_active=1").get()).toEqual(expectedLocations);
+      expect(upgraded.prepare("SELECT COUNT(*) AS count FROM routes WHERE is_active=1").get()).toEqual(expectedRoutes);
       expect(upgraded.prepare("SELECT route_type FROM routes WHERE id='route-entrance-road'").get()).toEqual({ route_type: "transition" });
+      upgraded.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("upgrades a populated legacy database without SQLite ALTER TABLE foreign-key errors", () => {
+    const directory = mkdtempSync(join(tmpdir(), "wuxia-v1-migration-"));
+    const databasePath = join(directory, "game.db");
+    try {
+      const legacy = new DatabaseSync(databasePath);
+      legacy.exec(`
+        CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL);
+        INSERT INTO schema_migrations(version,applied_at) VALUES (1,'2024-01-01T00:00:00.000Z');
+        CREATE TABLE locations(
+          id TEXT PRIMARY KEY,name TEXT NOT NULL UNIQUE,region TEXT NOT NULL DEFAULT '',description TEXT NOT NULL,
+          x INTEGER NOT NULL,y INTEGER NOT NULL
+        );
+        INSERT INTO locations(id,name,region,description,x,y) VALUES ('legacy-place','旧地点','旧区域','迁移前地点。',0,0);
+      `);
+      legacy.close();
+      const upgraded = openGameDatabase(databasePath);
+      expect(upgraded.prepare("SELECT id,layer_id,is_active FROM locations WHERE id='legacy-place'").get())
+        .toEqual({ id: "legacy-place", layer_id: "world-root", is_active: 0 });
+      expect(upgraded.prepare("SELECT COUNT(*) AS count FROM locations WHERE is_active=1").get())
+        .toMatchObject({ count: expect.any(Number) });
       upgraded.close();
     } finally {
       rmSync(directory, { recursive: true, force: true });

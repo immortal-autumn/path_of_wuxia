@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { CHUNK_SIZE, GRID_SIZE } from "./map";
+import { applyWorldSeed } from "./world-seed";
 
 export type GameDatabase = DatabaseSync;
 
@@ -194,10 +195,13 @@ function migrate(db: GameDatabase) {
   const layerInsert = db.prepare(`INSERT OR IGNORE INTO map_layers(id,name,description,parent_layer_id,created_at,updated_at) VALUES (?,?,?,?,?,?)`);
   for (const layer of LAYERS) layerInsert.run(...layer, now, now);
 
-  addColumn(db, "map_regions", "layer_id TEXT NOT NULL DEFAULT 'world-root' REFERENCES map_layers(id)");
+  // SQLite rejects ALTER TABLE ADD COLUMN when a populated table combines a
+  // non-null default with REFERENCES. The application validates these layer IDs
+  // and fresh databases still get the same indexed storage shape.
+  addColumn(db, "map_regions", "layer_id TEXT NOT NULL DEFAULT 'world-root'");
   addColumn(db, "map_regions", "seed_revision INTEGER NOT NULL DEFAULT 0");
   addColumn(db, "locations", "region_id TEXT REFERENCES map_regions(id)");
-  addColumn(db, "locations", "layer_id TEXT NOT NULL DEFAULT 'world-root' REFERENCES map_layers(id)");
+  addColumn(db, "locations", "layer_id TEXT NOT NULL DEFAULT 'world-root'");
   addColumn(db, "locations", "grid_x INTEGER NOT NULL DEFAULT 0");
   addColumn(db, "locations", "grid_y INTEGER NOT NULL DEFAULT 0");
   addColumn(db, "locations", "chunk_x INTEGER NOT NULL DEFAULT 0");
@@ -263,7 +267,7 @@ function seed(db: GameDatabase) {
     const now = new Date().toISOString();
     db.prepare(`
       INSERT INTO world_state(id,era,seed,announcement,updated_at)
-      VALUES (1,'北宋大观四年与帕洛斯世界','path-of-wuxia-v4','玄关之外，楼门路向左通往北宋，向右通往帕洛斯。',?)
+      VALUES (1,'北宋大观四年与帕洛斯世界','path-of-wuxia-world-v2','玄关之外，楼门路向左通往北宋，向右通往帕洛斯。',?)
       ON CONFLICT(id) DO UPDATE SET era=excluded.era,seed=excluded.seed,announcement=excluded.announcement,updated_at=excluded.updated_at
     `).run(now);
 
@@ -309,6 +313,8 @@ function seed(db: GameDatabase) {
         stamina_delta=0,silver_delta=excluded.silver_delta,cultivation_delta=0,hp_delta=excluded.hp_delta,result_template=excluded.result_template
     `);
     for (const action of ACTIONS) actionStatement.run(...action);
+
+    applyWorldSeed(db);
 
     db.prepare(`
       INSERT OR IGNORE INTO player_progression(player_id,cultivation_progress,endurance,updated_at)
