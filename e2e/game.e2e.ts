@@ -140,6 +140,38 @@ test.describe("game map", () => {
     await expect(page.getByLabel("下一步可前往地点")).toContainText("右 · 楼门路");
   });
 
+  test("opens a personal full map containing only locations the player has visited", async ({ page }) => {
+    await enterWorld(page);
+    await page.getByRole("button", { name: "足迹地图" }).click();
+    let dialog = page.getByRole("dialog", { name: "足迹地图" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toHaveAttribute("data-visited-locations", "1");
+    await expect(dialog.locator(".visited-map-location")).toHaveCount(1);
+    await expect(dialog.locator(".visited-map-route")).toHaveCount(0);
+    await expect(dialog).toContainText("全部足迹 1 处");
+    await expect(dialog).not.toContainText("门厅");
+    await dialog.getByRole("button", { name: "关闭足迹地图" }).click();
+
+    await moveTo(page, "嬴长嫚与楼夜秋之家·门厅");
+    await moveTo(page, "玄关");
+    await transitionTo(page, "嬴长嫚与楼夜秋之家·入口");
+    await page.getByRole("button", { name: "足迹地图" }).click();
+    dialog = page.getByRole("dialog", { name: "足迹地图" });
+    await expect(dialog).toHaveAttribute("data-visited-locations", "3");
+    await expect(dialog.getByLabel("选择足迹地图").locator("option")).toHaveCount(2);
+    await expect(dialog.getByLabel("选择足迹地图").locator("option:checked")).toContainText("八方世界");
+    await expect(dialog.locator(".visited-map-location")).toHaveCount(1);
+
+    await dialog.getByLabel("选择足迹地图").selectOption("home-ground");
+    await expect(dialog.locator(".visited-map-location")).toHaveCount(2);
+    await expect(dialog.locator(".visited-map-route")).toHaveCount(1);
+    await dialog.locator('[data-location-id="home-hall"]').click();
+    await expect(dialog.getByLabel("足迹地图信息")).toContainText("嬴长嫚与楼夜秋之家·门厅");
+    await expect(dialog.getByLabel("足迹地图信息")).toContainText("(0, 1)");
+    await dialog.getByRole("button", { name: "关闭足迹地图" }).click();
+    await expect(dialog).toBeHidden();
+  });
+
   test("executes seed actions and crosses the continuous Song and Palos overworld", async ({ page }) => {
     await enterWorld(page);
     await performAction(page, "整理衣装");
@@ -418,7 +450,10 @@ test.describe("mobile layout", () => {
       const box = node.getBoundingClientRect();
       return box.right > 0 && box.left < window.innerWidth && box.bottom > 0 && box.top < window.innerHeight;
     }).length)).toBeGreaterThanOrEqual(3);
-    await expect(page.locator(".mobile-dock button")).toHaveCount(5);
+    await expect(page.locator(".mobile-dock button")).toHaveCount(6);
+    await page.locator(".mobile-dock button").filter({ hasText: "足迹" }).click();
+    await expect(page.getByRole("dialog", { name: "足迹地图" })).toBeInViewport();
+    await page.getByRole("button", { name: "关闭足迹地图" }).click();
     for (const [buttonLabel, panelLabel] of [
       ["世界", "世界状态"], ["行动", "行动"], ["角色", "角色状态"], ["聊天", "世界聊天"],
     ] as const) {

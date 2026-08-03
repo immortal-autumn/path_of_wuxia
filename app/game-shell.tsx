@@ -9,6 +9,7 @@ import type {
   GameSnapshot,
   Location,
   MapTransition,
+  VisitedMap,
 } from "@/lib/game/types";
 import { DIRECTION_LABEL } from "@/lib/game/map";
 import { createClientId } from "@/lib/game/client-id";
@@ -122,10 +123,14 @@ function MapPanel({
   onlinePlayers,
   pending,
   onMove,
+  onOpenVisitedMap,
+  visitedMapLoading,
   currentLayer,
 }: Pick<GameSnapshot, "locations" | "routes" | "self" | "onlinePlayers" | "currentLayer"> & {
   pending: boolean;
   onMove: (locationId: string) => void;
+  onOpenVisitedMap: () => void;
+  visitedMapLoading: boolean;
 }) {
   const [inspectedLocationId, setInspectedLocationId] = useState<string | null>(null);
   const locationMap = useMemo(() => new Map(locations.map((location) => [location.id, location])), [locations]);
@@ -230,7 +235,12 @@ function MapPanel({
           <p className="eyebrow">八方向移动</p>
           <h2>{currentLayer.name} · 局部地图</h2>
         </div>
-        <p>地图仅显示地点名称；可直接点击实线长方框移动。</p>
+        <div className="map-title-actions">
+          <p>地图仅显示地点名称；可直接点击实线长方框移动。</p>
+          <button type="button" onClick={onOpenVisitedMap} disabled={visitedMapLoading}>
+            {visitedMapLoading ? "读取足迹…" : "足迹地图"}
+          </button>
+        </div>
       </header>
       <dl className="map-status" aria-label="地图信息">
         <div><dt>当前位置</dt><dd>{currentLocation ? `${currentLocation.name} · (${currentLocation.gridX}, ${currentLocation.gridY})` : "未知之地"}</dd></div>
@@ -310,6 +320,132 @@ function MapPanel({
         </div>
       </footer>
     </section>
+  );
+}
+
+function VisitedMapDialog({
+  map,
+  loading,
+  layerId,
+  currentLocationId,
+  onLayerChange,
+  onClose,
+}: {
+  map: VisitedMap | null;
+  loading: boolean;
+  layerId: string;
+  currentLocationId: string;
+  onLayerChange: (layerId: string) => void;
+  onClose: () => void;
+}) {
+  const [inspectedLocationId, setInspectedLocationId] = useState<string | null>(null);
+  const locations = useMemo(
+    () => map?.locations.filter((location) => location.layerId === layerId) ?? [],
+    [layerId, map],
+  );
+  const locationMap = useMemo(() => new Map(locations.map((location) => [location.id, location])), [locations]);
+  const routes = useMemo(
+    () => map?.routes.filter((route) => locationMap.has(route.fromLocation) && locationMap.has(route.toLocation)) ?? [],
+    [locationMap, map],
+  );
+  const layer = map?.layers.find((item) => item.id === layerId) ?? null;
+  const inspectedLocation = inspectedLocationId ? locationMap.get(inspectedLocationId) ?? null : null;
+  const viewBox = useMemo(() => {
+    if (locations.length === 0) return "-260 -160 520 320";
+    const minX = Math.min(...locations.map((location) => location.x)) - 90;
+    const minY = Math.min(...locations.map((location) => location.y)) - 90;
+    const maxX = Math.max(...locations.map((location) => location.x)) + 90;
+    const maxY = Math.max(...locations.map((location) => location.y)) + 90;
+    const width = Math.max(520, maxX - minX);
+    const height = Math.max(320, maxY - minY);
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
+    return `${centerX - width / 2} ${centerY - height / 2} ${width} ${height}`;
+  }, [locations]);
+
+  useEffect(() => {
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
+
+  return (
+    <div className="visited-map-backdrop">
+      <section
+        className="visited-map-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label="足迹地图"
+        data-visited-locations={map?.locations.length ?? 0}
+      >
+        <header>
+          <div>
+            <p className="eyebrow">只显示亲自到达过的地点</p>
+            <h2>足迹地图</h2>
+          </div>
+          <button type="button" onClick={onClose} aria-label="关闭足迹地图">关闭</button>
+        </header>
+        {loading && <div className="visited-map-empty" role="status">正在整理足迹……</div>}
+        {!loading && (!map || map.locations.length === 0) && <div className="visited-map-empty">尚未留下任何足迹。</div>}
+        {!loading && map && map.locations.length > 0 && (
+          <>
+            <div className="visited-map-toolbar" aria-label="足迹地图信息">
+              <label>地图
+                <select aria-label="选择足迹地图" value={layerId} onChange={(event) => onLayerChange(event.target.value)}>
+                  {map.layers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                </select>
+              </label>
+              <span>全部足迹 <strong>{map.locations.length}</strong> 处</span>
+              <span>本图 <strong>{locations.length}</strong> 处</span>
+              <span className="visited-map-inspection">
+                {inspectedLocation
+                  ? `${inspectedLocation.name} · ${inspectedLocation.region} · (${inspectedLocation.gridX}, ${inspectedLocation.gridY})`
+                  : "点击地点查看完整名称与坐标"}
+              </span>
+            </div>
+            <div className="visited-map-stage">
+              <svg viewBox={viewBox} role="img" aria-label={`${layer?.name ?? "当前地图"}的已探索全图`}>
+                {routes.map((route) => {
+                  const from = locationMap.get(route.fromLocation);
+                  const to = locationMap.get(route.toLocation);
+                  if (!from || !to) return null;
+                  return <line key={route.id} className="visited-map-route" x1={from.x} y1={from.y} x2={to.x} y2={to.y} />;
+                })}
+                {locations.map((location) => {
+                  const current = location.id === currentLocationId;
+                  return (
+                    <g
+                      key={location.id}
+                      className={`visited-map-location ${current ? "current" : ""}`}
+                      data-location-id={location.id}
+                      transform={`translate(${location.x} ${location.y})`}
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`${location.name}，网格 (${location.gridX}, ${location.gridY})${current ? "，当前位置" : ""}`}
+                      onClick={() => setInspectedLocationId(location.id)}
+                      onFocus={() => setInspectedLocationId(location.id)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          setInspectedLocationId(location.id);
+                        }
+                      }}
+                    >
+                      <rect x="-60" y="-36" width="120" height="72" />
+                      <foreignObject x="-56" y="-32" width="112" height="64" pointerEvents="none">
+                        <div>{conciseLocationName(location.name)}</div>
+                      </foreignObject>
+                    </g>
+                  );
+                })}
+              </svg>
+            </div>
+          </>
+        )}
+      </section>
+    </div>
   );
 }
 
@@ -536,8 +672,14 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
   const [drawer, setDrawer] = useState<Drawer>(null);
   const [pending, setPending] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [visitedMapOpen, setVisitedMapOpen] = useState(false);
+  const [visitedMapLoading, setVisitedMapLoading] = useState(false);
+  const [visitedMap, setVisitedMap] = useState<VisitedMap | null>(null);
+  const [visitedLayerId, setVisitedLayerId] = useState("");
   const socketRef = useRef<WebSocket | null>(null);
   const pendingRequestRef = useRef<string | null>(null);
+  const visitedMapRequestRef = useRef<string | null>(null);
+  const visitedLayerPreferenceRef = useRef<string | null>(null);
 
   useEffect(() => {
     let disposed = false;
@@ -567,6 +709,15 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
         if (message.type === "snapshot") setSnapshot(message.snapshot);
         if (message.type === "self.updated") {
           setSnapshot((current) => ({ ...current, self: message.player }));
+        }
+        if (message.type === "map.visited.snapshot" && message.requestId === visitedMapRequestRef.current) {
+          const preferredLayerId = visitedLayerPreferenceRef.current;
+          setVisitedMap(message.map);
+          setVisitedLayerId(message.map.layers.some((layer) => layer.id === preferredLayerId)
+            ? preferredLayerId!
+            : message.map.layers[0]?.id ?? "");
+          visitedMapRequestRef.current = null;
+          setVisitedMapLoading(false);
         }
         if (message.type === "cultivation.updated") {
           setSnapshot((current) => ({ ...current, self: message.player }));
@@ -601,6 +752,10 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           if (message.message) setNotice(message.message);
         }
         if (message.type === "error") {
+          if (message.requestId === visitedMapRequestRef.current) {
+            visitedMapRequestRef.current = null;
+            setVisitedMapLoading(false);
+          }
           if (!message.requestId || message.requestId === pendingRequestRef.current) {
             pendingRequestRef.current = null;
             setPending(null);
@@ -613,7 +768,9 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
         if (disposed) return;
         socketRef.current = null;
         pendingRequestRef.current = null;
+        visitedMapRequestRef.current = null;
         setPending(null);
+        setVisitedMapLoading(false);
         if (event.code === 4001) {
           window.location.assign("/api/session?returnTo=/");
           return;
@@ -656,6 +813,21 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
 
   const currentLocation = snapshot.locations.find((location) => location.id === snapshot.self.currentLocation);
   const drawerOpen = drawer !== null;
+  const openVisitedMap = () => {
+    setDrawer(null);
+    setVisitedMapOpen(true);
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      setVisitedMapLoading(false);
+      setNotice("尚未连入江湖，暂时无法读取足迹。");
+      return;
+    }
+    const requestId = createClientId();
+    visitedMapRequestRef.current = requestId;
+    visitedLayerPreferenceRef.current = currentLocation?.layerId ?? snapshot.currentLayer.id;
+    setVisitedMapLoading(true);
+    socket.send(JSON.stringify({ type: "map.visited", requestId }));
+  };
 
   return (
     <main className="game-shell">
@@ -668,6 +840,8 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           onlinePlayers={snapshot.onlinePlayers}
           currentLayer={snapshot.currentLayer}
           pending={pending !== null || connection !== "online"}
+          visitedMapLoading={visitedMapLoading}
+          onOpenVisitedMap={openVisitedMap}
           onMove={(locationId) => {
             setDrawer(null);
             sendCommand({ type: "move", locationId }, "move");
@@ -708,12 +882,24 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
 
       {drawerOpen && <button className="drawer-backdrop" aria-label="关闭面板" onClick={() => setDrawer(null)} />}
       <nav className="mobile-dock" aria-label="游戏界面">
-        <button className={drawer === null ? "active" : ""} onClick={() => setDrawer(null)}><i>图</i><span>地图</span></button>
+        <button className={drawer === null && !visitedMapOpen ? "active" : ""} onClick={() => { setDrawer(null); setVisitedMapOpen(false); }}><i>图</i><span>地图</span></button>
+        <button className={visitedMapOpen ? "active" : ""} onClick={openVisitedMap}><i>迹</i><span>足迹</span></button>
         <button className={drawer === "world" ? "active" : ""} onClick={() => setDrawer("world")}><i>天</i><span>世界</span></button>
         <button className={drawer === "actions" ? "active" : ""} onClick={() => setDrawer("actions")}><i>行</i><span>行动</span></button>
         <button className={drawer === "character" ? "active" : ""} onClick={() => setDrawer("character")}><i>侠</i><span>角色</span></button>
         <button className={drawer === "chat" ? "active" : ""} onClick={() => setDrawer("chat")}><i>言</i><span>聊天</span></button>
       </nav>
+
+      {visitedMapOpen && (
+        <VisitedMapDialog
+          map={visitedMap}
+          loading={visitedMapLoading}
+          layerId={visitedLayerId}
+          currentLocationId={snapshot.self.currentLocation}
+          onLayerChange={setVisitedLayerId}
+          onClose={() => setVisitedMapOpen(false)}
+        />
+      )}
 
       {notice && <div className="notice" role="status">{notice}</div>}
       {pending && <div className="pending-ink" aria-label="行动处理中"><span /></div>}
