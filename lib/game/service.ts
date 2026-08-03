@@ -28,6 +28,9 @@ import { agentTokenHash } from "./npc-auth";
 import type {
   ActionJob,
   ActionOutcome,
+  ActionRule,
+  ActionRuleLocationState,
+  ActionRuleSnapshot,
   ActionSystemState,
   ActionTemplate,
   ActionDefinition,
@@ -117,6 +120,7 @@ type CombatRow = {
   acting_player_id: string | null; turn_deadline: string | null; attacker_misses: number; defender_misses: number;
   winner_id: string | null; loser_id: string | null;
 };
+type EditableActionRule = Omit<ActionTemplate, "version">;
 
 function tokenHash(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -1307,6 +1311,166 @@ export class GameService {
   getActionState(playerId: string) {
     this.settleActionQueue(playerId);
     return this.readActionState(playerId);
+  }
+
+  private mapActionRule(row: {
+    id: string; name: string; description: string; category: ActionTemplate["category"];
+    target_kind: ActionTemplate["targetKind"]; duration_seconds: number; requirements_json: string;
+    check_json: string; costs_json: string; outcomes_json: string; result_template: string; adult: number;
+    visibility: ActionTemplate["visibility"]; cooldown_seconds: number; version: number; is_active: number; seed_revision: number;
+  }): ActionRule {
+    const outcomes = parseOutcomes(row.outcomes_json);
+    return {
+      id: row.id, name: row.name, description: row.description, category: row.category,
+      targetKind: row.target_kind, durationSeconds: row.duration_seconds,
+      requirements: parseRequirements(row.requirements_json), check: parseCheck(row.check_json),
+      costs: actionOutcomeSchema.parse(JSON.parse(row.costs_json)), success: outcomes.success, failure: outcomes.failure,
+      resultTemplate: row.result_template, adult: row.adult === 1, visibility: row.visibility,
+      cooldownSeconds: row.cooldown_seconds, version: row.version, isActive: row.is_active === 1, seedRevision: row.seed_revision,
+    };
+  }
+
+  getActionRuleSnapshot(): ActionRuleSnapshot {
+    const actions = (this.db.prepare(`
+      SELECT id,name,description,category,target_kind,duration_seconds,requirements_json,check_json,costs_json,
+        outcomes_json,result_template,adult,visibility,cooldown_seconds,version,is_active,seed_revision
+      FROM action_templates WHERE is_active=1 ORDER BY category,name,id
+    `).all() as Parameters<GameService["mapActionRule"]>[0][]).map((row) => this.mapActionRule(row));
+    return { actions, layers: this.getLayers() };
+  }
+
+  private validateEditableActionRule(action: EditableActionRule) {
+    const name = cleanText(action.name, "行动名称", 80);
+    const description = cleanText(action.description, "行动说明", 400);
+    const resultTemplate = cleanText(action.resultTemplate, "结果文本", 800);
+    const requirements = parseRequirements(JSON.stringify(action.requirements));
+    const check = parseCheck(JSON.stringify(action.check));
+    const costs = actionOutcomeSchema.parse(action.costs);
+    const success = actionOutcomeSchema.parse(action.success);
+    const failure = actionOutcomeSchema.parse(action.failure);
+    if (action.adult && (
+      action.targetKind !== "player" || action.visibility !== "participants"
+      || requirements.sameLocation !== true || requirements.targetOnline !== true
+    )) throw new Error("成人规则必须以在线同地点玩家为目标，并且只对双方参与者可见。");
+    return { ...action, name, description, resultTemplate, requirements, check, costs, success, failure };
+  }
+
+  createActionRule(action: EditableActionRule) {
+    return inTransaction(this.db, () => {
+      if (this.db.prepare("SELECT 1 FROM action_templates WHERE id=?").get(action.id)) throw new Error("行动规则 ID 已存在。");
+      const safe = this.validateEditableActionRule(action);
+      const timestamp = this.now().toISOString();
+      this.db.prepare(`
+        INSERT INTO action_templates(
+          id,name,description,category,target_kind,duration_seconds,requirements_json,check_json,costs_json,
+          outcomes_json,result_template,adult,visibility,cooldown_seconds,version,is_active,seed_revision,created_at,updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,1,0,?,?)
+      `).run(
+        safe.id, safe.name, safe.description, safe.category, safe.targetKind, safe.durationSeconds,
+        JSON.stringify(safe.requirements), JSON.stringify(safe.check), JSON.stringify(safe.costs),
+        JSON.stringify({ success: safe.success, failure: safe.failure }), safe.resultTemplate,
+        safe.adult ? 1 : 0, safe.visibility, safe.cooldownSeconds, timestamp, timestamp,
+      );
+      return { rules: this.getActionRuleSnapshot(), message: "行动规则已创建。" };
+    });
+  }
+
+  updateActionRule(actionId: string, expectedVersion: number, action: Omit<EditableActionRule, "id">) {
+    return inTransaction(this.db, () => {
+      const safe = this.validateEditableActionRule({ ...action, id: actionId });
+      const timestamp = this.now().toISOString();
+      const changed = this.db.prepare(`
+        UPDATE action_templates SET name=?,description=?,category=?,target_kind=?,duration_seconds=?,requirements_json=?,
+          check_json=?,costs_json=?,outcomes_json=?,result_template=?,adult=?,visibility=?,cooldown_seconds=?,
+          version=version+1,seed_revision=0,updated_at=? WHERE id=? AND version=? AND is_active=1
+      `).run(
+        safe.name, safe.description, safe.category, safe.targetKind, safe.durationSeconds,
+        JSON.stringify(safe.requirements), JSON.stringify(safe.check), JSON.stringify(safe.costs),
+        JSON.stringify({ success: safe.success, failure: safe.failure }), safe.resultTemplate,
+        safe.adult ? 1 : 0, safe.visibility, safe.cooldownSeconds, timestamp, actionId, expectedVersion,
+      ).changes;
+      if (!changed) throw new Error("行动规则已被其他编辑者修改，请刷新后重试。");
+      return { rules: this.getActionRuleSnapshot(), message: "行动规则已保存。" };
+    });
+  }
+
+  deleteActionRule(actionId: string) {
+    return inTransaction(this.db, () => {
+      if (this.db.prepare("SELECT 1 FROM action_jobs WHERE action_template_id=? AND status IN ('running','queued','paused')").get(actionId)) {
+        throw new Error("仍有角色正在使用这条行动规则。");
+      }
+      const timestamp = this.now().toISOString();
+      const changed = this.db.prepare(`
+        UPDATE action_templates SET is_active=0,seed_revision=0,version=version+1,updated_at=? WHERE id=? AND is_active=1
+      `).run(timestamp, actionId).changes;
+      if (!changed) throw new Error("行动规则不存在或已经删除。");
+      this.db.prepare("UPDATE location_action_bindings SET is_active=0,seed_revision=0,updated_at=? WHERE action_template_id=?")
+        .run(timestamp, actionId);
+      return { rules: this.getActionRuleSnapshot(), message: "行动规则已停用。" };
+    });
+  }
+
+  getActionRuleLocationState(locationId: string): ActionRuleLocationState {
+    const location = this.getLocation(locationId);
+    const facilities = (this.db.prepare(`
+      SELECT id,location_id,facility_type,quality,capacity,config_json,version FROM location_facilities
+      WHERE location_id=? AND is_active=1 ORDER BY facility_type,id
+    `).all(locationId) as Array<{
+      id: string; location_id: string; facility_type: string; quality: number; capacity: number; config_json: string; version: number;
+    }>).map((row) => ({
+      id: row.id, locationId: row.location_id, facilityType: row.facility_type, quality: row.quality,
+      capacity: row.capacity, config: JSON.parse(row.config_json) as Record<string, unknown>, version: row.version,
+    }));
+    const bindings = (this.db.prepare(`
+      SELECT b.id,b.location_id,b.action_template_id,t.name AS action_name,b.facility_id,f.facility_type,b.priority
+      FROM location_action_bindings b JOIN action_templates t ON t.id=b.action_template_id
+      LEFT JOIN location_facilities f ON f.id=b.facility_id
+      WHERE b.location_id=? AND b.is_active=1 AND t.is_active=1 ORDER BY b.priority DESC,t.name,b.id
+    `).all(locationId) as Array<{
+      id: string; location_id: string; action_template_id: string; action_name: string;
+      facility_id: string | null; facility_type: string | null; priority: number;
+    }>).map((row) => ({
+      id: row.id, locationId: row.location_id, actionId: row.action_template_id, actionName: row.action_name,
+      facilityId: row.facility_id, facilityType: row.facility_type, priority: row.priority,
+    }));
+    return { location, facilities, bindings };
+  }
+
+  upsertActionRuleBinding(locationId: string, actionId: string, facilityId: string | null, priority = 0) {
+    return inTransaction(this.db, () => {
+      this.getLocation(locationId);
+      const action = this.db.prepare("SELECT target_kind,adult FROM action_templates WHERE id=? AND is_active=1").get(actionId) as {
+        target_kind: string; adult: number;
+      } | undefined;
+      if (!action) throw new Error("行动规则不存在或已停用。");
+      if (action.adult || !["self", "location"].includes(action.target_kind)) {
+        throw new Error("成人或需要具体目标的行动不能绑定为地点快捷行动。");
+      }
+      if (facilityId && !this.db.prepare("SELECT 1 FROM location_facilities WHERE id=? AND location_id=? AND is_active=1").get(facilityId, locationId)) {
+        throw new Error("所选设施不属于这个地点。");
+      }
+      const timestamp = this.now().toISOString();
+      this.db.prepare(`
+        INSERT INTO location_action_bindings(
+          id,location_id,action_template_id,facility_id,priority,is_active,seed_revision,created_at,updated_at
+        ) VALUES (?,?,?,?,?,1,0,?,?)
+        ON CONFLICT(location_id,action_template_id) DO UPDATE SET facility_id=excluded.facility_id,priority=excluded.priority,
+          is_active=1,seed_revision=0,updated_at=excluded.updated_at
+      `).run(randomUUID(), locationId, actionId, facilityId, priority, timestamp, timestamp);
+      return { state: this.getActionRuleLocationState(locationId), message: "地点行动绑定已保存。" };
+    });
+  }
+
+  deleteActionRuleBinding(bindingId: string) {
+    return inTransaction(this.db, () => {
+      const row = this.db.prepare("SELECT location_id FROM location_action_bindings WHERE id=? AND is_active=1").get(bindingId) as {
+        location_id: string;
+      } | undefined;
+      if (!row) throw new Error("地点行动绑定不存在。");
+      this.db.prepare("UPDATE location_action_bindings SET is_active=0,seed_revision=0,updated_at=? WHERE id=?")
+        .run(this.now().toISOString(), bindingId);
+      return { state: this.getActionRuleLocationState(row.location_id), message: "地点行动绑定已移除。" };
+    });
   }
 
   getQinggongTargets(playerId: string): QinggongTarget[] {

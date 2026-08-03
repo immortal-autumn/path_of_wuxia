@@ -108,7 +108,7 @@ function WorldPanel({ world, recentEvents: events, open }: Pick<GameSnapshot, "w
           <ChinaClock key={world.serverTime} serverTime={world.serverTime} />
           <span className="online-count"><i /> {world.onlineCount} 位侠客在线</span>
         </div>
-        <Link className="map-editor-link" href="/map-editor">地图设计</Link>
+        <nav className="world-tools"><Link className="map-editor-link" href="/map-editor">地图设计</Link><Link className="map-editor-link" href="/action-editor">行动设计</Link></nav>
       </div>
       <div className="world-news">
         <p className="announcement">{world.announcement}</p>
@@ -1091,6 +1091,9 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           }));
         }
         if (message.type === "map.chunks.invalidated") {
+          socket.send(JSON.stringify({ type: "sync", requestId: createClientId() }));
+        }
+        if (message.type === "rules.invalidated") {
           socket.send(JSON.stringify({ type: "sync", requestId: createClientId() }));
         }
         if (message.type === "ack") {

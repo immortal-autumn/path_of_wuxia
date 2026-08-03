@@ -109,8 +109,13 @@ h2 {
   min-width: 0;
 }
 
-.map-editor-link {
+.world-tools {
   margin-left: auto;
+  display: flex;
+  gap: 5px;
+}
+
+.map-editor-link {
   padding: 6px 9px;
   border: 1px solid var(--border);
   color: var(--text);

@@ -133,6 +133,43 @@ describe("GameService", () => {
     expect(decision).toMatchObject({ type: "action.start" });
   });
 
+  it("creates, versions, binds and persistently customizes structured action rules", () => {
+    const custom = {
+      id: "custom-test-action", name: "测试整理", description: "用于规则编辑测试。", category: "life" as const,
+      targetKind: "self" as const, durationSeconds: 60, requirements: {}, check: {}, costs: {},
+      success: { silverDelta: 2 }, failure: {}, resultTemplate: "{name}完成测试整理。",
+      adult: false, visibility: "private" as const, cooldownSeconds: 0,
+    };
+    expect(service.createActionRule(custom).rules.actions.find((action) => action.id === custom.id)).toMatchObject({ version: 1, seedRevision: 0 });
+    service.upsertActionRuleBinding("home-entrance", custom.id, null, 7);
+    expect(service.getActionRuleLocationState("home-entrance").bindings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ actionId: custom.id, priority: 7 }),
+    ]));
+    const player = service.createSession().player;
+    expect(service.getActionState(player.id).available.map((action) => action.id)).toContain(custom.id);
+
+    service.updateActionRule(custom.id, 1, { ...custom, name: "测试整理二版" });
+    expect(service.getActionRuleSnapshot().actions.find((action) => action.id === custom.id)).toMatchObject({ name: "测试整理二版", version: 2 });
+    expect(() => service.updateActionRule(custom.id, 1, { ...custom, name: "过期修改" })).toThrow("其他编辑者修改");
+
+    const observe = service.getActionRuleSnapshot().actions.find((action) => action.id === "action-observe")!;
+    service.updateActionRule(observe.id, observe.version, { ...observe, name: "自定义观察", description: "保留的玩家修改。" });
+    importWorldSeed(db);
+    expect(service.getActionRuleSnapshot().actions.find((action) => action.id === observe.id)).toMatchObject({
+      name: "自定义观察", seedRevision: 0,
+    });
+
+    expect(() => service.createActionRule({
+      ...custom, id: "unsafe-adult-action", adult: true, targetKind: "player", visibility: "public",
+      requirements: { sameLocation: true, targetOnline: true },
+    })).toThrow("只对双方参与者可见");
+    const binding = service.getActionRuleLocationState("home-entrance").bindings.find((item) => item.actionId === custom.id)!;
+    service.deleteActionRuleBinding(binding.id);
+    expect(service.getActionRuleLocationState("home-entrance").bindings.some((item) => item.actionId === custom.id)).toBe(false);
+    service.deleteActionRule(custom.id);
+    expect(service.getActionRuleSnapshot().actions.some((action) => action.id === custom.id)).toBe(false);
+  });
+
   it("runs one real-time action with eight reorderable queued actions and settles by server time", () => {
     const player = service.createSession().player;
     const initial = service.getActionState(player.id);

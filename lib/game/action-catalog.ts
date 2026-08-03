@@ -214,6 +214,7 @@ export function seedActionCatalog(db: DatabaseSync, locations: CatalogLocation[]
       check_json=excluded.check_json,costs_json=excluded.costs_json,outcomes_json=excluded.outcomes_json,
       result_template=excluded.result_template,visibility=excluded.visibility,is_active=1,
       seed_revision=excluded.seed_revision,updated_at=excluded.updated_at
+    WHERE action_templates.seed_revision>0
   `);
   const bindingInsert = db.prepare(`
     INSERT INTO location_action_bindings(
@@ -221,6 +222,7 @@ export function seedActionCatalog(db: DatabaseSync, locations: CatalogLocation[]
     ) VALUES (?,?,?,?,0,1,?,?,?)
     ON CONFLICT(location_id,action_template_id) DO UPDATE SET facility_id=excluded.facility_id,
       is_active=1,seed_revision=excluded.seed_revision,updated_at=excluded.updated_at
+    WHERE location_action_bindings.seed_revision>0
   `);
   for (const action of ACTION_CATALOG) {
     const requirements = { ...(action.requirements ?? {}) };

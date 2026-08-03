@@ -88,7 +88,7 @@ async function updatePlayer(page: Page, sql: string, ...params: Array<string | n
 }
 
 test.describe("entries and session identity", () => {
-  test("bootstraps an HttpOnly session and exposes both application entries", async ({ page, context }) => {
+  test("bootstraps an HttpOnly session and exposes all application entries", async ({ page, context }) => {
     await enterWorld(page);
     const cookie = (await context.cookies()).find((item) => item.name === "wuxia_session");
     expect(cookie).toMatchObject({ httpOnly: true, sameSite: "Lax" });
@@ -98,6 +98,11 @@ test.describe("entries and session identity", () => {
     await page.getByRole("link", { name: "地图设计" }).click();
     await expect(page).toHaveURL(/\/map-editor$/);
     await expect(page.getByRole("heading", { name: "地图设计工具" })).toBeVisible();
+    await page.getByRole("link", { name: "返回游戏" }).click();
+    await expect(page.locator(".character-heading h2")).toHaveText(name);
+    await page.getByRole("link", { name: "行动设计" }).click();
+    await expect(page).toHaveURL(/\/action-editor$/);
+    await expect(page.getByRole("heading", { name: "行动规则设计工具" })).toBeVisible();
     await page.getByRole("link", { name: "返回游戏" }).click();
     await expect(page.locator(".character-heading h2")).toHaveText(name);
   });
@@ -140,6 +145,40 @@ test.describe("entries and session identity", () => {
 });
 
 test.describe("game map", () => {
+  test("creates a structured action rule, binds it to a location, executes it, and removes it", async ({ page }) => {
+    await enterWorld(page);
+    await page.getByRole("link", { name: "行动设计" }).click();
+    await expect(page.getByRole("heading", { name: "行动规则设计工具" })).toBeVisible();
+    await page.getByLabel("行动规则列表").getByRole("button", { name: "新增" }).click();
+    const form = page.getByLabel("行动规则表单");
+    await form.getByLabel("行动名称").fill("Playwright整理玄关");
+    await form.getByLabel("行动说明").fill("由端到端测试创建的结构化行动规则。");
+    await form.getByLabel("现实秒数").fill("60");
+    await form.getByLabel("结果文本").fill("{name}完成了Playwright整理。");
+    await form.getByRole("button", { name: "保存规则" }).click();
+    await expect(page.getByRole("status")).toContainText("行动规则已创建");
+
+    const binding = page.getByLabel("地点行动绑定");
+    await binding.getByLabel("地图").selectOption("home-ground");
+    await binding.getByLabel("搜索地点").fill("玄关");
+    await binding.getByRole("button", { name: "搜索" }).click();
+    await expect(binding.getByLabel("搜索结果").locator("option")).toHaveCount(2);
+    await binding.getByLabel("搜索结果").selectOption("home-entrance");
+    await expect(binding).toContainText("玄关");
+    await binding.getByRole("button", { name: "绑定当前规则" }).click();
+    await expect(page.getByRole("status")).toContainText("绑定已保存");
+
+    await page.getByRole("link", { name: "返回游戏" }).click();
+    await page.getByRole("button", { name: /Playwright整理玄关/ }).click();
+    await expect(page.getByLabel("行动队列")).toContainText("Playwright整理玄关");
+    await page.getByRole("button", { name: "取消Playwright整理玄关" }).click();
+
+    await page.getByRole("link", { name: "行动设计" }).click();
+    await page.getByLabel("行动规则列表").locator("button").filter({ hasText: "Playwright整理玄关" }).click();
+    await page.getByLabel("行动规则表单").getByRole("button", { name: "停用规则" }).click();
+    await expect(page.getByRole("status")).toContainText("行动规则已停用");
+  });
+
   test("shows only the current map's three-step rectangular-node neighborhood and free direction controls", async ({ page }) => {
     await enterWorld(page);
     await expect(page.getByLabel("世界地图")).toBeVisible();

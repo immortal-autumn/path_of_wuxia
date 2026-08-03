@@ -189,6 +189,41 @@ async function main() {
           return;
         }
 
+        if (command.type === "rules.actions.list") {
+          send(socket, { type: "rules.actions.snapshot", requestId: command.requestId, rules: service.getActionRuleSnapshot() });
+          return;
+        }
+
+        if (command.type === "rules.location.inspect") {
+          send(socket, {
+            type: "rules.location.snapshot", requestId: command.requestId,
+            state: service.getActionRuleLocationState(command.locationId),
+          });
+          return;
+        }
+
+        if (command.type === "rules.action.create" || command.type === "rules.action.update" || command.type === "rules.action.delete") {
+          const result = command.type === "rules.action.create"
+            ? service.createActionRule(command.action)
+            : command.type === "rules.action.update"
+              ? service.updateActionRule(command.actionId, command.expectedVersion, command.action)
+              : service.deleteActionRule(command.actionId);
+          send(socket, { type: "rules.actions.snapshot", requestId: command.requestId, rules: result.rules });
+          broadcast({ type: "rules.invalidated" });
+          send(socket, { type: "ack", requestId: command.requestId, message: result.message });
+          return;
+        }
+
+        if (command.type === "rules.binding.upsert" || command.type === "rules.binding.delete") {
+          const result = command.type === "rules.binding.upsert"
+            ? service.upsertActionRuleBinding(command.locationId, command.actionId, command.facilityId, command.priority)
+            : service.deleteActionRuleBinding(command.bindingId);
+          send(socket, { type: "rules.location.snapshot", requestId: command.requestId, state: result.state });
+          broadcast({ type: "rules.invalidated" });
+          send(socket, { type: "ack", requestId: command.requestId, message: result.message });
+          return;
+        }
+
         if (command.type === "map.lock.acquire") {
           const session = service.acquireMapLocks(
             context.playerId,

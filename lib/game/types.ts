@@ -158,6 +158,29 @@ export type ActionTemplate = {
   version: number;
 };
 
+export type ActionRule = ActionTemplate & {
+  isActive: boolean;
+  seedRevision: number;
+};
+
+export type ActionRuleBinding = {
+  id: string;
+  locationId: string;
+  actionId: string;
+  actionName: string;
+  facilityId: string | null;
+  facilityType: string | null;
+  priority: number;
+};
+
+export type ActionRuleSnapshot = { actions: ActionRule[]; layers: MapLayer[] };
+
+export type ActionRuleLocationState = {
+  location: Location;
+  facilities: LocationFacility[];
+  bindings: ActionRuleBinding[];
+};
+
 export type LocationFacility = {
   id: string;
   locationId: string;

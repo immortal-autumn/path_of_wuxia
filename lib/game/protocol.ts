@@ -1,8 +1,12 @@
 import { z } from "zod";
+import { actionCheckSchema, actionOutcomeSchema, actionRequirementSchema } from "./action-engine";
+import { ACTION_CATEGORIES } from "./types";
 import type {
   ActionSystemState,
   ChatMessage,
   GameSnapshot,
+  ActionRuleLocationState,
+  ActionRuleSnapshot,
   InventoryState,
   MapEditSessionState,
   MapHistoryState,
@@ -97,6 +101,24 @@ const allocations = z.object({
   spirit: z.number().int().min(0).max(10000).default(0),
 });
 
+const actionRuleInput = z.object({
+  id: id.optional(),
+  name: z.string().min(1).max(80),
+  description: z.string().min(1).max(400),
+  category: z.enum(ACTION_CATEGORIES),
+  targetKind: z.enum(["self", "location", "player", "item", "plot"]),
+  durationSeconds: z.number().int().min(0).max(100 * 365 * 24 * 60 * 60),
+  requirements: actionRequirementSchema,
+  check: actionCheckSchema,
+  costs: actionOutcomeSchema,
+  success: actionOutcomeSchema,
+  failure: actionOutcomeSchema,
+  resultTemplate: z.string().min(1).max(800),
+  adult: z.boolean(),
+  visibility: z.enum(["public", "participants", "private"]),
+  cooldownSeconds: z.number().int().min(0).max(100 * 365 * 24 * 60 * 60),
+});
+
 export const clientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("sync"), requestId }),
   z.object({ type: z.literal("move"), requestId, locationId: id }),
@@ -129,6 +151,13 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("combat.choose"), requestId, combatId: id, choice: z.enum(["attack", "power", "defend", "flee"]) }),
   z.object({ type: z.literal("combat.respawn"), requestId }),
   z.object({ type: z.literal("loot.take"), requestId, lootPileId: id }),
+  z.object({ type: z.literal("rules.actions.list"), requestId }),
+  z.object({ type: z.literal("rules.location.inspect"), requestId, locationId: id }),
+  z.object({ type: z.literal("rules.action.create"), requestId, action: actionRuleInput.extend({ id }) }),
+  z.object({ type: z.literal("rules.action.update"), requestId, actionId: id, expectedVersion: z.number().int().min(1), action: actionRuleInput.omit({ id: true }) }),
+  z.object({ type: z.literal("rules.action.delete"), requestId, actionId: id }),
+  z.object({ type: z.literal("rules.binding.upsert"), requestId, locationId: id, actionId: id, facilityId: id.nullable(), priority: z.number().int().min(-1000).max(1000).default(0) }),
+  z.object({ type: z.literal("rules.binding.delete"), requestId, bindingId: id }),
   z.object({ type: z.literal("action.cancel"), requestId, jobId: id }),
   z.object({ type: z.literal("action.queue.reorder"), requestId, jobIds: z.array(id).max(8) }),
   z.object({ type: z.literal("inventory.equip"), requestId, itemId: id }),
@@ -169,6 +198,9 @@ export type ServerMessage =
   | { type: "action.updated"; actionState: ActionSystemState }
   | { type: "inventory.updated"; inventory: InventoryState }
   | { type: "social.updated"; social: GameSnapshot["social"] }
+  | { type: "rules.actions.snapshot"; requestId: string; rules: ActionRuleSnapshot }
+  | { type: "rules.location.snapshot"; requestId: string; state: ActionRuleLocationState }
+  | { type: "rules.invalidated" }
   | { type: "cultivation.updated"; player: PlayerSelf; delta: number; offline: boolean; message: string }
   | { type: "players.updated"; players: OnlinePlayer[] }
   | { type: "world.event"; event: WorldEvent }
