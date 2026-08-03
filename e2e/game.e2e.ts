@@ -1,4 +1,5 @@
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
+import { DatabaseSync } from "node:sqlite";
 
 async function enterWorld(page: Page) {
   await page.goto("/");
@@ -38,6 +39,12 @@ async function moveTo(page: Page, locationName: string) {
   await expect(page.getByRole("button", { name: new RegExp(`${locationName}，当前位置`) })).toBeVisible();
 }
 
+async function transitionTo(page: Page, destinationName: string) {
+  await page.getByRole("button", { name: new RegExp(`前往.*${destinationName}|进入.*${destinationName}|传送至.*${destinationName}`) }).click();
+  await expect(page.getByRole("status")).toContainText(`已抵达${destinationName}`);
+  await expect(page.getByRole("button", { name: new RegExp(`${destinationName}，当前位置`) })).toBeVisible();
+}
+
 async function performAction(page: Page, actionName: string) {
   await page.getByRole("button", { name: new RegExp(actionName) }).click();
   await expect(page.getByRole("status")).toContainText(`${actionName}完成`);
@@ -47,6 +54,21 @@ async function newPlayer(context: BrowserContext) {
   const page = await context.newPage();
   await enterWorld(page);
   return page;
+}
+
+async function updatePlayer(page: Page, sql: string, ...params: Array<string | number>) {
+  const databasePath = process.env.PLAYWRIGHT_DATABASE_PATH;
+  if (!databasePath) throw new Error("PLAYWRIGHT_DATABASE_PATH is not configured");
+  const playerName = await page.locator(".character-heading h2").innerText();
+  const db = new DatabaseSync(databasePath);
+  db.exec("PRAGMA busy_timeout=5000");
+  try {
+    const player = db.prepare("SELECT id FROM players WHERE name=?").get(playerName) as { id: string } | undefined;
+    if (!player) throw new Error("Visible player was not found in the Playwright database");
+    db.prepare(sql).run(...params, player.id);
+  } finally {
+    db.close();
+  }
 }
 
 test.describe("entries and session identity", () => {
@@ -66,37 +88,54 @@ test.describe("entries and session identity", () => {
 });
 
 test.describe("game map", () => {
-  test("shows the new three-region, four-location, China-time seed", async ({ page }) => {
+  test("shows only the current layer's three-step square-node neighborhood and free direction controls", async ({ page }) => {
     await enterWorld(page);
     await expect(page.getByLabel("世界地图")).toBeVisible();
-    await expect(page.locator(".map-region")).toHaveCount(3);
+    await expect(page.locator(".map-region")).toHaveCount(1);
     await expect(page.locator(".map-node")).toHaveCount(4);
     await expect(page.locator(".map-node.reachable")).toHaveCount(1);
     await expect(page.locator(".map-node.current")).toContainText("玄关");
     await expect(page.locator(".map-node.current .node-box")).toHaveAttribute("width", "100");
     await expect(page.locator(".map-node.current .node-box")).toHaveAttribute("height", "100");
-    await expect(page.getByLabel("下一步可前往地点")).toContainText("下 · 楼门路");
+    await expect(page.getByLabel("下一步可前往地点")).toContainText("下 · 嬴长嫚与楼夜秋之家·门厅");
+    const endurance = await page.getByLabel(/耐力 \d+\/\d+/).getAttribute("aria-label");
     await expect(page.getByLabel("世界状态")).toContainText("中国标准时间");
     await expect(page.getByLabel("角色状态")).toContainText("嬴长嫚与楼夜秋之家");
-    await page.getByRole("button", { name: "下，前往楼门路" }).click();
-    await expect(page.getByRole("status")).toContainText("已抵达楼门路");
+    await moveTo(page, "嬴长嫚与楼夜秋之家·门厅");
+    await expect(page.getByLabel(/耐力 \d+\/\d+/)).toHaveAttribute("aria-label", endurance!);
     await expect(page.getByLabel("下一步可前往地点")).toContainText("上 · 玄关");
+    await expect(page.getByLabel("下一步可前往地点")).toContainText("右 · 嬴长嫚与楼夜秋之家·客厅");
+    await moveTo(page, "玄关");
+    await transitionTo(page, "楼门路");
+    await expect(page.getByRole("heading", { name: "八方世界 · 局部地图" })).toBeVisible();
+    await expect(page.locator(".map-node")).toHaveCount(3);
     await expect(page.getByLabel("下一步可前往地点")).toContainText("左 · 大宋入口");
     await expect(page.getByLabel("下一步可前往地点")).toContainText("右 · 帕洛斯入口");
   });
 
-  test("visits every seed location and executes every seed action", async ({ page }) => {
+  test("executes seed actions and enters the Northern Song and Palos hierarchies through action-only transitions", async ({ page }) => {
     await enterWorld(page);
     await performAction(page, "整理衣装");
-    await moveTo(page, "楼门路");
+    await transitionTo(page, "楼门路");
     await performAction(page, "观察街道");
     await moveTo(page, "大宋入口");
     await performAction(page, "眺望大宋");
+    await transitionTo(page, "北宋舆图入口");
+    await expect(page.getByRole("heading", { name: "北宋舆图 · 局部地图" })).toBeVisible();
+    await moveTo(page, "北宋总览·京畿路");
+    await transitionTo(page, "京畿路·路口");
+    await expect(page.getByRole("heading", { name: "北宋·京畿路 · 局部地图" })).toBeVisible();
+
+    await transitionTo(page, "北宋总览·京畿路");
+    await moveTo(page, "北宋舆图入口");
+    await transitionTo(page, "大宋入口");
     await moveTo(page, "楼门路");
     await moveTo(page, "帕洛斯入口");
     await performAction(page, "眺望帕洛斯");
+    await transitionTo(page, "帕洛斯群岛入口");
+    await expect(page.getByRole("heading", { name: "帕洛斯群岛 · 局部地图" })).toBeVisible();
     await page.reload();
-    await expect(page.getByRole("button", { name: /帕洛斯入口，当前位置/ })).toBeVisible();
+    await expect(page.getByRole("button", { name: /帕洛斯群岛入口，当前位置/ })).toBeVisible();
   });
 
   test("moves when crypto.randomUUID is unavailable over plain HTTP", async ({ page }) => {
@@ -104,9 +143,45 @@ test.describe("game map", () => {
     const pageErrors: string[] = [];
     page.on("pageerror", (error) => pageErrors.push(error.message));
     await enterWorld(page);
-    await page.getByRole("button", { name: "下，前往楼门路" }).click();
-    await expect(page.getByRole("status")).toContainText("已抵达楼门路");
+    await page.getByRole("button", { name: /下，前往嬴长嫚与楼夜秋之家·门厅/ }).click();
+    await expect(page.getByRole("status")).toContainText("已抵达嬴长嫚与楼夜秋之家·门厅");
     expect(pageErrors).toEqual([]);
+  });
+
+  test("shows derived stats, performs a guaranteed breakthrough, and allocates the larger realm reward", async ({ page }) => {
+    await enterWorld(page);
+    await updatePlayer(page, `
+      UPDATE player_progression SET realm_index=0,realm_level=12,cultivation_progress=350,
+        unspent_points=0,training_anchor_at=NULL,updated_at='2026-08-03T00:00:00.000Z' WHERE player_id=?
+    `);
+    await moveTo(page, "嬴长嫚与楼夜秋之家·门厅");
+    await page.getByRole("button", { name: "战斗属性" }).click();
+    await expect(page.locator(".derived-grid")).toContainText("最大攻击40");
+    await expect(page.locator(".derived-grid")).toContainText("境界倍率 ×1.00");
+    await page.getByRole("button", { name: "修炼突破" }).click();
+    await expect(page.locator(".cultivation-panel")).toContainText("突破成功率 100%");
+    await page.getByRole("button", { name: "尝试突破" }).click();
+    await expect(page.getByRole("status")).toContainText("突破至后天境界");
+    await page.getByRole("button", { name: "基础属性" }).click();
+    await expect(page.locator(".attribute-panel")).toContainText("可分配：15 点");
+    const strength = page.locator(".attribute-row").filter({ hasText: "力量" });
+    await strength.getByRole("button", { name: "+" }).click();
+    await strength.getByRole("button", { name: "+" }).click();
+    await page.getByRole("button", { name: /确认分配 2/ }).click();
+    await expect(page.getByRole("status")).toContainText("已分配2点属性");
+    await expect(page.locator(".attribute-panel")).toContainText("可分配：13 点");
+  });
+
+  test("starts automatic cultivation in the training room and settles server-time offline gain", async ({ page }) => {
+    await enterWorld(page);
+    await moveTo(page, "嬴长嫚与楼夜秋之家·门厅");
+    await transitionTo(page, "嬴长嫚与楼夜秋之家·地下层平台");
+    await moveTo(page, "嬴长嫚与楼夜秋之家·修炼房");
+    await page.getByRole("button", { name: "修炼突破" }).click();
+    await expect(page.locator(".cultivation-panel")).toContainText("修炼中 · 每分钟 15");
+    await updatePlayer(page, "UPDATE player_progression SET training_anchor_at=? WHERE player_id=?", new Date(Date.now() - 10 * 60_000).toISOString());
+    await performAction(page, "静心修炼");
+    await expect(page.locator(".cultivation-panel")).not.toContainText("0 / 100 修为");
   });
 });
 
@@ -156,6 +231,8 @@ test.describe("map editor", () => {
     await page.getByRole("button", { name: "建立连接" }).click();
     await expect(page.getByRole("status")).toContainText("自动保存");
     await expect(page.locator(".route-list")).toContainText(`跨层测试点${suffix}`);
+    await page.getByRole("button", { name: "完成编辑" }).click();
+    await expect(page.getByRole("button", { name: "完成编辑" })).toBeDisabled();
   });
 
   test("drags a snapped location, auto-saves, undoes, redoes, and creates an eight-direction route", async ({ page }) => {
@@ -166,7 +243,7 @@ test.describe("map editor", () => {
     const svg = page.locator(".editor-canvas svg");
     const box = await svg.boundingBox();
     if (!box) throw new Error("Editor canvas has no bounds");
-    await palette.dragTo(svg, { targetPosition: { x: box.width * 0.69, y: box.height * 0.30 } });
+    await palette.dragTo(svg, { targetPosition: { x: box.width * 0.59, y: box.height * 0.48 } });
     await expect(page.getByRole("status")).toContainText("自动保存");
     await expect(page.locator(".editor-location")).toHaveCount(initialLocationCount + 1);
     await expect(page.locator(".editor-location.selected")).toContainText("新地点");
@@ -179,10 +256,11 @@ test.describe("map editor", () => {
     await page.getByLabel("连接目标").selectOption({ label: "帕洛斯入口" });
     await page.getByRole("button", { name: "建立连接" }).click();
     await expect(page.getByRole("status")).toContainText("自动保存");
-    await expect(page.locator(".editor-route")).toHaveCount(4);
+    await expect(page.locator(".route-list")).toContainText("帕洛斯入口");
 
     const game = await page.context().newPage();
     await enterWorld(game);
+    await transitionTo(game, "楼门路");
     await expect(game.locator(".map-node").filter({ hasText: "新地点" })).toBeVisible();
     await game.close();
     await page.getByRole("button", { name: "完成编辑" }).click();
@@ -196,6 +274,8 @@ test.describe("map editor", () => {
     const second = await secondContext.newPage();
     await enterEditor(first);
     await enterEditor(second);
+    await selectEditorLayer(first, "住宅一层");
+    await selectEditorLayer(second, "住宅一层");
 
     const homeRegion = first.locator(".editor-region").filter({ hasText: "嬴长嫚与楼夜秋之家" });
     const homeBox = await homeRegion.boundingBox();
@@ -213,6 +293,7 @@ test.describe("map editor", () => {
     await first.getByRole("button", { name: "完成编辑" }).click();
     await second.getByRole("button", { name: "保存区域资料" }).click();
     await expect(second.getByRole("status")).toContainText("自动保存");
+    await second.getByRole("button", { name: "完成编辑" }).click();
     await firstContext.close();
     await secondContext.close();
   });
@@ -231,8 +312,8 @@ test.describe("real-time multiplayer", () => {
     await first.getByLabel("输入聊天消息").fill(message);
     await first.getByRole("button", { name: "传音" }).click();
     await expect(second.getByLabel("世界聊天")).toContainText(message);
-    await moveTo(first, "楼门路");
-    await expect(second.locator(".map-node").filter({ hasText: "楼门路" })).toContainText("在线 1");
+    await moveTo(first, "嬴长嫚与楼夜秋之家·门厅");
+    await expect(second.locator(".map-node").filter({ hasText: "嬴长嫚与楼夜秋之家·门厅" })).toContainText("在线 1");
     await firstContext.close();
     await expect(second.getByLabel("世界状态")).toContainText("1 位侠客在线");
     await secondContext.close();

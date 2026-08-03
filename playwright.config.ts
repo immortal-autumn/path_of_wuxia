@@ -1,7 +1,8 @@
 import { defineConfig } from "@playwright/test";
 
 const port = 3200;
-const databasePath = `/tmp/path-of-wuxia-playwright-${process.pid}.db`;
+const databasePath = process.env.PLAYWRIGHT_DATABASE_PATH ?? `/tmp/path-of-wuxia-playwright-${process.pid}.db`;
+process.env.PLAYWRIGHT_DATABASE_PATH = databasePath;
 
 export default defineConfig({
   testDir: "./e2e",
