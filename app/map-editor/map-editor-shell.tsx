@@ -65,6 +65,10 @@ function layerLabel(layer: MapLayer, layers: MapLayer[]) {
   return `${"　".repeat(depth)}${depth > 0 ? "↳ " : ""}${layer.name}`;
 }
 
+function locationOptionLabel(location: Location) {
+  return `${location.name} · (${location.gridX}, ${location.gridY})`;
+}
+
 export default function MapEditorShell({
   player,
   initialViewport,
@@ -646,7 +650,7 @@ export default function MapEditorShell({
             <label>定位结果
               <select aria-label="定位结果" defaultValue="" onChange={(event) => locateLocation(event.target.value)}>
                 <option value="" disabled>选择地点</option>
-                {locationResults.map((location) => <option key={location.id} value={location.id}>{location.name}</option>)}
+                {locationResults.map((location) => <option key={location.id} value={location.id}>{locationOptionLabel(location)}</option>)}
               </select>
             </label>
           )}
@@ -760,6 +764,7 @@ export default function MapEditorShell({
               <g
                 className={`editor-location ${selectedLocationId === location.id ? "selected" : ""}`}
                 key={location.id}
+                data-location-id={location.id}
                 transform={`translate(${location.x} ${location.y})`}
                 onClick={() => { setSelectedLocationId(location.id); setSelectedRegionId(null); }}
                 onPointerDown={(event) => startDrag(event, {
@@ -770,8 +775,8 @@ export default function MapEditorShell({
                   originalGridY: location.gridY,
                 })}
               >
-                <rect x="-50" y="-50" width="100" height="100" />
-                <foreignObject x="-46" y="-46" width="92" height="92" pointerEvents="none">
+                <rect x="-60" y="-40" width="120" height="80" />
+                <foreignObject x="-56" y="-36" width="112" height="72" pointerEvents="none">
                   <div className="editor-location-name">{conciseLocationName(location.name)}</div>
                 </foreignObject>
               </g>
@@ -832,7 +837,7 @@ export default function MapEditorShell({
                 <option value="">请选择</option>
                 {(routeType === "normal" ? viewport.locations : routeTargets)
                   .filter((item) => item.id !== selectedLocation.id)
-                  .map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                  .map((item) => <option key={item.id} value={item.id}>{locationOptionLabel(item)}</option>)}
               </select>
             </label>
             {routeType === "transition" && (

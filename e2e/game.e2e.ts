@@ -33,16 +33,24 @@ async function disableRandomUuid(page: Page) {
 }
 
 async function moveTo(page: Page, locationName: string) {
-  const destination = page.getByRole("button", { name: new RegExp(`${locationName}，可前往`) });
+  const destination = page.getByRole("button", { name: new RegExp(`${locationName}.*可前往`) });
   await destination.click();
   await expect(page.getByRole("status")).toContainText(`已抵达${locationName}`);
-  await expect(page.getByRole("button", { name: new RegExp(`${locationName}，当前位置`) })).toBeVisible();
+  await expect(page.getByRole("button", { name: new RegExp(`${locationName}.*当前位置`) })).toBeVisible();
+}
+
+async function moveToId(page: Page, locationId: string, locationName: string) {
+  const destination = page.locator(`[data-location-id="${locationId}"]`);
+  await expect(destination).toHaveClass(/reachable/);
+  await destination.click();
+  await expect(destination).toHaveClass(/current/);
+  await expect(page.getByRole("status")).toContainText(`已抵达${locationName}`);
 }
 
 async function transitionTo(page: Page, destinationName: string) {
   await page.getByRole("button", { name: new RegExp(`前往.*${destinationName}|进入.*${destinationName}|传送至.*${destinationName}`) }).click();
   await expect(page.getByRole("status")).toContainText(`已抵达${destinationName}`);
-  await expect(page.getByRole("button", { name: new RegExp(`${destinationName}，当前位置`) })).toBeVisible();
+  await expect(page.getByRole("button", { name: new RegExp(`${destinationName}.*当前位置`) })).toBeVisible();
 }
 
 async function enterOverworld(page: Page) {
@@ -93,25 +101,26 @@ test.describe("entries and session identity", () => {
 });
 
 test.describe("game map", () => {
-  test("shows only the current layer's three-step square-node neighborhood and free direction controls", async ({ page }) => {
+  test("shows only the current map's three-step rectangular-node neighborhood and free direction controls", async ({ page }) => {
     await enterWorld(page);
     await expect(page.getByLabel("世界地图")).toBeVisible();
-    await expect(page.locator(".map-node")).toHaveCount(4);
-    await expect(page.locator(".map-node .node-name")).toHaveCount(4);
+    await expect(page.locator(".map-node")).toHaveCount(10);
+    await expect(page.locator(".map-node .node-name")).toHaveCount(10);
     await expect(page.locator(".map-node .node-distance, .map-node .node-players")).toHaveCount(0);
-    await expect(page.locator(".map-node.reachable")).toHaveCount(1);
+    await expect(page.locator(".map-node.reachable")).toHaveCount(2);
     await expect(page.locator(".map-node.current")).toContainText("玄关");
-    await expect(page.locator(".map-node.current .node-box")).toHaveAttribute("width", "96");
-    await expect(page.locator(".map-node.current .node-box")).toHaveAttribute("height", "96");
-    await expect(page.getByLabel("地图信息")).toContainText("当前位置玄关");
-    await expect(page.getByLabel("地图信息")).toContainText("三步视野4 处");
-    expect(await page.locator(".map-node .node-name").allTextContents()).toEqual(expect.arrayContaining(["玄关", "门厅", "客厅", "餐厅"]));
-    await page.getByRole("button", { name: /嬴长嫚与楼夜秋之家·门厅，可前往/ }).hover();
-    await expect(page.getByLabel("地图信息")).toContainText("指向地点嬴长嫚与楼夜秋之家·门厅");
+    await expect(page.locator(".map-node.current .node-box")).toHaveAttribute("width", "120");
+    await expect(page.locator(".map-node.current .node-box")).toHaveAttribute("height", "72");
+    await expect(page.getByLabel("地图信息")).toContainText("当前位置玄关 · (0, 0)");
+    await expect(page.getByLabel("地图信息")).toContainText("三步视野10 处");
+    expect(await page.locator(".map-node .node-name").allTextContents()).toEqual(expect.arrayContaining(["玄关", "前庭", "门厅", "客厅", "餐厅", "修炼房"]));
+    await page.getByRole("button", { name: /嬴长嫚与楼夜秋之家·门厅.*可前往/ }).hover();
+    await expect(page.getByLabel("地图信息")).toContainText("指向地点嬴长嫚与楼夜秋之家·门厅 · (0, 1)");
     expect(await page.locator(".node-name").evaluateAll((nodes) => nodes.every((node) => (
       node.scrollWidth <= node.clientWidth && node.scrollHeight <= node.clientHeight
     )))).toBe(true);
     await expect(page.getByLabel("下一步可前往地点")).toContainText("下 · 嬴长嫚与楼夜秋之家·门厅");
+    await expect(page.getByLabel("下一步可前往地点")).toContainText("左 · 嬴长嫚与楼夜秋之家·前庭");
     const endurance = await page.getByLabel(/耐力 \d+\/\d+/).getAttribute("aria-label");
     await expect(page.getByLabel("世界状态")).toContainText("中国标准时间");
     await expect(page.getByLabel("角色状态")).toContainText("嬴长嫚与楼夜秋之家");
@@ -119,14 +128,16 @@ test.describe("game map", () => {
     await expect(page.getByLabel("地图信息")).toContainText("当前位置嬴长嫚与楼夜秋之家·门厅");
     await expect(page.getByLabel(/耐力 \d+\/\d+/)).toHaveAttribute("aria-label", endurance!);
     await expect(page.getByLabel("下一步可前往地点")).toContainText("上 · 玄关");
+    await expect(page.getByLabel("下一步可前往地点")).toContainText("左 · 嬴长嫚与楼夜秋之家·客用卫生间");
     await expect(page.getByLabel("下一步可前往地点")).toContainText("右 · 嬴长嫚与楼夜秋之家·客厅");
+    await expect(page.getByLabel("下一步可前往地点")).toContainText("下 · 嬴长嫚与楼夜秋之家·主卧");
     await moveTo(page, "玄关");
     await enterOverworld(page);
     await expect(page.getByRole("heading", { name: "八方世界 · 局部地图" })).toBeVisible();
     await expect(page.locator(".map-node")).toHaveCount(8);
     await expect(page.getByLabel("下一步可前往地点")).toContainText("上 · 嬴长嫚与楼夜秋之家·入口");
-    await expect(page.getByLabel("下一步可前往地点")).toContainText("左 · 大宋入口");
-    await expect(page.getByLabel("下一步可前往地点")).toContainText("右 · 帕洛斯入口");
+    await expect(page.getByLabel("下一步可前往地点")).toContainText("左 · 楼门路");
+    await expect(page.getByLabel("下一步可前往地点")).toContainText("右 · 楼门路");
   });
 
   test("executes seed actions and crosses the continuous Song and Palos overworld", async ({ page }) => {
@@ -134,26 +145,29 @@ test.describe("game map", () => {
     await performAction(page, "整理衣装");
     await enterOverworld(page);
     await performAction(page, "观察街道");
+    await moveToId(page, "loumen-road-west", "楼门路");
     await moveTo(page, "大宋入口");
     await performAction(page, "眺望大宋");
     await moveTo(page, "大宋官道");
-    await moveTo(page, "大宋·京畿路");
-    await moveTo(page, "京畿路·驿道");
+    await moveToId(page, "song-hub-jingji", "京畿路官道");
+    await moveToId(page, "song-entry-jingji", "京畿路官道");
     await expect(page.getByRole("heading", { name: "八方世界 · 局部地图" })).toBeVisible();
 
-    await moveTo(page, "大宋·京畿路");
+    await moveToId(page, "song-hub-jingji", "京畿路官道");
     await moveTo(page, "大宋官道");
     await moveTo(page, "大宋入口");
-    await moveTo(page, "楼门路");
+    await moveToId(page, "loumen-road-west", "楼门路");
+    await moveToId(page, "loumen-road", "楼门路");
+    await moveToId(page, "loumen-road-east", "楼门路");
     await moveTo(page, "帕洛斯入口");
     await performAction(page, "眺望帕洛斯");
     await moveTo(page, "帕洛斯群岛海岸");
-    await moveTo(page, "帕洛斯·帕洛斯传送点");
-    await moveTo(page, "帕洛斯传送点·路线起点");
+    await moveToId(page, "palos-hub-travel", "帕洛斯传送点道路");
+    await moveToId(page, "palos-entry-travel", "帕洛斯传送点道路");
     await moveTo(page, "帕洛斯传送点·初始台地");
     await expect(page.getByRole("heading", { name: "八方世界 · 局部地图" })).toBeVisible();
     await page.reload();
-    await expect(page.getByRole("button", { name: /帕洛斯传送点·初始台地，当前位置/ })).toBeVisible();
+    await expect(page.getByRole("button", { name: /帕洛斯传送点·初始台地.*当前位置/ })).toBeVisible();
   });
 
   test("moves when crypto.randomUUID is unavailable over plain HTTP", async ({ page }) => {
@@ -193,7 +207,7 @@ test.describe("game map", () => {
   test("starts automatic cultivation in the training room and settles server-time offline gain", async ({ page }) => {
     await enterWorld(page);
     await moveTo(page, "嬴长嫚与楼夜秋之家·门厅");
-    await transitionTo(page, "嬴长嫚与楼夜秋之家·地下层平台");
+    await moveTo(page, "嬴长嫚与楼夜秋之家·主卧");
     await moveTo(page, "嬴长嫚与楼夜秋之家·修炼房");
     await page.getByRole("button", { name: "修炼突破" }).click();
     await expect(page.locator(".cultivation-panel")).toContainText("修炼中 · 每分钟 15");
@@ -214,23 +228,30 @@ test.describe("map editor", () => {
     const locationCount = await page.locator(".editor-location").count();
     await expect(page.locator(".editor-location-name")).toHaveCount(locationCount);
     await expect(page.locator(".editor-location text, .editor-location-grid")).toHaveCount(0);
-    await expect(page.locator(".editor-location rect").first()).toHaveAttribute("width", "100");
-    await expect(page.locator(".editor-location rect").first()).toHaveAttribute("height", "100");
+    await expect(page.locator(".editor-location rect").first()).toHaveAttribute("width", "120");
+    await expect(page.locator(".editor-location rect").first()).toHaveAttribute("height", "80");
     expect(await page.locator(".editor-location-name").evaluateAll((nodes) => nodes.every((node) => (
       node.scrollWidth <= node.clientWidth && node.scrollHeight <= node.clientHeight
     )))).toBe(true);
     await expect(page.getByLabel("画布信息")).toContainText("当前地图八方世界");
-    await expect(page.getByLabel("当前地图").locator("option")).toHaveCount(6);
+    await expect(page.getByLabel("当前地图").locator("option")).toHaveCount(2);
     await expect(page.locator(".editor-location-name").filter({ hasText: "住宅入口" })).toHaveCount(1);
+    await expect(page.locator(".editor-location-name").filter({ hasText: "楼门路" })).toHaveCount(3);
     expect(await page.locator(".editor-location-name").allTextContents()).not.toContain("嬴长嫚与楼夜秋之家·入口");
-    await page.locator(".editor-location").filter({ hasText: "楼门路" }).click();
+    await page.getByLabel("定位地点").fill("楼门路");
+    await page.getByRole("button", { name: "查找" }).click();
+    await expect(page.getByLabel("定位结果").locator("option")).toHaveCount(4);
+    await expect(page.getByLabel("定位结果")).toContainText("楼门路 · (2, 2)");
+    await expect(page.getByLabel("定位结果")).toContainText("楼门路 · (3, 2)");
+    await expect(page.getByLabel("定位结果")).toContainText("楼门路 · (4, 2)");
+    await page.getByLabel("定位结果").selectOption("loumen-road");
     await expect(page.getByLabel("画布信息")).toContainText("已选地点：楼门路 · 网格");
     await expect(page.locator(".editor-selection-summary")).toContainText("楼门路");
     await expect(page.getByRole("button", { name: "完成编辑" })).toBeDisabled();
 
     await page.getByLabel("定位地点").fill("初始台地");
     await page.getByRole("button", { name: "查找" }).click();
-    await page.getByLabel("定位结果").selectOption({ label: "帕洛斯传送点·初始台地" });
+    await page.getByLabel("定位结果").selectOption("palos-fasttravel-1001");
     await expect(page.getByRole("status")).toContainText("已定位至帕洛斯传送点·初始台地");
     await expect(page.getByLabel("画布信息")).toContainText("已选地点：帕洛斯传送点·初始台地");
     await expect(page.locator(".editor-location-name").filter({ hasText: "初始台地" })).toBeVisible();
@@ -279,11 +300,13 @@ test.describe("map editor", () => {
     await expect(page.getByRole("status")).toContainText("自动保存");
 
     await selectEditorLayer(page, "八方世界");
-    await page.locator(".editor-location").filter({ hasText: "楼门路" }).click();
+    await page.locator('[data-location-id="loumen-road"]').click();
     await page.getByLabel("路线类型").selectOption("transition");
     await selectEditorLayer(page, targetLayerName, "目标地图层");
     await expect(page.getByLabel("连接目标").locator("option")).toHaveCount(2);
-    await page.getByLabel("连接目标").selectOption({ label: `跨层测试点${suffix}` });
+    const crossLayerTarget = await page.getByLabel("连接目标").locator("option").filter({ hasText: `跨层测试点${suffix}` }).getAttribute("value");
+    if (!crossLayerTarget) throw new Error("Cross-layer target has no option value");
+    await page.getByLabel("连接目标").selectOption(crossLayerTarget);
     await page.getByLabel("跨层方式").selectOption("road");
     await page.getByRole("button", { name: "建立连接" }).click();
     await expect(page.getByRole("status")).toContainText("自动保存");
@@ -310,7 +333,7 @@ test.describe("map editor", () => {
     await page.getByRole("button", { name: "重做" }).click();
     await expect(page.locator(".editor-location")).toHaveCount(initialLocationCount + 1);
 
-    await page.getByLabel("连接目标").selectOption({ label: "帕洛斯入口" });
+    await page.getByLabel("连接目标").selectOption("palos-gate");
     await page.getByRole("button", { name: "建立连接" }).click();
     await expect(page.getByRole("status")).toContainText("自动保存");
     await expect(page.locator(".route-list")).toContainText("帕洛斯入口");
@@ -331,8 +354,8 @@ test.describe("map editor", () => {
     const second = await secondContext.newPage();
     await enterEditor(first);
     await enterEditor(second);
-    await selectEditorLayer(first, "住宅一层");
-    await selectEditorLayer(second, "住宅一层");
+    await selectEditorLayer(first, "嬴长嫚与楼夜秋之家");
+    await selectEditorLayer(second, "嬴长嫚与楼夜秋之家");
 
     const homeRegion = first.locator(".editor-region").filter({ hasText: "嬴长嫚与楼夜秋之家" });
     const homeBox = await homeRegion.boundingBox();
@@ -374,10 +397,10 @@ test.describe("real-time multiplayer", () => {
     await first.getByRole("button", { name: "传音" }).click();
     await expect(second.getByLabel("世界聊天")).toContainText(message);
     await moveTo(first, "嬴长嫚与楼夜秋之家·门厅");
-    const hallNode = second.getByRole("button", { name: /嬴长嫚与楼夜秋之家·门厅，可前往/ });
+    const hallNode = second.getByRole("button", { name: /嬴长嫚与楼夜秋之家·门厅.*可前往/ });
     await expect(hallNode.locator(".node-name")).toHaveText("门厅");
     await expect(hallNode).not.toContainText("在线");
-    await expect(second.getByLabel("地图信息")).toContainText("三步视野4 处 · 2 人");
+    await expect(second.getByLabel("地图信息")).toContainText("三步视野10 处 · 2 人");
     await firstContext.close();
     await expect(second.getByLabel("世界状态")).toContainText("1 位侠客在线");
     await secondContext.close();

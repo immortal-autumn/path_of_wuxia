@@ -230,11 +230,11 @@ function MapPanel({
           <p className="eyebrow">八方向移动</p>
           <h2>{currentLayer.name} · 局部地图</h2>
         </div>
-        <p>地图仅显示地点名称；可直接点击实线方框移动。</p>
+        <p>地图仅显示地点名称；可直接点击实线长方框移动。</p>
       </header>
       <dl className="map-status" aria-label="地图信息">
-        <div><dt>当前位置</dt><dd>{currentLocation?.name ?? "未知之地"}</dd></div>
-        <div><dt>指向地点</dt><dd>{inspectedLocation?.name ?? "悬停或聚焦查看全名"}</dd></div>
+        <div><dt>当前位置</dt><dd>{currentLocation ? `${currentLocation.name} · (${currentLocation.gridX}, ${currentLocation.gridY})` : "未知之地"}</dd></div>
+        <div><dt>指向地点</dt><dd>{inspectedLocation ? `${inspectedLocation.name} · (${inspectedLocation.gridX}, ${inspectedLocation.gridY})` : "悬停或聚焦查看全名"}</dd></div>
         <div><dt>所属区域</dt><dd>{currentLocation?.region ?? "无名区域"}</dd></div>
         <div><dt>三步视野</dt><dd>{visibleLocations.length} 处 · {nearbyPlayers.length} 人</dd></div>
       </dl>
@@ -267,10 +267,11 @@ function MapPanel({
                 key={location.id}
                 className={`map-node distance-${distance} ${current ? "current" : ""} ${reachable ? "reachable" : ""}`}
                 data-distance={distance}
+                data-location-id={location.id}
                 transform={`translate(${location.x} ${location.y})`}
                 role="button"
                 tabIndex={canMove ? 0 : -1}
-                aria-label={`${location.name}${current ? "，当前位置" : reachable ? "，可前往" : ""}`}
+                aria-label={`${location.name}，网格 (${location.gridX}, ${location.gridY})${current ? "，当前位置" : reachable ? "，可前往" : ""}`}
                 aria-disabled={!canMove}
                 onClick={() => activateLocation(location)}
                 onKeyDown={(event) => handleKey(event, location)}
@@ -279,8 +280,8 @@ function MapPanel({
                 onFocus={() => setInspectedLocationId(location.id)}
                 onBlur={() => setInspectedLocationId(null)}
               >
-                <rect className="node-box" x="-48" y="-48" width="96" height="96" />
-                <foreignObject x="-44" y="-44" width="88" height="88" pointerEvents="none">
+                <rect className="node-box" x="-60" y="-36" width="120" height="72" />
+                <foreignObject x="-56" y="-32" width="112" height="64" pointerEvents="none">
                   <div className="node-name">{conciseLocationName(location.name)}</div>
                 </foreignObject>
               </g>
