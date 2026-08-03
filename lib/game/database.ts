@@ -201,6 +201,7 @@ function migrate(db: GameDatabase) {
     CREATE INDEX IF NOT EXISTS idx_chat_created ON chat_messages(created_at DESC,id DESC);
     CREATE INDEX IF NOT EXISTS idx_logs_player_created ON action_logs(player_id,created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_locations_chunk ON locations(layer_id,chunk_x,chunk_y,is_active);
+    CREATE INDEX IF NOT EXISTS idx_locations_viewport ON locations(layer_id,is_active,chunk_x,chunk_y,id);
     CREATE INDEX IF NOT EXISTS idx_locations_region ON locations(region_id,is_active);
     CREATE INDEX IF NOT EXISTS idx_locations_layer ON locations(layer_id,is_active);
     CREATE INDEX IF NOT EXISTS idx_regions_layer ON map_regions(layer_id,is_active);

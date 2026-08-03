@@ -312,6 +312,10 @@ describe("GameService", () => {
     const viewport = service.getMapViewport("world-root", 19, 18, 3, 1);
     expect(viewport.locations.length).toBeLessThanOrEqual(1_200);
     expect(viewport.loadedChunkCount).toBeLessThanOrEqual(49);
+    const queryPlan = db.prepare(`EXPLAIN QUERY PLAN SELECT id FROM locations
+      WHERE layer_id=? AND is_active=1 AND (chunk_x,chunk_y) IN (VALUES (?,?),(?,?))
+      ORDER BY chunk_y,chunk_x,id LIMIT 1201`).all("world-root", 16, 16, 17, 16) as Array<{ detail: string }>;
+    expect(queryPlan.some((step) => step.detail.includes("idx_locations_viewport"))).toBe(true);
   });
 
   it("normalizes chat and exposes deterministic China-standard time", () => {

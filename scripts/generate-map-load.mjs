@@ -17,6 +17,7 @@ if (!table) {
   database.close();
   throw new Error("The database is not initialized. Start the application once before generating load data.");
 }
+database.exec("CREATE INDEX IF NOT EXISTS idx_locations_viewport ON locations(layer_id,is_active,chunk_x,chunk_y,id)");
 
 const startedAt = performance.now();
 database.exec("BEGIN IMMEDIATE");
@@ -56,24 +57,29 @@ try {
 }
 
 const generatedMs = performance.now() - startedAt;
+const chunkCoordinates = [];
+for (let chunkY = 16; chunkY <= 22; chunkY += 1) {
+  for (let chunkX = 16; chunkX <= 22; chunkX += 1) chunkCoordinates.push(chunkX, chunkY);
+}
+const chunkValues = Array.from({ length: chunkCoordinates.length / 2 }, () => "(?,?)").join(",");
 const queryStartedAt = performance.now();
 const sample = database.prepare(`
   SELECT id FROM locations
-  WHERE layer_id='world-root' AND is_active=1 AND chunk_x BETWEEN ? AND ? AND chunk_y BETWEEN ? AND ?
-  ORDER BY id LIMIT 1201
-`).all(16, 22, 16, 22);
+  WHERE layer_id='world-root' AND is_active=1 AND (chunk_x,chunk_y) IN (VALUES ${chunkValues})
+  ORDER BY chunk_y,chunk_x,id LIMIT 1201
+`).all(...chunkCoordinates);
 const queryMs = performance.now() - queryStartedAt;
 const plan = database.prepare(`
   EXPLAIN QUERY PLAN SELECT id FROM locations
-  WHERE layer_id='world-root' AND is_active=1
-    AND chunk_x BETWEEN 16 AND 22 AND chunk_y BETWEEN 16 AND 22
-  LIMIT 1201
-`).all();
+  WHERE layer_id='world-root' AND is_active=1 AND (chunk_x,chunk_y) IN (VALUES ${chunkValues})
+  ORDER BY chunk_y,chunk_x,id LIMIT 1201
+`).all(...chunkCoordinates);
 
 console.log(JSON.stringify({
   databasePath,
   generatedLocations: requestedCount,
   generationMs: Math.round(generatedMs),
+  viewportChunks: chunkCoordinates.length / 2,
   viewportRows: sample.length,
   viewportQueryMs: Number(queryMs.toFixed(2)),
   queryPlan: plan,

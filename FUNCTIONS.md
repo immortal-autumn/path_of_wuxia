@@ -41,7 +41,7 @@ This is the canonical inventory of implemented project behavior. Update it in th
 | Direction slots | Normal-route editor | Atomically reserves reciprocal direction slots; each location has at most one route per direction. | Unit direction-slot test and Playwright route test. |
 | Edit leases | Automatic scope acquisition / Finish Editing | Locks regions or public chunks only when a drag changes coordinates or a save mutates data; selection-only clicks remain lock-free. Leases renew every30 seconds, expire after two minutes, and block other players. | Unit expiry/exclusion and Playwright selection-without-lock/contention tests. |
 | Undo/redo | Editor toolbar / map history protocol | Stores the latest50 inverse operations within the active edit lease. | Unit save/undo/redo and Playwright history test. |
-| Chunk loading | Viewport controls / `map.viewport.subscribe` | Loads9/25/49 chunks, returns aggregates at low zoom, and caps detailed responses at1200 locations. | Unit payload-cap test and 50k benchmark. |
+| Indexed chunk loading | Viewport controls / `map.viewport.subscribe` | Loads the exact requested 9/25/49 chunk keys through the composite `(layer,active,chunkX,chunkY,id)` index, returns aggregates at low zoom, and caps detailed responses at1200 locations. | Unit payload-cap/index-plan test and 50k benchmark. |
 | Incremental synchronization | `map.chunks.invalidated` | Broadcasts affected chunk keys; clients reload only bounded local data. | Playwright editor-to-game visibility test. |
 | Safe map schema upgrades | SQLite startup migration | Upgrades populated legacy databases despite SQLite `ALTER TABLE` foreign-key limits and preserves active version-3 locations/routes while installing later schema and seeds. | Unit populated-v1 and v3→v4 upgrade regression tests. |
 | Layered exceptional-map storage | `map_layers`, layer-scoped chunks and editor map selector | Keeps one public `world-root` plus five house maps; ordinary grid occupancy remains unique per map, and user-created interiors remain supported. | Unit revision-3 flattening, viewport and transition tests; Playwright six-map inventory. |
@@ -73,4 +73,4 @@ This is the canonical inventory of implemented project behavior. Update it in th
 | `npm run db:backup` | Creates an online SQLite backup. |
 | `npm run map:seed` | Idempotently imports the bundled source-tracked house, Northern Song and Palworld world, validates it, and prints a JSON report. |
 | `npm run map:validate` | Validates the active SQLite world topology, provenance, minimum location counts and reachability. |
-| `npm run map:seed-load -- --locations=50000` | Generates repeatable large-map data and reports indexed viewport-query performance. |
+| `npm run map:seed-load -- --locations=50000` | Generates repeatable large-map data and reports the exact 49-chunk viewport query time and SQLite index plan. Use a temporary `DATABASE_PATH` for disposable benchmarks. |

@@ -494,11 +494,16 @@ export class GameService {
   getMapViewport(layerId: string, centerChunkX: number, centerChunkY: number, radius = 1, zoom = 1): MapViewport {
     const safeRadius = Math.max(1, Math.min(3, Math.floor(radius)));
     const [minX, maxX, minY, maxY] = [centerChunkX - safeRadius, centerChunkX + safeRadius, centerChunkY - safeRadius, centerChunkY + safeRadius];
+    const chunkCoordinates: number[] = [];
+    for (let chunkY = minY; chunkY <= maxY; chunkY += 1) {
+      for (let chunkX = minX; chunkX <= maxX; chunkX += 1) chunkCoordinates.push(chunkX, chunkY);
+    }
+    const chunkValues = Array.from({ length: chunkCoordinates.length / 2 }, () => "(?,?)").join(",");
     const chunks = (this.db.prepare(`
       SELECT chunk_x,chunk_y,COUNT(*) AS location_count FROM locations
-      WHERE is_active=1 AND layer_id=? AND chunk_x BETWEEN ? AND ? AND chunk_y BETWEEN ? AND ?
+      WHERE is_active=1 AND layer_id=? AND (chunk_x,chunk_y) IN (VALUES ${chunkValues})
       GROUP BY chunk_x,chunk_y ORDER BY chunk_y,chunk_x
-    `).all(layerId, minX, maxX, minY, maxY) as Array<{ chunk_x: number; chunk_y: number; location_count: number }>).map((row) => ({
+    `).all(layerId, ...chunkCoordinates) as Array<{ chunk_x: number; chunk_y: number; location_count: number }>).map((row) => ({
       chunkX: row.chunk_x, chunkY: row.chunk_y, locationCount: row.location_count,
     }));
     const regions = (this.db.prepare(`
@@ -508,9 +513,10 @@ export class GameService {
     const common = { layer: this.getLayer(layerId), layers: this.getLayers(), regions, chunks, loadedChunkCount: chunks.length };
     if (zoom < 0.6) return { ...common, locations: [], remoteLocations: [], routes: [], truncated: false };
     const rows = this.db.prepare(`
-      ${this.locationSelect()} WHERE l.is_active=1 AND l.layer_id=? AND l.chunk_x BETWEEN ? AND ? AND l.chunk_y BETWEEN ? AND ?
-      ORDER BY l.id LIMIT ?
-    `).all(layerId, minX, maxX, minY, maxY, MAX_VIEWPORT_LOCATIONS + 1) as LocationRow[];
+      ${this.locationSelect()} WHERE l.is_active=1 AND l.layer_id=?
+      AND (l.chunk_x,l.chunk_y) IN (VALUES ${chunkValues})
+      ORDER BY l.chunk_y,l.chunk_x,l.id LIMIT ?
+    `).all(layerId, ...chunkCoordinates, MAX_VIEWPORT_LOCATIONS + 1) as LocationRow[];
     const truncated = rows.length > MAX_VIEWPORT_LOCATIONS;
     const locations = rows.slice(0, MAX_VIEWPORT_LOCATIONS).map(mapLocation);
     const localIds = locations.map((item) => item.id);
