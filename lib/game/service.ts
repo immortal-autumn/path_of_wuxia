@@ -32,6 +32,7 @@ import type {
   ActionDefinition,
   BaseAttributes,
   ChatMessage,
+  CombatState,
   Direction,
   GameMutation,
   GameSnapshot,
@@ -39,6 +40,7 @@ import type {
   InteractionRequest,
   ItemInstance,
   Location,
+  LootPile,
   MapEditOperation,
   MapEditSessionState,
   MapHistoryState,
@@ -82,6 +84,7 @@ type PlayerRow = {
   unspent_points: number; realm_index: number; realm_level: number; cultivation_progress: number;
   endurance: number; training_anchor_at: string | null; training_multiplier: number;
   vision_bonus_until: string | null; vision_depth_bonus: number;
+  injury_until: string | null;
 };
 type LocationRow = {
   id: string; layer_id: string; name: string; region: string; region_id: string | null; region_name: string | null;
@@ -107,6 +110,11 @@ type ActionJobRow = {
   duration_seconds: number;
   started_at: string | null; completes_at: string | null; result_text: string | null;
   reserved_json: string; context_json: string;
+};
+type CombatRow = {
+  id: string; location_id: string; attacker_id: string; defender_id: string; status: string; round: number;
+  acting_player_id: string | null; turn_deadline: string | null; attacker_misses: number; defender_misses: number;
+  winner_id: string | null; loser_id: string | null;
 };
 
 function tokenHash(token: string) {
@@ -230,6 +238,15 @@ export class GameService {
     private readonly now: () => Date = () => new Date(),
     private readonly randomPercent: () => number = () => randomInt(100),
   ) {}
+
+  private assertCanTakeGameAction(playerId: string) {
+    const player = this.getPlayerRow(playerId);
+    if (player.hp <= 0) throw new Error("角色已经落败，请先返回玄关复起。");
+    if (this.db.prepare(`
+      SELECT 1 FROM combat_sessions WHERE status='active' AND (attacker_id=? OR defender_id=?) LIMIT 1
+    `).get(playerId, playerId)) throw new Error("战斗尚未结束，当前只能选择战斗行动。");
+    return player;
+  }
 
   private ensurePlayerSystems(playerId: string, at = this.now()) {
     const timestamp = at.toISOString();
@@ -441,6 +458,7 @@ export class GameService {
 
   equipItem(playerId: string, itemInstanceId: string) {
     return inTransaction(this.db, () => {
+      this.assertCanTakeGameAction(playerId);
       const row = this.db.prepare(`
         SELECT i.id,i.equipped_slot,d.equipment_slot,
           i.quantity-COALESCE((SELECT SUM(quantity) FROM item_reservations WHERE item_instance_id=i.id),0) AS available
@@ -460,6 +478,7 @@ export class GameService {
 
   unequipItem(playerId: string, itemInstanceId: string) {
     return inTransaction(this.db, () => {
+      this.assertCanTakeGameAction(playerId);
       const changed = this.db.prepare("UPDATE item_instances SET equipped_slot=NULL,updated_at=? WHERE id=? AND owner_player_id=? AND equipped_slot IS NOT NULL")
         .run(this.now().toISOString(), itemInstanceId, playerId).changes;
       if (!changed) throw new Error("这件物品当前没有装备。");
@@ -469,6 +488,7 @@ export class GameService {
 
   useItem(playerId: string, itemInstanceId: string) {
     return inTransaction(this.db, () => {
+      this.assertCanTakeGameAction(playerId);
       const row = this.db.prepare(`
         SELECT i.id,i.quantity,d.name,d.effects_json,
           COALESCE((SELECT SUM(quantity) FROM item_reservations WHERE item_instance_id=i.id),0) AS reserved
@@ -510,6 +530,7 @@ export class GameService {
     targetPlayerId?: string | null;
     inputs?: Record<string, number>;
   }) {
+    this.assertCanTakeGameAction(playerId);
     const now = this.now();
     this.settleActionQueueInternal(playerId, now);
     const player = this.getPlayerRow(playerId);
@@ -606,7 +627,7 @@ export class GameService {
              pr.strength,pr.agility,pr.constitution,pr.root,pr.comprehension,pr.spirit,
              pr.unspent_points,pr.realm_index,pr.realm_level,pr.cultivation_progress,
              pr.endurance,pr.training_anchor_at,COALESCE(le.multiplier,0) AS training_multiplier,
-             p.vision_bonus_until,p.vision_depth_bonus
+             p.vision_bonus_until,p.vision_depth_bonus,p.injury_until
       FROM players p JOIN player_progression pr ON pr.player_id=p.id
       LEFT JOIN location_effects le ON le.location_id=p.current_location AND le.effect_type='cultivation'
     `;
@@ -656,6 +677,8 @@ export class GameService {
       visionDepth: row.vision_bonus_until && new Date(row.vision_bonus_until).getTime() > this.now().getTime()
         ? Math.min(8, 3 + Math.max(0, row.vision_depth_bonus))
         : 3,
+      defeated: row.hp <= 0,
+      injuryUntil: row.injury_until,
     };
   }
 
@@ -1322,6 +1345,7 @@ export class GameService {
 
   startAction(playerId: string, actionTemplateId: string) {
     return inTransaction(this.db, () => {
+      this.assertCanTakeGameAction(playerId);
       const now = this.now();
       this.settleActionQueueInternal(playerId, now);
       const player = this.getPlayerRow(playerId);
@@ -1476,6 +1500,8 @@ export class GameService {
     const player = rows.find((row) => row.id === playerId);
     const target = rows.find((row) => row.id === targetPlayerId);
     if (!player || !target) throw new Error("互动目标不存在。");
+    this.assertCanTakeGameAction(playerId);
+    this.assertCanTakeGameAction(targetPlayerId);
     if (player.current_location !== target.current_location) throw new Error("双方必须在同一地点才能直接互动。");
     if (this.db.prepare(`
       SELECT 1 FROM player_blocks WHERE (player_id=? AND blocked_player_id=?) OR (player_id=? AND blocked_player_id=?)
@@ -1898,6 +1924,263 @@ export class GameService {
     };
   }
 
+  private getCombatRow(combatId: string) {
+    return this.db.prepare(`
+      SELECT id,location_id,attacker_id,defender_id,status,round,acting_player_id,turn_deadline,
+        attacker_misses,defender_misses,winner_id,loser_id FROM combat_sessions WHERE id=?
+    `).get(combatId) as CombatRow | undefined;
+  }
+
+  startCombat(playerId: string, targetPlayerId: string) {
+    return inTransaction(this.db, () => {
+      if (playerId === targetPlayerId) throw new Error("不能攻击自己。");
+      const attacker = this.assertCanTakeGameAction(playerId);
+      const defender = this.assertCanTakeGameAction(targetPlayerId);
+      if (attacker.current_location !== defender.current_location) throw new Error("只能攻击同一地点的角色。");
+      for (const participant of [playerId, targetPlayerId]) {
+        this.settleActionQueueInternal(participant, this.now());
+        if (this.db.prepare("SELECT 1 FROM action_jobs WHERE player_id=? AND status IN ('running','paused','queued')").get(participant)) {
+          throw new Error("参战者仍有进行中或排队的行动。");
+        }
+      }
+      const now = this.now();
+      const id = randomUUID();
+      this.db.prepare(`
+        INSERT INTO combat_sessions(
+          id,location_id,attacker_id,defender_id,status,round,acting_player_id,turn_deadline,
+          attacker_misses,defender_misses,created_at,updated_at
+        ) VALUES (?,?,?,?,'active',1,?,?,0,0,?,?)
+      `).run(id, attacker.current_location, playerId, targetPlayerId, playerId, new Date(now.getTime() + 30_000).toISOString(), now.toISOString(), now.toISOString());
+      const content = `${attacker.name}向${defender.name}发起战斗。`;
+      const inserted = this.db.prepare("INSERT INTO world_events(player_id,event_type,content,created_at) VALUES (?,'combat',?,?)")
+        .run(playerId, content, now.toISOString());
+      const event = this.db.prepare("SELECT id,player_id,event_type,content,created_at FROM world_events WHERE id=?")
+        .get(inserted.lastInsertRowid) as EventRow;
+      return { combatId: id, affectedPlayerIds: [playerId, targetPlayerId], event: mapEvent(event), message: content };
+    });
+  }
+
+  private insertCombatTurn(combat: CombatRow, playerId: string, choice: string, resultText: string, at: string) {
+    this.db.prepare(`
+      INSERT INTO combat_turns(combat_id,round,player_id,choice,result_json,created_at) VALUES (?,?,?,?,?,?)
+    `).run(combat.id, combat.round, playerId, choice, JSON.stringify({ text: resultText }), at);
+  }
+
+  private endCombatByFlee(combat: CombatRow, fleeingPlayerId: string, at: string, automatic: boolean) {
+    const otherId = combat.attacker_id === fleeingPlayerId ? combat.defender_id : combat.attacker_id;
+    const fleeing = this.getPlayer(fleeingPlayerId);
+    const other = this.getPlayer(otherId);
+    const text = automatic
+      ? `${fleeing.name}连续三回合未响应，自动脱离了与${other.name}的战斗。`
+      : `${fleeing.name}成功脱离了与${other.name}的战斗。`;
+    this.insertCombatTurn(combat, fleeingPlayerId, automatic ? "auto-flee" : "flee", text, at);
+    this.db.prepare(`
+      UPDATE combat_sessions SET status='fled',acting_player_id=NULL,turn_deadline=NULL,winner_id=?,loser_id=?,ended_at=?,updated_at=? WHERE id=?
+    `).run(otherId, fleeingPlayerId, at, at, combat.id);
+    this.db.prepare("INSERT INTO world_events(player_id,event_type,content,created_at) VALUES (?,'combat',?,?)")
+      .run(fleeingPlayerId, text, at);
+    return text;
+  }
+
+  private defeatPlayer(combat: CombatRow, winnerId: string, loserId: string, at: string) {
+    const winner = this.getPlayer(winnerId);
+    const loser = this.getPlayer(loserId);
+    const lootId = randomUUID();
+    this.db.prepare(`
+      INSERT INTO loot_piles(id,location_id,silver,source_player_id,created_at,updated_at) VALUES (?,?,?,?,?,?)
+    `).run(lootId, combat.location_id, loser.silver, loserId, at, at);
+    this.db.prepare(`
+      UPDATE item_instances SET owner_player_id=NULL,loot_pile_id=?,equipped_slot=NULL,updated_at=?
+      WHERE owner_player_id=? AND bound=0
+    `).run(lootId, at, loserId);
+    this.db.prepare("UPDATE players SET hp=0,silver=0,updated_at=?,last_seen_at=? WHERE id=?").run(at, at, loserId);
+    this.db.prepare(`
+      UPDATE combat_sessions SET status='completed',acting_player_id=NULL,turn_deadline=NULL,winner_id=?,loser_id=?,ended_at=?,updated_at=? WHERE id=?
+    `).run(winnerId, loserId, at, at, combat.id);
+    const text = `${winner.name}击败${loser.name}；落败者的全部银两与未绑定物品掉落在当前地点。`;
+    this.db.prepare("INSERT INTO world_events(player_id,event_type,content,created_at) VALUES (?,'defeat',?,?)").run(winnerId, text, at);
+    for (const participant of [winnerId, loserId]) {
+      this.db.prepare("INSERT INTO private_events(player_id,event_type,content,created_at) VALUES (?,'combat',?,?)").run(participant, text, at);
+    }
+    return text;
+  }
+
+  private resolveCombatTurn(combat: CombatRow, playerId: string, choice: "attack" | "power" | "defend" | "flee", at: Date, timedOut: boolean) {
+    if (combat.status !== "active" || combat.acting_player_id !== playerId) throw new Error("现在不是你的战斗回合。");
+    const timestamp = at.toISOString();
+    const isAttacker = combat.attacker_id === playerId;
+    const opponentId = isAttacker ? combat.defender_id : combat.attacker_id;
+    const missColumn = isAttacker ? "attacker_misses" : "defender_misses";
+    if (timedOut) {
+      const misses = (isAttacker ? combat.attacker_misses : combat.defender_misses) + 1;
+      this.db.prepare(`UPDATE combat_sessions SET ${missColumn}=?,updated_at=? WHERE id=?`).run(misses, timestamp, combat.id);
+      if (misses >= 3) return { ended: true, text: this.endCombatByFlee(combat, playerId, timestamp, true) };
+      choice = "defend";
+    } else {
+      this.db.prepare(`UPDATE combat_sessions SET ${missColumn}=0,updated_at=? WHERE id=?`).run(timestamp, combat.id);
+    }
+    const player = this.getPlayer(playerId);
+    const opponent = this.getPlayer(opponentId);
+    let resultText: string;
+    if (choice === "flee") {
+      const chance = Math.max(10, Math.min(90, 50 + player.derived.speed - opponent.derived.speed));
+      if (this.randomPercent() < chance) return { ended: true, text: this.endCombatByFlee(combat, playerId, timestamp, false) };
+      resultText = `${player.name}尝试脱离战斗，但被${opponent.name}拦下。`;
+    } else if (choice === "defend") {
+      resultText = timedOut ? `${player.name}回合超时，自动采取格挡。` : `${player.name}沉身格挡，准备承受下一次攻击。`;
+    } else {
+      const lastTurn = this.db.prepare(`
+        SELECT player_id,choice FROM combat_turns WHERE combat_id=? ORDER BY id DESC LIMIT 1
+      `).get(combat.id) as { player_id: string; choice: string } | undefined;
+      const defending = lastTurn?.player_id === opponentId && ["defend", "timeout-defend"].includes(lastTurn.choice);
+      const hitChance = Math.max(5, Math.min(95, 50 + player.derived.hitRate - opponent.derived.dodgeRate - (choice === "power" ? 20 : 0)));
+      if (this.randomPercent() >= hitChance) {
+        resultText = `${player.name}${choice === "power" ? "蓄力猛击" : "攻击"}${opponent.name}，但没有命中。`;
+      } else {
+        const base = Math.max(1, Math.floor((player.derived.minAttack + player.derived.maxAttack) / 2 - opponent.derived.defense * 0.5));
+        const critical = this.randomPercent() < player.derived.criticalRate;
+        let damage = Math.max(1, Math.floor(base * (choice === "power" ? 1.5 : 1) * (critical ? player.derived.criticalDamage / 100 : 1)));
+        if (defending) damage = Math.max(1, Math.floor(damage / 2));
+        const hp = Math.max(0, opponent.hp - damage);
+        this.db.prepare("UPDATE players SET hp=?,updated_at=? WHERE id=?").run(hp, timestamp, opponentId);
+        resultText = `${player.name}${choice === "power" ? "蓄力猛击" : "攻击"}${opponent.name}，造成${damage}点伤害${critical ? "（暴击）" : ""}${defending ? "（格挡减半）" : ""}。`;
+        if (hp <= 0) {
+          this.insertCombatTurn(combat, playerId, choice, resultText, timestamp);
+          return { ended: true, text: `${resultText}${this.defeatPlayer(combat, playerId, opponentId, timestamp)}` };
+        }
+      }
+    }
+    this.insertCombatTurn(combat, playerId, timedOut ? "timeout-defend" : choice, resultText, timestamp);
+    const deadlineBase = timedOut && combat.turn_deadline ? new Date(combat.turn_deadline) : at;
+    this.db.prepare(`
+      UPDATE combat_sessions SET round=round+1,acting_player_id=?,turn_deadline=?,updated_at=? WHERE id=?
+    `).run(opponentId, new Date(deadlineBase.getTime() + 30_000).toISOString(), timestamp, combat.id);
+    return { ended: false, text: resultText };
+  }
+
+  chooseCombatAction(playerId: string, combatId: string, choice: "attack" | "power" | "defend" | "flee") {
+    return inTransaction(this.db, () => {
+      const combat = this.getCombatRow(combatId);
+      if (!combat || combat.status !== "active" || (combat.attacker_id !== playerId && combat.defender_id !== playerId)) {
+        throw new Error("战斗不存在或已经结束。");
+      }
+      if (combat.turn_deadline && new Date(combat.turn_deadline).getTime() <= this.now().getTime()) {
+        const timeoutResult = this.resolveCombatTurn(combat, combat.acting_player_id!, "defend", new Date(combat.turn_deadline), true);
+        return {
+          affectedPlayerIds: [combat.attacker_id, combat.defender_id],
+          message: `该回合已经超时。${timeoutResult.text}`,
+        };
+      }
+      const result = this.resolveCombatTurn(combat, playerId, choice, this.now(), false);
+      return { affectedPlayerIds: [combat.attacker_id, combat.defender_id], message: result.text };
+    });
+  }
+
+  settleDueCombats() {
+    return inTransaction(this.db, () => {
+      const affected = new Set<string>();
+      for (let guard = 0; guard < 128; guard += 1) {
+        const combat = this.db.prepare(`
+          SELECT id,location_id,attacker_id,defender_id,status,round,acting_player_id,turn_deadline,
+            attacker_misses,defender_misses,winner_id,loser_id FROM combat_sessions
+          WHERE status='active' AND turn_deadline<=? ORDER BY turn_deadline,id LIMIT 1
+        `).get(this.now().toISOString()) as CombatRow | undefined;
+        if (!combat || !combat.acting_player_id || !combat.turn_deadline) break;
+        this.resolveCombatTurn(combat, combat.acting_player_id, "defend", new Date(combat.turn_deadline), true);
+        affected.add(combat.attacker_id);
+        affected.add(combat.defender_id);
+      }
+      return [...affected];
+    });
+  }
+
+  getCombatState(playerId: string): CombatState | null {
+    const combat = this.db.prepare(`
+      SELECT id,location_id,attacker_id,defender_id,status,round,acting_player_id,turn_deadline,
+        attacker_misses,defender_misses,winner_id,loser_id FROM combat_sessions
+      WHERE status='active' AND (attacker_id=? OR defender_id=?) ORDER BY created_at DESC LIMIT 1
+    `).get(playerId, playerId) as CombatRow | undefined;
+    if (!combat) return null;
+    const ownIsAttacker = combat.attacker_id === playerId;
+    const opponentId = ownIsAttacker ? combat.defender_id : combat.attacker_id;
+    const opponent = this.getPlayer(opponentId);
+    const recentTurns = (this.db.prepare(`
+      SELECT t.id,t.round,t.player_id,p.name AS player_name,t.choice,t.result_json,t.created_at
+      FROM combat_turns t JOIN players p ON p.id=t.player_id WHERE t.combat_id=? ORDER BY t.id DESC LIMIT 12
+    `).all(combat.id) as Array<{
+      id: number; round: number; player_id: string; player_name: string; choice: string; result_json: string; created_at: string;
+    }>).map((turn) => ({
+      id: turn.id, round: turn.round, playerId: turn.player_id, playerName: turn.player_name,
+      choice: turn.choice, resultText: (JSON.parse(turn.result_json) as { text?: string }).text ?? turn.choice, createdAt: turn.created_at,
+    }));
+    return {
+      id: combat.id, locationId: combat.location_id, status: combat.status, round: combat.round,
+      actingPlayerId: combat.acting_player_id, turnDeadline: combat.turn_deadline, selfTurn: combat.acting_player_id === playerId,
+      opponentId, opponentName: opponent.name, opponentHp: opponent.hp, opponentMaxHp: opponent.maxHp,
+      ownMissedTurns: ownIsAttacker ? combat.attacker_misses : combat.defender_misses,
+      opponentMissedTurns: ownIsAttacker ? combat.defender_misses : combat.attacker_misses,
+      recentTurns,
+    };
+  }
+
+  respawnPlayer(playerId: string) {
+    return inTransaction(this.db, () => {
+      const player = this.getPlayerRow(playerId);
+      if (player.hp > 0) throw new Error("角色当前并未落败。");
+      if (this.db.prepare("SELECT 1 FROM combat_sessions WHERE status='active' AND (attacker_id=? OR defender_id=?)").get(playerId, playerId)) {
+        throw new Error("战斗尚未结算。");
+      }
+      const at = this.now();
+      const derived = this.mapPlayer({ ...player, hp: 1 }).derived;
+      this.db.prepare(`
+        UPDATE players SET hp=?,current_location='home-entrance',injury_until=?,updated_at=?,last_seen_at=? WHERE id=?
+      `).run(Math.max(1, Math.ceil(derived.maxHp / 2)), new Date(at.getTime() + 10 * 60_000).toISOString(), at.toISOString(), at.toISOString(), playerId);
+      this.db.prepare("UPDATE player_progression SET training_anchor_at=NULL,updated_at=? WHERE player_id=?").run(at.toISOString(), playerId);
+      this.db.prepare(`
+        INSERT INTO player_visited_locations(player_id,location_id,first_visited_at,last_visited_at)
+        VALUES (?,'home-entrance',?,?) ON CONFLICT(player_id,location_id) DO UPDATE SET last_visited_at=excluded.last_visited_at
+      `).run(playerId, at.toISOString(), at.toISOString());
+      this.db.prepare("INSERT INTO private_events(player_id,event_type,content,created_at) VALUES (?,'respawn','你带伤返回玄关复起。',?)")
+        .run(playerId, at.toISOString());
+      return { player: this.getPlayer(playerId), message: "已返回玄关复起，气血恢复一半。" };
+    });
+  }
+
+  getLootPiles(locationId: string): LootPile[] {
+    const rows = this.db.prepare(`
+      SELECT pile.id,pile.location_id,pile.silver,pile.source_player_id,p.name AS source_player_name
+      FROM loot_piles pile LEFT JOIN players p ON p.id=pile.source_player_id WHERE pile.location_id=? ORDER BY pile.created_at DESC
+    `).all(locationId) as Array<{
+      id: string; location_id: string; silver: number; source_player_id: string | null; source_player_name: string | null;
+    }>;
+    return rows.map((row) => ({
+      id: row.id, locationId: row.location_id, silver: row.silver, sourcePlayerId: row.source_player_id,
+      sourcePlayerName: row.source_player_name,
+      items: (this.db.prepare(`
+        SELECT d.name,i.quantity,i.quality FROM item_instances i JOIN item_definitions d ON d.id=i.definition_id
+        WHERE i.loot_pile_id=? ORDER BY d.name,i.id
+      `).all(row.id) as Array<{ name: string; quantity: number; quality: number }>),
+    }));
+  }
+
+  takeLoot(playerId: string, lootPileId: string) {
+    return inTransaction(this.db, () => {
+      const player = this.assertCanTakeGameAction(playerId);
+      const pile = this.db.prepare("SELECT location_id,silver FROM loot_piles WHERE id=?").get(lootPileId) as {
+        location_id: string; silver: number;
+      } | undefined;
+      if (!pile || pile.location_id !== player.current_location) throw new Error("战利品不在当前位置或已经被取走。");
+      const timestamp = this.now().toISOString();
+      this.db.prepare("UPDATE players SET silver=silver+?,updated_at=? WHERE id=?").run(pile.silver, timestamp, playerId);
+      this.db.prepare("UPDATE item_instances SET owner_player_id=?,loot_pile_id=NULL,updated_at=? WHERE loot_pile_id=?")
+        .run(playerId, timestamp, lootPileId);
+      this.db.prepare("DELETE FROM loot_piles WHERE id=?").run(lootPileId);
+      this.db.prepare("INSERT INTO private_events(player_id,event_type,content,created_at) VALUES (?,'loot',?,?)")
+        .run(playerId, `取得战利品与${pile.silver}银两。`, timestamp);
+      return { player: this.getPlayer(playerId), inventory: this.getInventoryState(playerId), message: "战利品已收入行囊。" };
+    });
+  }
+
   getRecentChat(limit = 50) {
     const rows = this.db.prepare(`
       SELECT c.id,c.player_id,p.name AS player_name,c.content,c.created_at
@@ -1922,6 +2205,8 @@ export class GameService {
       actionState: this.readActionState(playerId),
       inventory: this.getInventoryState(playerId),
       social: this.getSocialState(playerId),
+      combat: this.getCombatState(playerId),
+      lootPiles: this.getLootPiles(self.currentLocation),
       qinggongTargets: this.getQinggongTargets(playerId),
       onlinePlayers, recentEvents: this.getRecentEvents(), privateEvents: this.getPrivateEvents(playerId), chatMessages: this.getRecentChat(),
     };
@@ -2326,6 +2611,7 @@ export class GameService {
 
   move(playerId: string, destinationId: string): GameMutation {
     return inTransaction(this.db, () => {
+      this.assertCanTakeGameAction(playerId);
       this.settleActionQueueInternal(playerId, this.now());
       if (this.db.prepare("SELECT 1 FROM action_jobs WHERE player_id=? AND status IN ('running','paused')").get(playerId)) {
         throw new Error("当前行动尚未完成，请先等待或取消行动。");
@@ -2357,6 +2643,7 @@ export class GameService {
 
   act(playerId: string, actionId: string): GameMutation {
     return inTransaction(this.db, () => {
+      this.assertCanTakeGameAction(playerId);
       this.settleCultivationInternal(playerId, this.now(), false);
       const player = this.getPlayer(playerId);
       const row = this.db.prepare(`

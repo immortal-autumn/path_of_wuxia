@@ -536,6 +536,35 @@ test.describe("real-time multiplayer", () => {
     await firstContext.close();
     await secondContext.close();
   });
+
+  test("runs authoritative combat turns and auto-flees after repeated 30-second timeouts", async ({ browser }) => {
+    const firstContext = await browser.newContext();
+    const secondContext = await browser.newContext();
+    const first = await newPlayer(firstContext);
+    const second = await newPlayer(secondContext);
+    const secondName = await second.locator(".character-heading h2").innerText();
+    await first.getByRole("button", { name: "交往交易" }).click();
+    const target = first.locator(".social-player").filter({ hasText: secondName });
+    await target.getByRole("button", { name: "攻击" }).click();
+
+    await expect(first.getByLabel("当前战斗")).toContainText(`对阵 ${secondName}`);
+    await expect(first.getByLabel("当前战斗")).toContainText("你的回合");
+    await expect(second.getByLabel("当前战斗")).toContainText("等待对方行动");
+    await first.getByLabel("当前战斗").getByRole("button", { name: "格挡" }).click();
+    await expect(second.getByLabel("当前战斗")).toContainText("你的回合");
+    await expect(first.getByLabel("当前战斗")).toContainText("沉身格挡");
+
+    await updatePlayer(first, `
+      UPDATE combat_sessions SET turn_deadline='2000-01-01T00:00:00.000Z'
+      WHERE id=(SELECT id FROM combat_sessions WHERE status='active' AND attacker_id=? ORDER BY created_at DESC LIMIT 1)
+    `);
+    await expect(first.getByLabel("当前战斗")).toBeHidden();
+    await expect(second.getByLabel("当前战斗")).toBeHidden();
+    await expect(first.getByText("的掉落", { exact: false })).toHaveCount(0);
+
+    await firstContext.close();
+    await secondContext.close();
+  });
 });
 
 test.describe("mobile layout", () => {

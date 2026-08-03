@@ -356,14 +356,37 @@ export type SocialState = {
 export type CombatState = {
   id: string;
   locationId: string;
-  attackerId: string;
-  defenderId: string;
   status: string;
   round: number;
   actingPlayerId: string | null;
   turnDeadline: string | null;
-  winnerId: string | null;
-  loserId: string | null;
+  selfTurn: boolean;
+  opponentId: string;
+  opponentName: string;
+  opponentHp: number;
+  opponentMaxHp: number;
+  ownMissedTurns: number;
+  opponentMissedTurns: number;
+  recentTurns: CombatTurn[];
+};
+
+export type CombatTurn = {
+  id: number;
+  round: number;
+  playerId: string;
+  playerName: string;
+  choice: string;
+  resultText: string;
+  createdAt: string;
+};
+
+export type LootPile = {
+  id: string;
+  locationId: string;
+  silver: number;
+  sourcePlayerId: string | null;
+  sourcePlayerName: string | null;
+  items: Array<{ name: string; quantity: number; quality: number }>;
 };
 
 export type ActionDefinition = {
@@ -432,6 +455,8 @@ export type PlayerSelf = {
   needs: PlayerNeeds;
   skills: PlayerSkill[];
   visionDepth: number;
+  defeated: boolean;
+  injuryUntil: string | null;
 };
 
 export type OnlinePlayer = { id: string; name: string; title: string; currentLocation: string };
@@ -460,6 +485,8 @@ export type GameSnapshot = {
   actionState: ActionSystemState;
   inventory: InventoryState;
   social: SocialState;
+  combat: CombatState | null;
+  lootPiles: LootPile[];
   qinggongTargets: QinggongTarget[];
   onlinePlayers: OnlinePlayer[];
   recentEvents: WorldEvent[];

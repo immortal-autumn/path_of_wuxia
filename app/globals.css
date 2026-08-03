@@ -567,6 +567,55 @@ h2 {
   font-style: normal;
 }
 
+.combat-card {
+  grid-column: 1 / -1;
+  padding: 11px;
+  border: 2px solid var(--border);
+  background: #fff;
+  font-size: 11px;
+}
+
+.combat-card header,
+.combat-card > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 5px;
+}
+
+.combat-card p {
+  margin: 6px 0;
+  line-height: 1.45;
+}
+
+.combat-card button {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  background: #fff;
+  cursor: pointer;
+}
+
+.combat-card button:disabled {
+  background: var(--disabled);
+  cursor: not-allowed;
+}
+
+.combat-card ol {
+  max-height: 120px;
+  margin: 8px 0 0;
+  padding-left: 20px;
+  overflow: auto;
+  color: var(--muted);
+}
+
+.combat-card li + li {
+  margin-top: 4px;
+}
+
+.defeated-card {
+  border-style: double;
+}
+
 .action-queue {
   min-width: 0;
   padding-left: 10px;

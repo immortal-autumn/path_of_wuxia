@@ -463,6 +463,8 @@ function ActionsPanel({
   locations,
   qinggongTargets,
   privateEvents,
+  combat,
+  lootPiles,
   pending,
   open,
   onStart,
@@ -471,8 +473,11 @@ function ActionsPanel({
   onCraft,
   onFarm,
   onQinggong,
+  onCombatChoice,
+  onRespawn,
+  onTakeLoot,
   onTransition,
-}: Pick<GameSnapshot, "actionState" | "inventory" | "transitions" | "self" | "locations" | "qinggongTargets" | "privateEvents"> & {
+}: Pick<GameSnapshot, "actionState" | "inventory" | "transitions" | "self" | "locations" | "qinggongTargets" | "privateEvents" | "combat" | "lootPiles"> & {
   pending: boolean;
   open: boolean;
   onStart: (actionId: string) => void;
@@ -481,6 +486,9 @@ function ActionsPanel({
   onCraft: (recipeId: string) => void;
   onFarm: (plotId: string, operation: "plant" | "water" | "harvest", cropId?: string) => void;
   onQinggong: (destinationId: string) => void;
+  onCombatChoice: (combatId: string, choice: "attack" | "power" | "defend" | "flee") => void;
+  onRespawn: () => void;
+  onTakeLoot: (lootPileId: string) => void;
   onTransition: (locationId: string) => void;
 }) {
   const [now, setNow] = useState(() => Date.now());
@@ -489,6 +497,7 @@ function ActionsPanel({
     return () => clearInterval(timer);
   }, []);
   const currentLocation = locations.find((location) => location.id === self.currentLocation);
+  const regularActionLocked = combat !== null || self.defeated;
   const categoryLabel: Record<string, string> = {
     life: "生活", perception: "感知", movement: "身法", cultivation: "修炼", production: "生产",
     farming: "农耕", social: "交往", intimate: "亲密", hostile: "敌对", combat: "战斗", legacy: "原有",
@@ -511,11 +520,40 @@ function ActionsPanel({
       </div>
       <div className="action-workspace">
         <div className="action-list" aria-label="此地可做">
+          {self.defeated && (
+            <div className="combat-card defeated-card" role="alert">
+              <strong>你已在战斗中落败</strong>
+              <p>全部银两与所有未绑定物品已掉落。返回玄关可恢复一半气血。</p>
+              <button disabled={pending} onClick={onRespawn}>返回玄关复起</button>
+            </div>
+          )}
+          {combat && (
+            <div className="combat-card" aria-label="当前战斗">
+              <header><strong>对阵 {combat.opponentName}</strong><span>第 {combat.round} 回合</span></header>
+              <p>对方气血 {combat.opponentHp} / {combat.opponentMaxHp}</p>
+              <p>{combat.selfTurn ? `你的回合 · ${combat.turnDeadline ? remainingText({ completesAt: combat.turnDeadline } as ActionJob, now) : ""}` : "等待对方行动"}</p>
+              <p>超时次数：你 {combat.ownMissedTurns} · 对方 {combat.opponentMissedTurns}（三次自动脱离）</p>
+              <div>
+                <button disabled={pending || !combat.selfTurn} onClick={() => onCombatChoice(combat.id, "attack")}>攻击</button>
+                <button disabled={pending || !combat.selfTurn} onClick={() => onCombatChoice(combat.id, "power")}>蓄力猛击</button>
+                <button disabled={pending || !combat.selfTurn} onClick={() => onCombatChoice(combat.id, "defend")}>格挡</button>
+                <button disabled={pending || !combat.selfTurn} onClick={() => onCombatChoice(combat.id, "flee")}>逃跑</button>
+              </div>
+              <ol>{combat.recentTurns.map((turn) => <li key={turn.id}>{turn.resultText}</li>)}</ol>
+            </div>
+          )}
+          {lootPiles.map((pile) => (
+            <div className="combat-card loot-card" key={pile.id}>
+              <strong>{pile.sourcePlayerName ?? "无名者"}的掉落</strong>
+              <p>{pile.silver} 银 · {pile.items.map((item) => `${item.name}×${item.quantity}`).join("、") || "无物品"}</p>
+              <button disabled={pending || regularActionLocked} onClick={() => onTakeLoot(pile.id)}>拾取全部</button>
+            </div>
+          ))}
           {actionState.available.map((action) => (
             <button
               className="action-card"
               key={action.id}
-              disabled={pending || !action.available || actionState.queued.length >= actionState.maxQueued}
+              disabled={pending || regularActionLocked || !action.available || actionState.queued.length >= actionState.maxQueued}
               onClick={() => onStart(action.id)}
               title={action.unavailableReason ?? undefined}
             >
@@ -532,7 +570,7 @@ function ActionsPanel({
             <button
               className="action-card transition-action"
               key={transition.routeId}
-              disabled={pending || actionState.current !== null}
+              disabled={pending || regularActionLocked || actionState.current !== null}
               onClick={() => onTransition(transition.destinationId)}
             >
               <span className="action-mark">门</span>
@@ -543,7 +581,7 @@ function ActionsPanel({
             <button
               className="action-card production-action"
               key={recipe.id}
-              disabled={pending || !recipe.available || actionState.queued.length >= actionState.maxQueued}
+              disabled={pending || regularActionLocked || !recipe.available || actionState.queued.length >= actionState.maxQueued}
               onClick={() => onCraft(recipe.id)}
               title={recipe.unavailableReason ?? undefined}
             >
@@ -562,9 +600,9 @@ function ActionsPanel({
               </span>
               <span className="production-controls">
                 {plot.state === "empty" ? (
-                  <><button disabled={pending} onClick={() => onFarm(plot.id, "plant", "crop-rice")}>播种水稻</button><button disabled={pending} onClick={() => onFarm(plot.id, "plant", "crop-herb")}>播种药草</button></>
+                  <><button disabled={pending || regularActionLocked} onClick={() => onFarm(plot.id, "plant", "crop-rice")}>播种水稻</button><button disabled={pending || regularActionLocked} onClick={() => onFarm(plot.id, "plant", "crop-herb")}>播种药草</button></>
                 ) : (
-                  <><button disabled={pending} onClick={() => onFarm(plot.id, "water")}>浇水</button><button disabled={pending || !plot.mature} onClick={() => onFarm(plot.id, "harvest")}>收获</button></>
+                  <><button disabled={pending || regularActionLocked} onClick={() => onFarm(plot.id, "water")}>浇水</button><button disabled={pending || regularActionLocked || !plot.mature} onClick={() => onFarm(plot.id, "harvest")}>收获</button></>
                 )}
               </span>
             </div>
@@ -573,7 +611,7 @@ function ActionsPanel({
             <button
               className="action-card movement-action"
               key={target.locationId}
-              disabled={pending || actionState.queued.length >= actionState.maxQueued}
+              disabled={pending || regularActionLocked || actionState.queued.length >= actionState.maxQueued}
               onClick={() => onQinggong(target.locationId)}
             >
               <span className="action-mark">轻</span>
@@ -671,6 +709,7 @@ function CharacterPanel({
   onTradeOffer,
   onTradeConfirm,
   onTradeCancel,
+  onCombatStart,
 }: {
   self: GameSnapshot["self"];
   inventory: GameSnapshot["inventory"];
@@ -695,6 +734,7 @@ function CharacterPanel({
   onTradeOffer: (tradeId: string, silver: number, items: Array<{ itemId: string; quantity: number }>) => void;
   onTradeConfirm: (tradeId: string) => void;
   onTradeCancel: (tradeId: string) => void;
+  onCombatStart: (targetPlayerId: string) => void;
 }) {
   const [tab, setTab] = useState<"base" | "combat" | "cultivation" | "inventory" | "social">("base");
   const [draft, setDraft] = useState<BaseAttributes>({ strength: 0, agility: 0, constitution: 0, root: 0, comprehension: 0, spirit: 0 });
@@ -819,6 +859,7 @@ function CharacterPanel({
                   <button disabled={pending} onClick={() => onInteractionRequest(player.id, "relationship.spouse")}>婚配</button>
                   <button disabled={pending || !social.adultProfile.contentEnabled} onClick={() => onInteractionRequest(player.id, "intimate")}>私密亲昵</button>
                   <button disabled={pending} onClick={() => onTradeRequest(player.id)}>交易</button>
+                  <button disabled={pending} onClick={() => onCombatStart(player.id)}>攻击</button>
                   <button disabled={pending} onClick={() => onBlock(player.id, true)}>屏蔽</button>
                 </div>
               </article>
@@ -1150,7 +1191,7 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           self={snapshot.self}
           onlinePlayers={snapshot.onlinePlayers}
           currentLayer={snapshot.currentLayer}
-          pending={pending !== null || connection !== "online"}
+          pending={pending !== null || connection !== "online" || snapshot.combat !== null || snapshot.self.defeated}
           visitedMapLoading={visitedMapLoading}
           onOpenVisitedMap={openVisitedMap}
           onMove={(locationId) => {
@@ -1166,6 +1207,8 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           locations={snapshot.locations}
           qinggongTargets={snapshot.qinggongTargets}
           privateEvents={snapshot.privateEvents}
+          combat={snapshot.combat}
+          lootPiles={snapshot.lootPiles}
           pending={pending !== null || connection !== "online"}
           open={drawer === "actions"}
           onStart={(actionId) => sendCommand({ type: "action.start", actionId }, "action")}
@@ -1174,6 +1217,9 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           onCraft={(recipeId) => sendCommand({ type: "craft.start", recipeId }, "craft")}
           onFarm={(plotId, operation, cropId) => sendCommand({ type: "farm.start", plotId, operation, cropId }, "farm")}
           onQinggong={(destinationId) => sendCommand({ type: "qinggong.start", destinationId }, "qinggong")}
+          onCombatChoice={(combatId, choice) => sendCommand({ type: "combat.choose", combatId, choice }, "combat")}
+          onRespawn={() => sendCommand({ type: "combat.respawn" }, "combat")}
+          onTakeLoot={(lootPileId) => sendCommand({ type: "loot.take", lootPileId }, "loot")}
           onTransition={(locationId) => sendCommand({ type: "move", locationId }, "move")}
         />
       </div>
@@ -1189,7 +1235,7 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           nearbyPlayers={nearbyPlayers}
           location={currentLocation}
           open={drawer === "character"}
-          pending={pending !== null || connection !== "online"}
+          pending={pending !== null || connection !== "online" || snapshot.combat !== null || snapshot.self.defeated}
           onAllocate={(allocations) => sendCommand({ type: "attributes.allocate", allocations }, "attributes")}
           onBreakthrough={() => sendCommand({ type: "cultivation.breakthrough" }, "breakthrough")}
           onEquip={(itemId) => sendCommand({ type: "inventory.equip", itemId }, "inventory")}
@@ -1206,6 +1252,7 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           onTradeOffer={(tradeId, silver, items) => sendCommand({ type: "trade.offer", tradeId, silver, items }, "trade")}
           onTradeConfirm={(tradeId) => sendCommand({ type: "trade.confirm", tradeId }, "trade")}
           onTradeCancel={(tradeId) => sendCommand({ type: "trade.cancel", tradeId }, "trade")}
+          onCombatStart={(targetPlayerId) => sendCommand({ type: "combat.start", targetPlayerId }, "combat")}
         />
         <ChatPanel
           messages={snapshot.chatMessages}

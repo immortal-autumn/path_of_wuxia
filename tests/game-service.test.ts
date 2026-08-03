@@ -378,6 +378,62 @@ describe("GameService", () => {
       .toThrow("绑定或已装备物品不能交易");
   });
 
+  it("runs 30-second combat turns, auto-defends timeouts, and auto-flees after three misses", () => {
+    const attacker = service.createSession().player;
+    const defender = service.createSession().player;
+    const started = service.startCombat(attacker.id, defender.id);
+    expect(service.getCombatState(attacker.id)).toMatchObject({ selfTurn: true, opponentId: defender.id, round: 1 });
+    expect(() => service.chooseCombatAction(defender.id, started.combatId, "attack")).toThrow("不是你的战斗回合");
+    service.chooseCombatAction(attacker.id, started.combatId, "defend");
+    expect(service.getCombatState(defender.id)).toMatchObject({ selfTurn: true, opponentId: attacker.id });
+    expect(() => service.move(attacker.id, "home-hall")).toThrow("战斗尚未结束");
+
+    clock = new Date(clock.getTime() + 5 * 30_000);
+    expect(service.settleDueCombats()).toEqual(expect.arrayContaining([attacker.id, defender.id]));
+    expect(service.getCombatState(attacker.id)).toBeNull();
+    expect(db.prepare("SELECT status,loser_id FROM combat_sessions WHERE id=?").get(started.combatId)).toEqual({ status: "fled", loser_id: defender.id });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM combat_turns WHERE combat_id=? AND choice='timeout-defend'").get(started.combatId))
+      .toEqual({ count: 4 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM loot_piles").get()).toEqual({ count: 0 });
+    expect(service.getPlayer(defender.id).hp).toBe(defender.hp);
+  });
+
+  it("drops all silver and unbound items on defeat, then supports loot pickup and half-health respawn", () => {
+    const attacker = service.createSession().player;
+    const defender = service.createSession().player;
+    db.prepare(`
+      INSERT INTO item_instances(id,definition_id,owner_player_id,quantity,quality,durability,affixes_json,bound,equipped_slot,created_at,updated_at)
+      VALUES ('combat-rice','rice',?,4,2,0,'[]',0,NULL,?,?),
+             ('combat-boots','cloth-boots',?,1,3,100,'[]',0,'feet',?,?)
+    `).run(defender.id, clock.toISOString(), clock.toISOString(), defender.id, clock.toISOString(), clock.toISOString());
+    db.prepare("UPDATE players SET hp=1 WHERE id=?").run(defender.id);
+    const boundCount = (db.prepare("SELECT COUNT(*) AS count FROM item_instances WHERE owner_player_id=? AND bound=1").get(defender.id) as { count: number }).count;
+    const combat = service.startCombat(attacker.id, defender.id);
+    service.chooseCombatAction(attacker.id, combat.combatId, "attack");
+
+    expect(service.getPlayer(defender.id)).toMatchObject({ hp: 0, silver: 0, defeated: true });
+    const piles = service.getLootPiles("home-entrance");
+    expect(piles).toHaveLength(1);
+    expect(piles[0]).toMatchObject({ silver: 20, sourcePlayerId: defender.id });
+    expect(piles[0].items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "稻米", quantity: 4 }),
+      expect.objectContaining({ name: "布靴", quantity: 1 }),
+    ]));
+    expect(db.prepare("SELECT COUNT(*) AS count FROM item_instances WHERE owner_player_id=? AND bound=1").get(defender.id)).toEqual({ count: boundCount });
+    expect(() => service.move(defender.id, "home-hall")).toThrow("请先返回玄关复起");
+
+    service.takeLoot(attacker.id, piles[0].id);
+    expect(service.getPlayer(attacker.id).silver).toBe(40);
+    expect(service.getLootPiles("home-entrance")).toHaveLength(0);
+    expect(db.prepare("SELECT owner_player_id,equipped_slot FROM item_instances WHERE id='combat-boots'").get())
+      .toEqual({ owner_player_id: attacker.id, equipped_slot: null });
+
+    const respawned = service.respawnPlayer(defender.id).player;
+    expect(respawned).toMatchObject({ currentLocation: "home-entrance", defeated: false, silver: 0 });
+    expect(respawned.hp).toBe(Math.ceil(respawned.maxHp / 2));
+    expect(respawned.injuryUntil).not.toBeNull();
+  });
+
   it("upgrades the former public-map hierarchy into one continuous overworld", () => {
     db.prepare(`INSERT INTO map_layers(id,name,description,parent_layer_id,version,is_active,seed_revision,created_at,updated_at)
       VALUES ('song-legacy-layer','旧大宋层','旧层级。','world-root',1,1,2,?,?)`).run(clock.toISOString(), clock.toISOString());

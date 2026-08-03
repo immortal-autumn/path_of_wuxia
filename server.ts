@@ -320,6 +320,37 @@ async function main() {
           return;
         }
 
+        if (command.type === "combat.start") {
+          if (!onlinePlayerIds().includes(command.targetPlayerId)) throw new Error("战斗目标当前不在线。");
+          const result = service.startCombat(context.playerId, command.targetPlayerId);
+          broadcast({ type: "world.event", event: result.event });
+          refreshPlayers(result.affectedPlayerIds);
+          send(socket, { type: "ack", requestId: command.requestId, message: result.message });
+          return;
+        }
+
+        if (command.type === "combat.choose") {
+          const result = service.chooseCombatAction(context.playerId, command.combatId, command.choice);
+          refreshPlayers(result.affectedPlayerIds);
+          send(socket, { type: "ack", requestId: command.requestId, message: result.message });
+          return;
+        }
+
+        if (command.type === "combat.respawn") {
+          const result = service.respawnPlayer(context.playerId);
+          sendSnapshot(socket, context);
+          broadcastPresence();
+          send(socket, { type: "ack", requestId: command.requestId, message: result.message });
+          return;
+        }
+
+        if (command.type === "loot.take") {
+          const result = service.takeLoot(context.playerId, command.lootPileId);
+          sendSnapshot(socket, context);
+          send(socket, { type: "ack", requestId: command.requestId, message: result.message });
+          return;
+        }
+
         if (command.type === "inventory.equip" || command.type === "inventory.unequip" || command.type === "inventory.use") {
           const result = command.type === "inventory.equip"
             ? service.equipItem(context.playerId, command.itemId)
@@ -449,6 +480,8 @@ async function main() {
       }
       broadcastPresence();
     }
+    const combatPlayers = service.settleDueCombats();
+    if (combatPlayers.length > 0) refreshPlayers(combatPlayers);
   }, 1_000);
 
   httpServer.listen(port, hostname, () => {
