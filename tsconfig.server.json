@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "incremental": false,
+    "isolatedModules": false,
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "target": "ES2022",
+    "outDir": ".server",
+    "rootDir": ".",
+    "sourceMap": true
+  },
+  "include": ["server.ts", "lib/game/**/*.ts"],
+  "exclude": ["node_modules", ".next", "tests"]
+}

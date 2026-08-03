@@ -1,0 +1,355 @@
+import { mkdirSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { CHUNK_SIZE, GRID_SIZE } from "./map";
+
+export type GameDatabase = DatabaseSync;
+
+export const MAP_SCHEMA_VERSION = 4;
+
+const LAYERS = [
+  ["world-root", "八方世界", "嬴长嫚与楼夜秋之家、大宋与帕洛斯之间的世界总览。", null],
+  ["home-ground", "住宅一层", "嬴长嫚与楼夜秋之家的主要起居层。", "world-root"],
+  ["song-overview", "北宋舆图", "约1110年北宋全盛期的总览。", "world-root"],
+  ["palos-overview", "帕洛斯群岛", "帕洛斯群岛及公开扩展岛区的总览。", "world-root"],
+] as const;
+
+const REGIONS = [
+  ["home", "home-ground", "嬴长嫚与楼夜秋之家", "两人共同生活的现代多层住宅。", 320, 0, 320, 420],
+  ["song", "world-root", "大宋", "楼门路左侧尽头通往的大区域。", 80, 240, 320, 240],
+  ["palos", "world-root", "帕洛斯", "楼门路右侧通往的大区域。", 560, 240, 320, 240],
+] as const;
+
+const LOCATIONS = [
+  ["home-entrance", "home-ground", "玄关", "home", "嬴长嫚与楼夜秋之家的内外分界。", 3, 1],
+  ["loumen-road", "world-root", "楼门路", null, "屋外横贯东西的街道，左通大宋，右往帕洛斯。", 3, 2],
+  ["song-gate", "world-root", "大宋入口", "song", "由楼门路进入大宋的入口。", 2, 2],
+  ["palos-gate", "world-root", "帕洛斯入口", "palos", "由楼门路进入帕洛斯的入口。", 4, 2],
+  ["song-overview-entry", "song-overview", "北宋舆图入口", null, "从大宋入口进入北宋全盛期舆图。", 0, 0],
+  ["palos-overview-entry", "palos-overview", "帕洛斯群岛入口", null, "从帕洛斯入口进入群岛总览。", 0, 0],
+] as const;
+
+const ROUTES = [
+  ["route-entrance-road", "home-entrance", "loumen-road", "transition", null, null, "door"],
+  ["route-road-song", "loumen-road", "song-gate", "normal", "left", "right", null],
+  ["route-road-palos", "loumen-road", "palos-gate", "normal", "right", "left", null],
+  ["route-enter-song", "song-gate", "song-overview-entry", "transition", null, null, "gate"],
+  ["route-enter-palos", "palos-gate", "palos-overview-entry", "transition", null, null, "gate"],
+] as const;
+
+const ACTIONS = [
+  ["observe-entrance", "home-entrance", "整理衣装", "在玄关整理衣装，准备出门。", 0, 0, "{name}在玄关整理好衣装。"],
+  ["observe-road", "loumen-road", "观察街道", "看看楼门路上来往的人群。", 0, 0, "{name}站在楼门路上观察四周。"],
+  ["observe-song", "song-gate", "眺望大宋", "从入口眺望大宋方向。", 0, 0, "{name}在入口处眺望大宋。"],
+  ["observe-palos", "palos-gate", "眺望帕洛斯", "从入口眺望帕洛斯方向。", 0, 0, "{name}在入口处眺望帕洛斯。"],
+] as const;
+
+export function gridToWorld(grid: number) {
+  return grid * GRID_SIZE;
+}
+
+export function worldToChunk(world: number) {
+  return Math.floor(world / CHUNK_SIZE);
+}
+
+export function openGameDatabase(databasePath = process.env.DATABASE_PATH ?? resolve("data/wuxia.db")) {
+  if (databasePath !== ":memory:") mkdirSync(dirname(databasePath), { recursive: true });
+  const db = new DatabaseSync(databasePath);
+  db.exec("PRAGMA foreign_keys = ON");
+  db.exec("PRAGMA busy_timeout = 5000");
+  if (databasePath !== ":memory:") db.exec("PRAGMA journal_mode = WAL");
+  db.exec("PRAGMA synchronous = NORMAL");
+  migrate(db);
+  seed(db);
+  return db;
+}
+
+function hasColumn(db: GameDatabase, table: string, column: string) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  return columns.some((item) => item.name === column);
+}
+
+function addColumn(db: GameDatabase, table: string, definition: string) {
+  const column = definition.split(/\s+/, 1)[0];
+  if (!hasColumn(db, table, column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
+}
+
+function migrate(db: GameDatabase) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS world_state(
+      id INTEGER PRIMARY KEY CHECK (id=1), era TEXT NOT NULL, seed TEXT NOT NULL,
+      announcement TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS map_layers(
+      id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, description TEXT NOT NULL,
+      parent_layer_id TEXT REFERENCES map_layers(id), version INTEGER NOT NULL DEFAULT 1,
+      is_active INTEGER NOT NULL DEFAULT 1, seed_revision INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS map_regions(
+      id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, description TEXT NOT NULL,
+      x INTEGER NOT NULL, y INTEGER NOT NULL, width INTEGER NOT NULL CHECK(width>0),
+      height INTEGER NOT NULL CHECK(height>0), version INTEGER NOT NULL DEFAULT 1,
+      is_active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS locations(
+      id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, region TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL, x INTEGER NOT NULL, y INTEGER NOT NULL,
+      region_id TEXT REFERENCES map_regions(id), grid_x INTEGER NOT NULL DEFAULT 0,
+      grid_y INTEGER NOT NULL DEFAULT 0, chunk_x INTEGER NOT NULL DEFAULT 0,
+      chunk_y INTEGER NOT NULL DEFAULT 0, version INTEGER NOT NULL DEFAULT 1,
+      is_active INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS routes(
+      from_location TEXT NOT NULL REFERENCES locations(id), to_location TEXT NOT NULL REFERENCES locations(id),
+      stamina_cost INTEGER NOT NULL DEFAULT 0 CHECK(stamina_cost>=0), id TEXT,
+      route_type TEXT NOT NULL DEFAULT 'normal', from_direction TEXT, to_direction TEXT,
+      version INTEGER NOT NULL DEFAULT 1, is_active INTEGER NOT NULL DEFAULT 1,
+      PRIMARY KEY(from_location,to_location), CHECK(from_location<>to_location)
+    );
+    CREATE TABLE IF NOT EXISTS location_direction_slots(
+      location_id TEXT NOT NULL REFERENCES locations(id), direction TEXT NOT NULL,
+      route_id TEXT NOT NULL, target_location TEXT NOT NULL REFERENCES locations(id),
+      PRIMARY KEY(location_id,direction), UNIQUE(route_id,location_id)
+    );
+    CREATE TABLE IF NOT EXISTS action_definitions(
+      id TEXT PRIMARY KEY, location_id TEXT NOT NULL REFERENCES locations(id), name TEXT NOT NULL,
+      description TEXT NOT NULL, stamina_delta INTEGER NOT NULL DEFAULT 0,
+      silver_delta INTEGER NOT NULL DEFAULT 0, cultivation_delta INTEGER NOT NULL DEFAULT 0,
+      hp_delta INTEGER NOT NULL DEFAULT 0, result_template TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS players(
+      id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, title TEXT NOT NULL DEFAULT '初入世界',
+      hp INTEGER NOT NULL DEFAULT 100, max_hp INTEGER NOT NULL DEFAULT 100,
+      stamina INTEGER NOT NULL DEFAULT 80, max_stamina INTEGER NOT NULL DEFAULT 80,
+      cultivation INTEGER NOT NULL DEFAULT 0, silver INTEGER NOT NULL DEFAULT 20,
+      current_location TEXT NOT NULL REFERENCES locations(id), created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL, last_seen_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS player_progression(
+      player_id TEXT PRIMARY KEY REFERENCES players(id) ON DELETE CASCADE,
+      strength INTEGER NOT NULL DEFAULT 10, agility INTEGER NOT NULL DEFAULT 10,
+      constitution INTEGER NOT NULL DEFAULT 10, root INTEGER NOT NULL DEFAULT 10,
+      comprehension INTEGER NOT NULL DEFAULT 10, spirit INTEGER NOT NULL DEFAULT 10,
+      unspent_points INTEGER NOT NULL DEFAULT 0, realm_index INTEGER NOT NULL DEFAULT 0,
+      realm_level INTEGER NOT NULL DEFAULT 1, cultivation_progress INTEGER NOT NULL DEFAULT 0,
+      endurance INTEGER NOT NULL DEFAULT 120, training_anchor_at TEXT,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS cultivation_logs(
+      id INTEGER PRIMARY KEY AUTOINCREMENT, player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL, delta INTEGER NOT NULL, realm_index INTEGER NOT NULL,
+      realm_level INTEGER NOT NULL, detail TEXT NOT NULL, created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS location_effects(
+      location_id TEXT NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+      effect_type TEXT NOT NULL, multiplier REAL NOT NULL DEFAULT 1,
+      PRIMARY KEY(location_id,effect_type)
+    );
+    CREATE TABLE IF NOT EXISTS world_sources(
+      id TEXT PRIMARY KEY, title TEXT NOT NULL, url TEXT NOT NULL, content_version TEXT NOT NULL,
+      retrieved_at TEXT NOT NULL, notes TEXT NOT NULL DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS location_sources(
+      location_id TEXT NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+      source_id TEXT NOT NULL REFERENCES world_sources(id), source_key TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY(location_id,source_id)
+    );
+    CREATE TABLE IF NOT EXISTS sessions(
+      token_hash TEXT PRIMARY KEY, player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL, expires_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS action_logs(
+      id INTEGER PRIMARY KEY AUTOINCREMENT, player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL, action_id TEXT REFERENCES action_definitions(id), from_location TEXT REFERENCES locations(id),
+      to_location TEXT REFERENCES locations(id), result_text TEXT NOT NULL, created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS world_events(
+      id INTEGER PRIMARY KEY AUTOINCREMENT, player_id TEXT REFERENCES players(id) ON DELETE SET NULL,
+      event_type TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS chat_messages(
+      id INTEGER PRIMARY KEY AUTOINCREMENT, player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+      content TEXT NOT NULL, created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS map_edit_sessions(
+      id TEXT PRIMARY KEY, player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+      state TEXT NOT NULL DEFAULT 'active', lease_expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS map_edit_locks(
+      scope_key TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES map_edit_sessions(id) ON DELETE CASCADE,
+      player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE, lease_expires_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS map_edit_operations(
+      id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES map_edit_sessions(id) ON DELETE CASCADE,
+      operation_type TEXT NOT NULL, forward_json TEXT NOT NULL, inverse_json TEXT NOT NULL,
+      undone INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+    );
+  `);
+
+  const previousVersion = (db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number | null } | undefined)?.version ?? 0;
+  const now = new Date().toISOString();
+  const layerInsert = db.prepare(`INSERT OR IGNORE INTO map_layers(id,name,description,parent_layer_id,created_at,updated_at) VALUES (?,?,?,?,?,?)`);
+  for (const layer of LAYERS) layerInsert.run(...layer, now, now);
+
+  addColumn(db, "map_regions", "layer_id TEXT NOT NULL DEFAULT 'world-root' REFERENCES map_layers(id)");
+  addColumn(db, "map_regions", "seed_revision INTEGER NOT NULL DEFAULT 0");
+  addColumn(db, "locations", "region_id TEXT REFERENCES map_regions(id)");
+  addColumn(db, "locations", "layer_id TEXT NOT NULL DEFAULT 'world-root' REFERENCES map_layers(id)");
+  addColumn(db, "locations", "grid_x INTEGER NOT NULL DEFAULT 0");
+  addColumn(db, "locations", "grid_y INTEGER NOT NULL DEFAULT 0");
+  addColumn(db, "locations", "chunk_x INTEGER NOT NULL DEFAULT 0");
+  addColumn(db, "locations", "chunk_y INTEGER NOT NULL DEFAULT 0");
+  addColumn(db, "locations", "version INTEGER NOT NULL DEFAULT 1");
+  addColumn(db, "locations", "is_active INTEGER NOT NULL DEFAULT 1");
+  addColumn(db, "locations", "seed_revision INTEGER NOT NULL DEFAULT 0");
+  addColumn(db, "routes", "id TEXT");
+  addColumn(db, "routes", "route_type TEXT NOT NULL DEFAULT 'normal'");
+  addColumn(db, "routes", "transition_kind TEXT");
+  addColumn(db, "routes", "from_direction TEXT");
+  addColumn(db, "routes", "to_direction TEXT");
+  addColumn(db, "routes", "version INTEGER NOT NULL DEFAULT 1");
+  addColumn(db, "routes", "is_active INTEGER NOT NULL DEFAULT 1");
+  addColumn(db, "routes", "seed_revision INTEGER NOT NULL DEFAULT 0");
+
+  if (previousVersion < 2) db.exec("UPDATE routes SET is_active=0; UPDATE locations SET is_active=0;");
+  if (previousVersion < 3) {
+    db.prepare("UPDATE map_regions SET x=400,y=40,width=160,height=180,updated_at=? WHERE id='home' AND version=1").run(now);
+  }
+  if (previousVersion < 4) {
+    db.exec(`
+      UPDATE locations SET layer_id='home-ground' WHERE id='home-entrance';
+      UPDATE locations SET layer_id='world-root' WHERE id IN ('loumen-road','song-gate','palos-gate');
+      UPDATE map_regions SET layer_id='home-ground' WHERE id='home';
+      UPDATE map_regions SET layer_id='world-root' WHERE id IN ('song','palos');
+      UPDATE routes SET route_type='transition',transition_kind='door',stamina_cost=0,
+        from_direction=NULL,to_direction=NULL WHERE id='route-entrance-road';
+      DELETE FROM location_direction_slots WHERE route_id='route-entrance-road';
+      UPDATE routes SET stamina_cost=0;
+      UPDATE action_definitions SET stamina_delta=0,cultivation_delta=0;
+    `);
+    db.prepare(`
+      INSERT OR IGNORE INTO player_progression(
+        player_id,strength,agility,constitution,root,comprehension,spirit,
+        unspent_points,realm_index,realm_level,cultivation_progress,endurance,updated_at
+      ) SELECT id,10,10,10,10,10,10,0,0,1,MAX(0,cultivation),120,? FROM players
+    `).run(now);
+  }
+
+  db.exec(`
+    DROP INDEX IF EXISTS idx_active_grid;
+    CREATE INDEX IF NOT EXISTS idx_sessions_player ON sessions(player_id);
+    CREATE INDEX IF NOT EXISTS idx_events_created ON world_events(created_at DESC,id DESC);
+    CREATE INDEX IF NOT EXISTS idx_chat_created ON chat_messages(created_at DESC,id DESC);
+    CREATE INDEX IF NOT EXISTS idx_logs_player_created ON action_logs(player_id,created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_locations_chunk ON locations(layer_id,chunk_x,chunk_y,is_active);
+    CREATE INDEX IF NOT EXISTS idx_locations_region ON locations(region_id,is_active);
+    CREATE INDEX IF NOT EXISTS idx_locations_layer ON locations(layer_id,is_active);
+    CREATE INDEX IF NOT EXISTS idx_regions_layer ON map_regions(layer_id,is_active);
+    CREATE INDEX IF NOT EXISTS idx_routes_from ON routes(from_location,is_active);
+    CREATE INDEX IF NOT EXISTS idx_routes_to ON routes(to_location,is_active);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_routes_id ON routes(id) WHERE id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_active_grid ON locations(layer_id,grid_x,grid_y) WHERE is_active=1;
+    CREATE INDEX IF NOT EXISTS idx_locks_session ON map_edit_locks(session_id);
+    CREATE INDEX IF NOT EXISTS idx_operations_session ON map_edit_operations(session_id,id DESC);
+  `);
+  db.prepare("INSERT OR REPLACE INTO schema_migrations(version,applied_at) VALUES (?,?)").run(MAP_SCHEMA_VERSION, now);
+}
+
+function seed(db: GameDatabase) {
+  inTransaction(db, () => {
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO world_state(id,era,seed,announcement,updated_at)
+      VALUES (1,'北宋大观四年与帕洛斯世界','path-of-wuxia-v4','玄关之外，楼门路向左通往北宋，向右通往帕洛斯。',?)
+      ON CONFLICT(id) DO UPDATE SET era=excluded.era,seed=excluded.seed,announcement=excluded.announcement,updated_at=excluded.updated_at
+    `).run(now);
+
+    const layerStatement = db.prepare(`INSERT OR IGNORE INTO map_layers(id,name,description,parent_layer_id,seed_revision,created_at,updated_at) VALUES (?,?,?,?,1,?,?)`);
+    for (const layer of LAYERS) layerStatement.run(...layer, now, now);
+
+    const regionStatement = db.prepare(`
+      INSERT OR IGNORE INTO map_regions(id,layer_id,name,description,x,y,width,height,version,is_active,seed_revision,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,1,1,1,?,?)
+    `);
+    for (const region of REGIONS) regionStatement.run(...region, now, now);
+
+    const locationStatement = db.prepare(`
+      INSERT OR IGNORE INTO locations(
+        id,layer_id,name,region,description,x,y,region_id,grid_x,grid_y,chunk_x,chunk_y,version,is_active,seed_revision
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,1,1)
+    `);
+    for (const [id, layerId, name, regionId, description, gridX, gridY] of LOCATIONS) {
+      const x = gridToWorld(gridX);
+      const y = gridToWorld(gridY);
+      const regionName = regionId ? REGIONS.find((region) => region[0] === regionId)?.[2] ?? regionId : "公共区域";
+      locationStatement.run(id, layerId, name, regionName, description, x, y, regionId, gridX, gridY, worldToChunk(x), worldToChunk(y));
+    }
+
+    const routeStatement = db.prepare(`
+      INSERT OR IGNORE INTO routes(
+        from_location,to_location,stamina_cost,id,route_type,from_direction,to_direction,transition_kind,version,is_active,seed_revision
+      ) VALUES (?,?,0,?,?,?,?,?,1,1,1)
+    `);
+    const slotStatement = db.prepare(`INSERT OR IGNORE INTO location_direction_slots(location_id,direction,route_id,target_location) VALUES (?,?,?,?)`);
+    for (const [id, from, to, routeType, fromDirection, toDirection, kind] of ROUTES) {
+      routeStatement.run(from, to, id, routeType, fromDirection, toDirection, kind);
+      if (routeType === "normal" && fromDirection && toDirection) {
+        slotStatement.run(from, fromDirection, id, to);
+        slotStatement.run(to, toDirection, id, from);
+      }
+    }
+
+    const actionStatement = db.prepare(`
+      INSERT INTO action_definitions(id,location_id,name,description,stamina_delta,silver_delta,cultivation_delta,hp_delta,result_template)
+      VALUES (?,?,?,?,0,?,0,?,?)
+      ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description,
+        stamina_delta=0,silver_delta=excluded.silver_delta,cultivation_delta=0,hp_delta=excluded.hp_delta,result_template=excluded.result_template
+    `);
+    for (const action of ACTIONS) actionStatement.run(...action);
+
+    db.prepare(`
+      INSERT OR IGNORE INTO player_progression(player_id,cultivation_progress,endurance,updated_at)
+      SELECT id,MAX(0,cultivation),120,? FROM players
+    `).run(now);
+    db.prepare(`UPDATE players SET current_location='home-entrance',updated_at=? WHERE current_location NOT IN (SELECT id FROM locations WHERE is_active=1)`).run(now);
+    const eventCount = db.prepare("SELECT COUNT(*) AS count FROM world_events").get() as { count: number };
+    if (eventCount.count === 0) {
+      db.prepare(`INSERT INTO world_events(player_id,event_type,content,created_at) VALUES (NULL,'system','玄关的门被轻轻推开，新的世界由此展开。',?)`).run(now);
+    }
+  });
+}
+
+export function inTransaction<T>(db: GameDatabase, operation: () => T): T {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const result = operation();
+    db.exec("COMMIT");
+    return result;
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+declare global {
+  var __wuxiaDatabase: { path: string; db: GameDatabase } | undefined;
+}
+
+export function getGameDatabase() {
+  const databasePath = process.env.DATABASE_PATH ?? resolve("data/wuxia.db");
+  if (!globalThis.__wuxiaDatabase || globalThis.__wuxiaDatabase.path !== databasePath) {
+    globalThis.__wuxiaDatabase?.db.close();
+    globalThis.__wuxiaDatabase = { path: databasePath, db: openGameDatabase(databasePath) };
+  }
+  return globalThis.__wuxiaDatabase.db;
+}
+
+export function closeGameDatabase() {
+  if (!globalThis.__wuxiaDatabase) return;
+  globalThis.__wuxiaDatabase.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+  globalThis.__wuxiaDatabase.db.close();
+  globalThis.__wuxiaDatabase = undefined;
+}
