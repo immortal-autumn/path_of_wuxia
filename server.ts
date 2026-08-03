@@ -27,6 +27,12 @@ function readCookie(request: IncomingMessage, name: string) {
   return undefined;
 }
 
+function readBearerToken(request: IncomingMessage) {
+  const authorization = request.headers.authorization;
+  if (!authorization?.startsWith("Bearer ")) return undefined;
+  return authorization.slice("Bearer ".length).trim() || undefined;
+}
+
 function isSameOrigin(request: IncomingMessage) {
   const origin = request.headers.origin;
   if (!origin) return true;
@@ -89,7 +95,7 @@ async function main() {
 
   wss.on("connection", (socket, request) => {
     const token = readCookie(request, SESSION_COOKIE);
-    const player = service.getPlayerBySessionToken(token);
+    const player = service.getPlayerBySessionToken(token) ?? service.getPlayerByAgentToken(readBearerToken(request));
     if (!player) {
       socket.close(4001, "会话无效");
       return;

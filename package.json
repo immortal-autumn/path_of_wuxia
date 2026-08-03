@@ -6,6 +6,8 @@
     "dev": "tsx watch server.ts",
     "build": "next build && tsc -p tsconfig.server.json",
     "start": "NODE_ENV=production node .server/server.js",
+    "npc:start": "NODE_ENV=production node .server/scripts/npc-runner.js",
+    "npc:dev": "tsx scripts/npc-runner.ts",
     "lint": "eslint",
     "test": "vitest run",
     "test:e2e": "playwright test",

@@ -1,5 +1,8 @@
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import { DatabaseSync } from "node:sqlite";
+import WebSocket from "ws";
+import { npcAgentToken } from "../lib/game/npc-auth";
+import type { ServerMessage } from "../lib/game/protocol";
 
 async function enterWorld(page: Page) {
   await page.goto("/");
@@ -97,6 +100,42 @@ test.describe("entries and session identity", () => {
     await expect(page.getByRole("heading", { name: "地图设计工具" })).toBeVisible();
     await page.getByRole("link", { name: "返回游戏" }).click();
     await expect(page.locator(".character-heading h2")).toHaveText(name);
+  });
+
+  test("authenticates an isolated NPC actor and runs normal action commands over WebSocket", async () => {
+    await new Promise<void>((resolve, reject) => {
+      const socket = new WebSocket("ws://127.0.0.1:3200/ws", {
+        headers: { authorization: `Bearer ${npcAgentToken("npc-001")}` },
+      });
+      const timeout = setTimeout(() => {
+        socket.close();
+        reject(new Error("NPC WebSocket flow timed out"));
+      }, 8_000);
+      let cancelSent = false;
+      socket.on("message", (raw) => {
+        const message = JSON.parse(raw.toString()) as ServerMessage;
+        if (message.type === "snapshot") {
+          expect(message.snapshot.self.id).toBe("npc-001");
+          expect(message.snapshot.self).not.toHaveProperty("controllerKind");
+          socket.send(JSON.stringify({ type: "action.start", requestId: "npc-action-start", actionId: "action-observe" }));
+        }
+        if (message.type === "action.updated" && message.actionState.current && !cancelSent) {
+          cancelSent = true;
+          socket.send(JSON.stringify({ type: "action.cancel", requestId: "npc-action-cancel", jobId: message.actionState.current.id }));
+        }
+        if (message.type === "ack" && message.requestId === "npc-action-cancel") {
+          clearTimeout(timeout);
+          socket.close();
+          resolve();
+        }
+        if (message.type === "error") {
+          clearTimeout(timeout);
+          socket.close();
+          reject(new Error(message.message));
+        }
+      });
+      socket.on("error", reject);
+    });
   });
 });
 

@@ -13,6 +13,9 @@ import {
   minorAttributePoints,
 } from "../lib/game/progression";
 import { GameService } from "../lib/game/service";
+import { npcAgentToken } from "../lib/game/npc-auth";
+import { UtilityNpcController } from "../lib/game/npc-controller";
+import { ensureNpcPopulation, NPC_POPULATION } from "../lib/game/npc-seed";
 import { importWorldSeed } from "../lib/game/world-seed";
 import { validateWorldMap } from "../lib/game/world-validation";
 
@@ -108,6 +111,26 @@ describe("GameService", () => {
     expect(db.prepare("SELECT action_template_id FROM action_logs WHERE player_id=? AND kind='action'").get(player.id))
       .toEqual({ action_template_id: "observe-road" });
     expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  });
+
+  it("seeds 240 persistent credentialed NPC actors without exposing controller identity publicly", async () => {
+    expect(db.prepare("SELECT COUNT(*) AS count FROM players WHERE controller_kind='npc'").get()).toEqual({ count: NPC_POPULATION });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM npc_profiles").get()).toEqual({ count: NPC_POPULATION });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM agent_credentials WHERE label='npc-runner'").get()).toEqual({ count: NPC_POPULATION });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM sessions s JOIN players p ON p.id=s.player_id WHERE p.controller_kind='npc'").get()).toEqual({ count: 0 });
+    ensureNpcPopulation(db, clock.toISOString());
+    expect(db.prepare("SELECT COUNT(*) AS count FROM npc_profiles").get()).toEqual({ count: NPC_POPULATION });
+
+    const npc = service.getPlayerByAgentToken(npcAgentToken("npc-001"));
+    expect(npc).toMatchObject({ id: "npc-001", defeated: false });
+    expect(service.getPlayerByAgentToken("invalid-agent-token")).toBeNull();
+    const publicNpc = service.getOnlinePlayers(["npc-001"])[0];
+    expect(publicNpc).toEqual(expect.objectContaining({ id: "npc-001", name: npc!.name, currentLocation: npc!.currentLocation }));
+    expect(publicNpc).not.toHaveProperty("controllerKind");
+
+    const snapshot = service.getSnapshot("npc-001", ["npc-001"]);
+    const decision = await new UtilityNpcController(() => 0).decide({ actorId: "npc-001", snapshot, serverTime: snapshot.world.serverTime });
+    expect(decision).toMatchObject({ type: "action.start" });
   });
 
   it("runs one real-time action with eight reorderable queued actions and settles by server time", () => {

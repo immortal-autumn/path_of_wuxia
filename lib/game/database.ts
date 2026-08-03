@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { applyWorldSeed } from "./world-seed";
+import { ensureNpcPopulation } from "./npc-seed";
 
 export type GameDatabase = DatabaseSync;
 
@@ -486,6 +487,7 @@ function seed(db: GameDatabase) {
     `).run(now);
 
     applyWorldSeed(db);
+    ensureNpcPopulation(db, now);
 
     db.prepare(`
       INSERT OR IGNORE INTO player_progression(player_id,cultivation_progress,endurance,updated_at)

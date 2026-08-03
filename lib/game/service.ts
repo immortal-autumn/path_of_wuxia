@@ -24,6 +24,7 @@ import {
 } from "./progression";
 import { createWorldStatus } from "./time";
 import { ensureStarterInventory } from "./item-catalog";
+import { agentTokenHash } from "./npc-auth";
 import type {
   ActionJob,
   ActionOutcome,
@@ -764,6 +765,18 @@ export class GameService {
     const row = this.db.prepare(`
       SELECT p.id FROM sessions s JOIN players p ON p.id=s.player_id WHERE s.token_hash=? AND s.expires_at>?
     `).get(tokenHash(token), this.now().toISOString()) as { id: string } | undefined;
+    if (!row) return null;
+    this.settleActionQueue(row.id, true);
+    return this.settleCultivation(row.id, true).player;
+  }
+
+  getPlayerByAgentToken(token: string | undefined) {
+    if (!token) return null;
+    const row = this.db.prepare(`
+      SELECT p.id FROM agent_credentials credential JOIN players p ON p.id=credential.player_id
+      WHERE credential.token_hash=? AND credential.revoked_at IS NULL
+        AND (credential.expires_at IS NULL OR credential.expires_at>?) AND p.controller_kind='npc'
+    `).get(agentTokenHash(token), this.now().toISOString()) as { id: string } | undefined;
     if (!row) return null;
     this.settleActionQueue(row.id, true);
     return this.settleCultivation(row.id, true).player;
