@@ -182,7 +182,7 @@ test.describe("game map", () => {
     await expect(page.getByRole("status")).toContainText("行动规则已停用");
   });
 
-  test("shows only the current map's three-step rectangular-node neighborhood and free direction controls", async ({ page }) => {
+  test("shows the current map as a structured three-step rectangular-node neighborhood", async ({ page }) => {
     await enterWorld(page);
     await expect(page.getByLabel("世界地图")).toBeVisible();
     await expect(page.locator(".map-node")).toHaveCount(11);
@@ -194,11 +194,19 @@ test.describe("game map", () => {
     await expect(page.locator(".map-node.current")).toContainText("玄关");
     await expect(page.locator(".map-node.current .node-box")).toHaveAttribute("width", "120");
     await expect(page.locator(".map-node.current .node-box")).toHaveAttribute("height", "72");
-    await expect(page.getByLabel("地图信息")).toContainText("当前位置玄关 · (0, 0)");
-    await expect(page.getByLabel("地图信息")).toContainText("三步视野10 处 · 轻功 2 处");
+    await expect(page.locator(".map-region-plane")).toHaveCount(1);
+    expect(await page.locator(".map-grid-line").count()).toBeGreaterThan(0);
+    await expect(page.locator(".map-route.active-route")).toHaveCount(2);
+    await expect(page.locator(".route-step-marker")).toHaveCount(2);
+    await expect(page.locator(".map-node .node-shadow")).toHaveCount(11);
+    await expect(page.locator(".map-node .node-depth-edge")).toHaveCount(11);
+    await expect(page.getByLabel("地图方位")).toBeVisible();
+    await expect(page.getByLabel("地图方位")).toContainText(/上.*左.*方位.*右.*下/);
+    await expect(page.getByLabel("地图信息")).toContainText("地图中心玄关 · (0, 0)");
+    await expect(page.getByLabel("地图信息")).toContainText("三步结构10 地点");
     expect(await page.locator(".map-node .node-name").allTextContents()).toEqual(expect.arrayContaining(["玄关", "前庭", "门厅", "客厅", "餐厅", "修炼房"]));
     await page.getByRole("button", { name: /嬴长嫚与楼夜秋之家·门厅.*可前往/ }).hover();
-    await expect(page.getByLabel("地图信息")).toContainText("指向地点嬴长嫚与楼夜秋之家·门厅 · (0, 1)");
+    await expect(page.getByLabel("地图信息")).toContainText("聚焦地点嬴长嫚与楼夜秋之家·门厅 · (0, 1)");
     expect(await page.locator(".node-name").evaluateAll((nodes) => nodes.every((node) => (
       node.scrollWidth <= node.clientWidth && node.scrollHeight <= node.clientHeight
     )))).toBe(true);
@@ -208,7 +216,7 @@ test.describe("game map", () => {
     await expect(page.getByLabel("世界状态")).toContainText("中国标准时间");
     await expect(page.getByLabel("角色状态")).toContainText("嬴长嫚与楼夜秋之家");
     await moveTo(page, "嬴长嫚与楼夜秋之家·门厅");
-    await expect(page.getByLabel("地图信息")).toContainText("当前位置嬴长嫚与楼夜秋之家·门厅");
+    await expect(page.getByLabel("地图信息")).toContainText("地图中心嬴长嫚与楼夜秋之家·门厅");
     await expect(page.getByLabel(/耐力 \d+\/\d+/)).toHaveAttribute("aria-label", endurance!);
     await expect(page.getByLabel("下一步可前往地点")).toContainText("上 · 玄关");
     await expect(page.getByLabel("下一步可前往地点")).toContainText("左 · 嬴长嫚与楼夜秋之家·客用卫生间");
@@ -303,7 +311,7 @@ test.describe("game map", () => {
     await expect(detail).toContainText("冷却可以发动");
     await detail.getByRole("button", { name: "确认发动开启鹰眼" }).click();
     await expect(page.getByRole("status")).toContainText("开启鹰眼成功");
-    await expect(page.getByLabel("地图信息")).toContainText("四步视野");
+    await expect(page.getByLabel("地图信息")).toContainText("四步结构");
     await expect(page.getByLabel("个人行动记录")).toContainText("开启鹰眼成功");
     await expect(eagleSkill).toContainText("持续中");
     await expect(page.getByLabel("行动队列").locator(".queue-job")).toHaveCount(0);
@@ -313,7 +321,7 @@ test.describe("game map", () => {
     await expect(detail).toContainText("效果剩余");
     await detail.getByRole("button", { name: "停止鹰眼" }).click();
     await expect(page.getByRole("status")).toContainText("主动停止了鹰眼");
-    await expect(page.getByLabel("地图信息")).toContainText("三步视野");
+    await expect(page.getByLabel("地图信息")).toContainText("三步结构");
     await expect(eagleSkill).toContainText("冷却剩余");
     await eagleSkill.click();
     detail = page.getByRole("dialog", { name: "技能详情：鹰眼" });
@@ -608,7 +616,8 @@ test.describe("real-time multiplayer", () => {
     const hallNode = second.getByRole("button", { name: /嬴长嫚与楼夜秋之家·门厅.*可前往/ });
     await expect(hallNode.locator(".node-name")).toHaveText("门厅");
     await expect(hallNode).not.toContainText("在线");
-    await expect(second.getByLabel("地图信息")).toContainText("三步视野10 处 · 轻功 2 处 · 2 人");
+    await expect(second.getByLabel("地图信息")).toContainText("三步结构10 地点");
+    await expect(second.getByLabel("地图信息")).toContainText("2 人");
     await firstContext.close();
     await expect(second.getByLabel("世界状态")).toContainText("1 位侠客在线");
     await secondContext.close();

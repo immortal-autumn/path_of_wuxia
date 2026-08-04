@@ -242,12 +242,17 @@ function MapPanel({
   const inspectedQinggongTarget = inspectedLocationId ? qinggongTargetMap.get(inspectedLocationId) : null;
   const nearbyPlayers = onlinePlayers.filter((player) => visibleLocationIds.has(player.currentLocation));
 
+  const mapBounds = useMemo(() => {
+    if (visibleLocations.length === 0) return { minX: -260, minY: -160, maxX: 260, maxY: 160 };
+    return {
+      minX: Math.min(...visibleLocations.map((location) => location.x)) - 110,
+      minY: Math.min(...visibleLocations.map((location) => location.y)) - 110,
+      maxX: Math.max(...visibleLocations.map((location) => location.x)) + 110,
+      maxY: Math.max(...visibleLocations.map((location) => location.y)) + 110,
+    };
+  }, [visibleLocations]);
   const viewBox = useMemo(() => {
-    if (visibleLocations.length === 0) return "-260 -160 520 320";
-    const minX = Math.min(...visibleLocations.map((location) => location.x)) - 90;
-    const minY = Math.min(...visibleLocations.map((location) => location.y)) - 90;
-    const maxX = Math.max(...visibleLocations.map((location) => location.x)) + 90;
-    const maxY = Math.max(...visibleLocations.map((location) => location.y)) + 90;
+    const { minX, minY, maxX, maxY } = mapBounds;
     const contentWidth = maxX - minX;
     const contentHeight = maxY - minY;
     const width = Math.max(520, contentWidth);
@@ -255,7 +260,37 @@ function MapPanel({
     const centerX = (minX + maxX) / 2;
     const centerY = (minY + maxY) / 2;
     return `${centerX - width / 2} ${centerY - height / 2} ${width} ${height}`;
+  }, [mapBounds]);
+  const regionPlanes = useMemo(() => {
+    const groups = new Map<string, Location[]>();
+    for (const location of visibleLocations) {
+      const key = location.region || "无名区域";
+      groups.set(key, [...(groups.get(key) ?? []), location]);
+    }
+    return [...groups.entries()].map(([name, regionLocations]) => {
+      const minX = Math.min(...regionLocations.map((location) => location.x)) - 78;
+      const minY = Math.min(...regionLocations.map((location) => location.y)) - 78;
+      const maxX = Math.max(...regionLocations.map((location) => location.x)) + 78;
+      const maxY = Math.max(...regionLocations.map((location) => location.y)) + 78;
+      return { name, label: conciseLocationName(name), minX, minY, width: maxX - minX, height: maxY - minY };
+    });
   }, [visibleLocations]);
+  const gridColumns = useMemo(
+    () => [...new Set(visibleLocations.map((location) => location.x))].sort((a, b) => a - b),
+    [visibleLocations],
+  );
+  const gridRows = useMemo(
+    () => [...new Set(visibleLocations.map((location) => location.y))].sort((a, b) => a - b),
+    [visibleLocations],
+  );
+  const visibleLocationsByDepth = useMemo(
+    () => [...visibleLocations].sort((left, right) => {
+      const leftDistance = distances.get(left.id) ?? qinggongTargetMap.get(left.id)?.distance ?? 0;
+      const rightDistance = distances.get(right.id) ?? qinggongTargetMap.get(right.id)?.distance ?? 0;
+      return rightDistance - leftDistance;
+    }),
+    [distances, qinggongTargetMap, visibleLocations],
+  );
 
   const activateLocation = (location: Location) => {
     if (pending) return;
@@ -282,42 +317,103 @@ function MapPanel({
           <h2>{currentLayer.name} · 局部地图</h2>
         </div>
         <div className="map-title-actions">
-          <p>实线框为下一步；双线框为可立即施展轻功抵达的地点。</p>
+          <p>粗线是一步道路，细线是远处路网；地点按距离形成前、中、后景。</p>
           <button type="button" onClick={onOpenVisitedMap} disabled={visitedMapLoading}>
             {visitedMapLoading ? "读取足迹…" : "足迹地图"}
           </button>
         </div>
       </header>
       <dl className="map-status" aria-label="地图信息">
-        <div><dt>当前位置</dt><dd>{currentLocation ? `${currentLocation.name} · (${currentLocation.gridX}, ${currentLocation.gridY})` : "未知之地"}</dd></div>
-        <div><dt>指向地点</dt><dd>{inspectedLocation
+        <div><dt>地图中心</dt><dd>{currentLocation ? `${currentLocation.name} · (${currentLocation.gridX}, ${currentLocation.gridY})` : "未知之地"}</dd></div>
+        <div><dt>聚焦地点</dt><dd>{inspectedLocation
           ? `${inspectedLocation.name} · (${inspectedLocation.gridX}, ${inspectedLocation.gridY})${inspectedQinggongTarget
             ? ` · 轻功${DIRECTION_LABEL[inspectedQinggongTarget.direction]} ${inspectedQinggongTarget.distance}格 · ${cooldownRemainingText(inspectedQinggongTarget.cooldownUntil, now)}`
             : ""}`
           : "悬停或聚焦查看全名"}</dd></div>
-        <div><dt>所属区域</dt><dd>{currentLocation?.region ?? "无名区域"}</dd></div>
-        <div><dt>{visionDepthText(self.visionDepth)}步视野</dt><dd>{ordinaryVisibleCount} 处 · 轻功 {qinggongTargets.length} 处 · {nearbyPlayers.length} 人</dd></div>
+        <div><dt>区域结构</dt><dd>{currentLocation?.region ?? "无名区域"} · {regionPlanes.length} 区</dd></div>
+        <div><dt>{visionDepthText(self.visionDepth)}步结构</dt><dd>{ordinaryVisibleCount} 地点 · {visibleRoutes.length} 道路 · {nearbyPlayers.length} 人</dd></div>
       </dl>
       <div className="map-stage">
+        <div className="map-orientation" aria-label="地图方位">
+          <span className="orientation-up">上</span><span className="orientation-left">左</span>
+          <i>方位</i><span className="orientation-right">右</span><span className="orientation-down">下</span>
+        </div>
+        <div className="map-structure-chip" aria-hidden="true">中心 0 · 前景 1 · 中景 2 · 后景 {visionDepthText(self.visionDepth)}</div>
         <svg className="wuxia-map" viewBox={viewBox} role="img" aria-label={`当前位置${visionDepthText(self.visionDepth)}步视野与轻功落点地图`}>
+          <defs>
+            <filter id="region-plane-shadow" x="-10%" y="-10%" width="130%" height="140%">
+              <feDropShadow dx="9" dy="11" stdDeviation="0" floodColor="#dedede" />
+            </filter>
+          </defs>
+          {regionPlanes.map((region) => (
+            <g className="map-region-group" key={region.name} aria-hidden="true">
+              <title>{region.name}</title>
+              <rect
+                className="map-region-plane"
+                x={region.minX}
+                y={region.minY}
+                width={region.width}
+                height={region.height}
+                filter="url(#region-plane-shadow)"
+              />
+              <text className="map-region-label" x={region.minX + 14} y={region.minY + 24}>{region.label}</text>
+            </g>
+          ))}
+          <g className="map-coordinate-grid" aria-hidden="true">
+            {gridColumns.map((x) => (
+              <line
+                key={`grid-x-${x}`}
+                className={`map-grid-line ${currentLocation?.x === x ? "current-axis" : ""}`}
+                x1={x}
+                y1={mapBounds.minY}
+                x2={x}
+                y2={mapBounds.maxY}
+              />
+            ))}
+            {gridRows.map((y) => (
+              <line
+                key={`grid-y-${y}`}
+                className={`map-grid-line ${currentLocation?.y === y ? "current-axis" : ""}`}
+                x1={mapBounds.minX}
+                y1={y}
+                x2={mapBounds.maxX}
+                y2={y}
+              />
+            ))}
+          </g>
           {visibleRoutes.map((route) => {
             const from = locationMap.get(route.fromLocation);
             const to = locationMap.get(route.toLocation);
             if (!from || !to) return null;
+            const fromCurrent = from.id === self.currentLocation;
+            const toCurrent = to.id === self.currentLocation;
+            const activeRoute = fromCurrent || toCurrent;
+            const x1 = toCurrent ? to.x : from.x;
+            const y1 = toCurrent ? to.y : from.y;
+            const x2 = toCurrent ? from.x : to.x;
+            const y2 = toCurrent ? from.y : to.y;
             return (
-              <line
-                key={`${route.fromLocation}-${route.toLocation}`}
-                className={`map-route ${route.routeType}`}
-                x1={from.x}
-                y1={from.y}
-                x2={to.x}
-                y2={to.y}
-              >
-                <title>{route.routeType === "portal" ? "传送门" : route.fromDirection ? DIRECTION_LABEL[route.fromDirection] : "路线"}</title>
-              </line>
+              <g className="map-route-group" key={`${route.fromLocation}-${route.toLocation}`}>
+                <line className={`map-route-shadow ${activeRoute ? "active-route" : "distant-route"}`} x1={x1} y1={y1} x2={x2} y2={y2} />
+                <line
+                  className={`map-route ${route.routeType} ${activeRoute ? "active-route" : "distant-route"}`}
+                  x1={x1}
+                  y1={y1}
+                  x2={x2}
+                  y2={y2}
+                >
+                  <title>{route.routeType === "portal" ? "传送门" : route.fromDirection ? DIRECTION_LABEL[route.fromDirection] : "路线"}</title>
+                </line>
+                {activeRoute && (
+                  <g className="route-step" aria-hidden="true">
+                    <circle className="route-step-marker" cx={(x1 + x2) / 2} cy={(y1 + y2) / 2} r="8" />
+                    <text className="route-step-number" x={(x1 + x2) / 2} y={(y1 + y2) / 2}>1</text>
+                  </g>
+                )}
+              </g>
             );
           })}
-          {visibleLocations.map((location) => {
+          {visibleLocationsByDepth.map((location) => {
             const current = location.id === self.currentLocation;
             const reachable = adjacent.has(location.id);
             const qinggongTarget = qinggongTargetMap.get(location.id);
@@ -332,6 +428,7 @@ function MapPanel({
                 data-location-id={location.id}
                 data-ordinary-visible={distances.has(location.id) ? "true" : undefined}
                 data-qinggong-target={qinggongTarget ? "true" : undefined}
+                data-region={location.region}
                 transform={`translate(${location.x} ${location.y})`}
                 role="button"
                 tabIndex={canActivate ? 0 : -1}
@@ -350,6 +447,9 @@ function MapPanel({
                 onFocus={() => setInspectedLocationId(location.id)}
                 onBlur={() => setInspectedLocationId(null)}
               >
+                <title>{`${location.name} · ${location.region} · 距离 ${distance}`}</title>
+                <rect className="node-shadow" x="-53" y="-29" width="120" height="72" />
+                <path className="node-depth-edge" d="M60 -36 L67 -29 L67 43 L60 36 Z M-60 36 L-53 43 L67 43 L60 36 Z" />
                 {qinggongTarget && <rect className="qinggong-ring" x="-67" y="-43" width="134" height="86" />}
                 <rect className="node-box" x="-60" y="-36" width="120" height="72" />
                 <foreignObject x="-56" y="-32" width="112" height="64" pointerEvents="none">
