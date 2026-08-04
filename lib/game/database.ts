@@ -522,7 +522,7 @@ function seed(db: GameDatabase) {
     const now = new Date().toISOString();
     db.prepare(`
       INSERT INTO world_state(id,era,seed,announcement,updated_at)
-      VALUES (1,'北宋东京开封府与帕洛斯世界','path-of-wuxia-world-v8','单层住宅之外是一张连续大地图：楼门路向西进入北宋东京开封府的城门、御街、河桥与坊市路网，向东接入帕洛斯群岛坐标图。',?)
+      VALUES (1,'北宋东京开封府与帕洛斯世界','path-of-wuxia-world-v9','单层住宅之外是一张连续大地图：楼门路向西进入北宋东京开封府的城门、御街、河桥与坊市路网，五座重要建筑可由街面入口进入单层内部，向东接入帕洛斯群岛坐标图。',?)
       ON CONFLICT(id) DO UPDATE SET era=excluded.era,seed=excluded.seed,announcement=excluded.announcement,updated_at=excluded.updated_at
     `).run(now);
 

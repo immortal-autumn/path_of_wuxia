@@ -2,7 +2,7 @@ import { directionBetween, OPPOSITE_DIRECTION } from "./map";
 import { PALWORLD_MARKER_COORDINATES } from "./palworld-coordinates";
 import type { Direction, RouteType, TransitionKind } from "./types";
 
-export const WORLD_SEED_REVISION = 8;
+export const WORLD_SEED_REVISION = 9;
 export const WORLD_SEED_RETRIEVED_AT = "2026-08-04";
 
 export type WorldSeedSource = {
@@ -200,6 +200,158 @@ const KAIFENG_LANDMARKS = [
   ["market-sweet-lane", "甜水巷", -25, 11, "南食店、客店与馆舍聚集的坊巷。", "卷三/寺东门街巷/甜水巷"],
 ] as const;
 
+const KAIFENG_BUILDINGS = [
+  {
+    layerId: "kaifeng-palace-ground",
+    layerName: "大内宫城·一层平面",
+    layerDescription: "由宣德门进入的大内宫城单层平面；正殿、常朝殿与后殿沿中轴展开。",
+    regionId: "kaifeng-palace",
+    regionName: "大内宫城",
+    exteriorId: "song-landmark-gate-xuande",
+    interiorEntranceId: "kaifeng-palace-xuande-inner",
+    transitionKind: "gate",
+    locations: [
+      ["kaifeng-palace-xuande-inner", "宣德门内", 0, 3, "越过宣德门后的宫城入口。"],
+      ["kaifeng-palace-dragon-court", "龙墀", 0, 2, "宣德楼内连接前朝诸殿的宽阔御道。"],
+      ["kaifeng-palace-daqing", "大庆殿", 0, 1, "举行正朔朝会与大礼的正殿。"],
+      ["kaifeng-palace-wende", "文德殿", 0, 0, "皇帝日常视朝的常朝殿。"],
+      ["kaifeng-palace-zichen", "紫宸殿", 0, -1, "内朝受朝所用宫殿。"],
+      ["kaifeng-palace-chongzheng", "崇政殿", 0, -2, "处理政务与召对臣僚的后殿。"],
+      ["kaifeng-palace-west-gallery", "西庑", -1, 0, "文德殿西侧廊庑。"],
+      ["kaifeng-palace-east-gallery", "东庑", 1, 0, "文德殿东侧廊庑。"],
+      ["kaifeng-palace-inner-garden", "内宫苑", 1, -2, "后殿东侧供禁中休憩的小苑。"],
+    ],
+    links: [
+      ["kaifeng-palace-xuande-inner", "kaifeng-palace-dragon-court"],
+      ["kaifeng-palace-dragon-court", "kaifeng-palace-daqing"],
+      ["kaifeng-palace-daqing", "kaifeng-palace-wende"],
+      ["kaifeng-palace-wende", "kaifeng-palace-zichen"],
+      ["kaifeng-palace-zichen", "kaifeng-palace-chongzheng"],
+      ["kaifeng-palace-wende", "kaifeng-palace-west-gallery"],
+      ["kaifeng-palace-wende", "kaifeng-palace-east-gallery"],
+      ["kaifeng-palace-chongzheng", "kaifeng-palace-inner-garden"],
+    ],
+  },
+  {
+    layerId: "kaifeng-prefecture-ground",
+    layerName: "开封府署·一层平面",
+    layerDescription: "开封府正门、仪门、正堂与办案属房组成的单层府署。",
+    regionId: "kaifeng-prefecture",
+    regionName: "开封府署",
+    exteriorId: "song-landmark-office-kaifeng",
+    interiorEntranceId: "kaifeng-prefecture-gate",
+    transitionKind: "door",
+    locations: [
+      ["kaifeng-prefecture-gate", "府署正门内", 0, 3, "从浚仪桥大街进入开封府后的门内。"],
+      ["kaifeng-prefecture-front-court", "前院", 0, 2, "府吏与来访百姓等候通传的前院。"],
+      ["kaifeng-prefecture-ceremonial-gate", "仪门", 0, 1, "前院与审理区域之间的仪门。"],
+      ["kaifeng-prefecture-main-hall", "府署正堂", 0, 0, "开封府公开审理京城事务的正堂。"],
+      ["kaifeng-prefecture-rear-hall", "后堂", 0, -1, "正堂之后商议与复核案情的厅堂。"],
+      ["kaifeng-prefecture-archive", "架阁库", -1, 0, "收存公文、案牍与城市户籍的库房。"],
+      ["kaifeng-prefecture-duty-room", "签押房", 1, 0, "属官签押文书与轮值办公的房间。"],
+      ["kaifeng-prefecture-jail", "狱房", -1, 1, "府署西侧看守待审人犯的狱房。"],
+    ],
+    links: [
+      ["kaifeng-prefecture-gate", "kaifeng-prefecture-front-court"],
+      ["kaifeng-prefecture-front-court", "kaifeng-prefecture-ceremonial-gate"],
+      ["kaifeng-prefecture-ceremonial-gate", "kaifeng-prefecture-main-hall"],
+      ["kaifeng-prefecture-main-hall", "kaifeng-prefecture-rear-hall"],
+      ["kaifeng-prefecture-main-hall", "kaifeng-prefecture-archive"],
+      ["kaifeng-prefecture-main-hall", "kaifeng-prefecture-duty-room"],
+      ["kaifeng-prefecture-ceremonial-gate", "kaifeng-prefecture-jail"],
+    ],
+  },
+  {
+    layerId: "kaifeng-xiangguo-ground",
+    layerName: "大相国寺·一层平面",
+    layerDescription: "山门、殿阁、院落与万姓交易廊组成的大相国寺单层平面。",
+    regionId: "kaifeng-xiangguo",
+    regionName: "大相国寺",
+    exteriorId: "song-landmark-temple-xiangguo",
+    interiorEntranceId: "kaifeng-xiangguo-gate",
+    transitionKind: "gate",
+    locations: [
+      ["kaifeng-xiangguo-gate", "山门内", 0, 3, "由潘楼街进入寺院后的山门内。"],
+      ["kaifeng-xiangguo-market-court", "万姓交易院", 0, 2, "开放日供百工器物与书画交易的院落。"],
+      ["kaifeng-xiangguo-heavenly-kings", "天王殿", 0, 1, "山门之后的前殿。"],
+      ["kaifeng-xiangguo-main-hall", "大雄宝殿", 0, 0, "寺院中轴上的主殿。"],
+      ["kaifeng-xiangguo-luohan", "罗汉院", -1, 0, "主殿西侧供奉罗汉的院落。"],
+      ["kaifeng-xiangguo-zisheng", "资圣阁", 1, 0, "主殿东侧收藏经像的阁院。"],
+      ["kaifeng-xiangguo-west-market", "西市廊", -1, 1, "万姓交易时陈列书籍古玩的西廊。"],
+      ["kaifeng-xiangguo-east-market", "东市廊", 1, 1, "万姓交易时陈列器用百货的东廊。"],
+      ["kaifeng-xiangguo-rear-court", "后院", 0, -1, "主殿之后较为清静的院落。"],
+    ],
+    links: [
+      ["kaifeng-xiangguo-gate", "kaifeng-xiangguo-market-court"],
+      ["kaifeng-xiangguo-market-court", "kaifeng-xiangguo-heavenly-kings"],
+      ["kaifeng-xiangguo-heavenly-kings", "kaifeng-xiangguo-main-hall"],
+      ["kaifeng-xiangguo-main-hall", "kaifeng-xiangguo-rear-court"],
+      ["kaifeng-xiangguo-main-hall", "kaifeng-xiangguo-luohan"],
+      ["kaifeng-xiangguo-main-hall", "kaifeng-xiangguo-zisheng"],
+      ["kaifeng-xiangguo-heavenly-kings", "kaifeng-xiangguo-west-market"],
+      ["kaifeng-xiangguo-heavenly-kings", "kaifeng-xiangguo-east-market"],
+    ],
+  },
+  {
+    layerId: "kaifeng-guozijian-ground",
+    layerName: "国子监·一层平面",
+    layerDescription: "讲堂、经阁、博士厅与太学斋舍组成的国子监单层平面。",
+    regionId: "kaifeng-guozijian",
+    regionName: "国子监",
+    exteriorId: "song-landmark-academy-guozijian",
+    interiorEntranceId: "kaifeng-guozijian-gate",
+    transitionKind: "gate",
+    locations: [
+      ["kaifeng-guozijian-gate", "监门内", 0, 3, "朱雀门外国子监的正门内。"],
+      ["kaifeng-guozijian-front-court", "前院", 0, 2, "师生入监后整肃衣冠的前院。"],
+      ["kaifeng-guozijian-lecture-hall", "讲堂", 0, 1, "博士讲授经义的主讲堂。"],
+      ["kaifeng-guozijian-classics-hall", "经阁", 0, 0, "校勘与收藏经籍的厅阁。"],
+      ["kaifeng-guozijian-west-dormitory", "西斋", -1, 1, "太学生居学的西侧斋舍。"],
+      ["kaifeng-guozijian-east-dormitory", "东斋", 1, 1, "太学生居学的东侧斋舍。"],
+      ["kaifeng-guozijian-doctors-hall", "博士厅", -1, 0, "学官议课与考校的厅房。"],
+      ["kaifeng-guozijian-library", "藏书房", 1, 0, "收存监学书籍与课卷的房间。"],
+    ],
+    links: [
+      ["kaifeng-guozijian-gate", "kaifeng-guozijian-front-court"],
+      ["kaifeng-guozijian-front-court", "kaifeng-guozijian-lecture-hall"],
+      ["kaifeng-guozijian-lecture-hall", "kaifeng-guozijian-classics-hall"],
+      ["kaifeng-guozijian-lecture-hall", "kaifeng-guozijian-west-dormitory"],
+      ["kaifeng-guozijian-lecture-hall", "kaifeng-guozijian-east-dormitory"],
+      ["kaifeng-guozijian-classics-hall", "kaifeng-guozijian-doctors-hall"],
+      ["kaifeng-guozijian-classics-hall", "kaifeng-guozijian-library"],
+    ],
+  },
+  {
+    layerId: "kaifeng-panlou-ground",
+    layerName: "潘楼酒店·一层平面",
+    layerDescription: "临街门厅、大堂、雅间与后厨组成的潘楼酒店一层平面。",
+    regionId: "kaifeng-panlou",
+    regionName: "潘楼酒店",
+    exteriorId: "song-landmark-market-patlou",
+    interiorEntranceId: "kaifeng-panlou-entrance",
+    transitionKind: "door",
+    locations: [
+      ["kaifeng-panlou-entrance", "门厅", 0, 2, "从潘楼街进入酒店的临街门厅。"],
+      ["kaifeng-panlou-main-hall", "酒楼大堂", 0, 1, "食客听曲、饮酒与会友的宽敞大堂。"],
+      ["kaifeng-panlou-counter", "酒柜", 0, 0, "登记酒菜与结算银钱的长柜。"],
+      ["kaifeng-panlou-west-room", "西雅间", -1, 1, "大堂西侧较安静的会客雅间。"],
+      ["kaifeng-panlou-east-room", "东雅间", 1, 1, "大堂东侧临街的会客雅间。"],
+      ["kaifeng-panlou-courtyard", "后院", -1, 0, "转运酒瓮与食材的小院。"],
+      ["kaifeng-panlou-kitchen", "后厨", 1, 0, "烹制酒菜并储水备火的厨房。"],
+    ],
+    links: [
+      ["kaifeng-panlou-entrance", "kaifeng-panlou-main-hall"],
+      ["kaifeng-panlou-main-hall", "kaifeng-panlou-counter"],
+      ["kaifeng-panlou-main-hall", "kaifeng-panlou-west-room"],
+      ["kaifeng-panlou-main-hall", "kaifeng-panlou-east-room"],
+      ["kaifeng-panlou-counter", "kaifeng-panlou-courtyard"],
+      ["kaifeng-panlou-counter", "kaifeng-panlou-kitchen"],
+    ],
+  },
+] as const;
+
+export const KAIFENG_BUILDING_LAYER_IDS = KAIFENG_BUILDINGS.map((building) => building.layerId);
+
 const PAL_FAST_TRAVEL = [
   "初始台地", "飞龙密域", "海风群岛·漂流者海滩", "探索者岔路", "草巨兽山陵", "竹林深处", "海风群岛教堂", "要塞遗迹", "雷恩盗猎团高塔入口", "小海湾",
   "小青龙海滨", "被遗忘的岛屿教堂遗址", "火山脚", "冰鸟密域", "雷鸣龙密域", "被遗忘的岛屿", "破败教堂", "寒风呼啸之岛", "修行者瀑布", "小型聚落",
@@ -270,10 +422,26 @@ export function buildWorldSeed(): WorldSeedData {
   const layers: WorldSeedLayer[] = [
     { id: "world-root", name: "八方世界", description: "楼门路、北宋东京开封府与帕洛斯相连的连续大地图。", parentLayerId: null },
     { id: "home-ground", name: "嬴长嫚与楼夜秋之家", description: "庭院、起居、卧室、书房与修炼空间相连的单层住宅。", parentLayerId: "world-root" },
+    ...KAIFENG_BUILDINGS.map((building) => ({
+      id: building.layerId,
+      name: building.layerName,
+      description: building.layerDescription,
+      parentLayerId: "world-root",
+    })),
   ];
   const regions: WorldSeedRegion[] = [
     { id: "home", layerId: "home-ground", name: "嬴长嫚与楼夜秋之家·单层平面", description: "两人共同生活、修炼与工作的现代单层住宅。", x: -240, y: -80, width: 960, height: 800 },
     { id: "world-home", layerId: "world-root", name: "嬴长嫚与楼夜秋之家", description: "楼门路旁住宅的外部入口。", x: 400, y: 80, width: 160, height: 160 },
+    ...KAIFENG_BUILDINGS.map((building) => ({
+      id: building.regionId,
+      layerId: building.layerId,
+      name: building.regionName,
+      description: building.layerDescription,
+      x: -240,
+      y: -560,
+      width: 480,
+      height: 1200,
+    })),
   ];
   const locations: WorldSeedLocation[] = [];
   const routes: WorldSeedRoute[] = [];
@@ -459,6 +627,31 @@ export function buildWorldSeed(): WorldSeedData {
       id: `song-landmark-${slug}`, layerId: "world-root", name: `东京城·${name}`, description,
       regionId: "song", gridX, gridY, sourceId: "source-song-wikipedia", sourceKey,
     });
+  }
+
+  for (const building of KAIFENG_BUILDINGS) {
+    for (const [id, name, gridX, gridY, description] of building.locations) {
+      addLocation({
+        id,
+        layerId: building.layerId,
+        name: `${building.regionName}·${name}`,
+        description,
+        regionId: building.regionId,
+        gridX,
+        gridY,
+        sourceId: "source-song-map",
+        sourceKey: `东京梦华录/建筑/${building.regionId}/${id}`,
+      });
+    }
+    building.links.forEach(([fromLocation, toLocation], index) => {
+      addNormal(`route-${building.regionId}-ground-${index + 1}`, fromLocation, toLocation);
+    });
+    addTransition(
+      `route-${building.regionId}-entrance`,
+      building.exteriorId,
+      building.interiorEntranceId,
+      building.transitionKind,
+    );
   }
 
   const ensureKaifengStreetCell = (

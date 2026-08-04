@@ -167,8 +167,30 @@ const HOME_FACILITIES: Record<string, string[]> = {
   "home-pavilion": ["social", "garden"],
 };
 
+const KAIFENG_INTERIOR_FACILITIES: Record<string, string[]> = {
+  "kaifeng-palace-ground": ["settlement", "lore", "social"],
+  "kaifeng-prefecture-ground": ["settlement", "study", "lore"],
+  "kaifeng-xiangguo-ground": ["settlement", "lore"],
+  "kaifeng-guozijian-ground": ["settlement", "study", "lore"],
+  "kaifeng-panlou-ground": ["settlement", "market", "social"],
+};
+
 function facilitiesFor(location: CatalogLocation) {
   const result = new Set(["surroundings", ...(HOME_FACILITIES[location.id] ?? [])]);
+  const interiorPrefix = Object.keys(KAIFENG_INTERIOR_FACILITIES).find((prefix) => location.id.startsWith(prefix.replace("-ground", "-")));
+  if (interiorPrefix) {
+    for (const facility of KAIFENG_INTERIOR_FACILITIES[interiorPrefix]) result.add(facility);
+  }
+  if (location.id === "kaifeng-xiangguo-market-court" || location.id.includes("xiangguo-east-market") || location.id.includes("xiangguo-west-market")) {
+    result.add("market");
+  }
+  if (location.id === "kaifeng-panlou-kitchen") {
+    result.add("kitchen");
+    result.add("water");
+  }
+  if (location.id === "kaifeng-panlou-main-hall" || location.id.includes("panlou-east-room") || location.id.includes("panlou-west-room")) {
+    result.add("dining");
+  }
   if (
     location.name.includes("官道") || location.name === "楼门路" || location.name.includes("道路")
     || location.name.includes("航路") || (location.regionId === "song" && ["街", "沿岸", "牙道", "驿道", "桥", "门"].some((part) => location.name.includes(part)))

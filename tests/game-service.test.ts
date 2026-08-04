@@ -43,7 +43,15 @@ describe("GameService", () => {
   });
 
   it("seeds a source-tracked 500+ location world and preserves all ordinary direction slots", () => {
-    expect(service.getLayers().map((layer) => layer.id).sort()).toEqual(["home-ground", "world-root"]);
+    expect(service.getLayers().map((layer) => layer.id).sort()).toEqual([
+      "home-ground",
+      "kaifeng-guozijian-ground",
+      "kaifeng-palace-ground",
+      "kaifeng-panlou-ground",
+      "kaifeng-prefecture-ground",
+      "kaifeng-xiangguo-ground",
+      "world-root",
+    ]);
     expect(service.getLocation("home-entrance")).toMatchObject({ layerId: "home-ground", name: "玄关" });
     expect(service.getLocation("home-exterior")).toMatchObject({ layerId: "world-root", name: "嬴长嫚与楼夜秋之家·入口" });
     expect(service.getLocation("loumen-road")).toMatchObject({ layerId: "world-root", name: "楼门路" });
@@ -55,15 +63,18 @@ describe("GameService", () => {
     expect(service.getLocation("palos-fasttravel-1001")).toMatchObject({ layerId: "world-root", regionId: "palos", gridX: 20, gridY: 2 });
     expect(service.getLocation("palos-fasttravel-1057")).toMatchObject({ gridX: 67, gridY: -11 });
     expect(service.getLocation("home-training-room")).toMatchObject({ layerId: "home-ground" });
+    expect(service.getLocation("kaifeng-palace-daqing")).toMatchObject({ layerId: "kaifeng-palace-ground", name: "大内宫城·大庆殿" });
+    expect(service.getLocation("kaifeng-prefecture-main-hall")).toMatchObject({ layerId: "kaifeng-prefecture-ground", name: "开封府署·府署正堂" });
     expect(service.searchMapLocations("world-root", "楼门路", 10)).toHaveLength(3);
     expect(db.prepare("SELECT COUNT(*) AS count FROM locations WHERE name='楼门路' AND is_active=1").get()).toEqual({ count: 3 });
     const validation = validateWorldMap(db);
     expect(validation.errors).toEqual([]);
     expect(validation.counts).toMatchObject({
-      locations: 1470,
-      routes: 1520,
+      locations: 1511,
+      routes: 1561,
       songLocations: 935,
       palosLocations: 510,
+      buildingLocations: 41,
       overworldLocations: 1449,
     });
     expect(validation.counts.songLocations).toBeGreaterThanOrEqual(250);
@@ -72,16 +83,28 @@ describe("GameService", () => {
     expect(validation.counts.overworldLocations).toBeGreaterThanOrEqual(890);
     expect(db.prepare("SELECT COUNT(*) AS count FROM world_sources WHERE id='source-song-map'").get()).toEqual({ count: 1 });
     expect(db.prepare("SELECT COUNT(*) AS count FROM locations WHERE is_active=1 AND region_id='song' AND name LIKE '东京城·%'").get()).toEqual({ count: 933 });
-    expect(db.prepare("SELECT COUNT(*) AS count FROM routes WHERE is_active=1 AND id LIKE 'route-kaifeng-%'").get()).toEqual({ count: 975 });
+    expect(db.prepare(`
+      SELECT COUNT(*) AS count FROM routes r
+      JOIN locations f ON f.id=r.from_location JOIN locations t ON t.id=r.to_location
+      WHERE r.is_active=1 AND r.id LIKE 'route-kaifeng-%' AND f.layer_id='world-root' AND t.layer_id='world-root'
+    `).get()).toEqual({ count: 975 });
     expect(db.prepare("SELECT COUNT(*) AS count FROM locations WHERE is_active=1 AND name='帕洛斯道路'").get()).toEqual({ count: 241 });
     expect((db.prepare("SELECT COUNT(*) AS count FROM location_direction_slots").get() as { count: number }).count).toBeGreaterThan(500);
     expect((db.prepare("SELECT COUNT(*) AS count FROM routes r JOIN locations f ON f.id=r.from_location JOIN locations t ON t.id=r.to_location WHERE r.is_active=1 AND r.route_type<>'normal' AND f.layer_id='world-root' AND t.layer_id='world-root'").get() as { count: number }).count).toBe(0);
-    expect(validation.counts.layers).toBe(2);
+    expect(validation.counts.layers).toBe(7);
     expect(service.getTransitions("home-entrance")[0]).toMatchObject({ destinationName: "嬴长嫚与楼夜秋之家·入口", transitionKind: "door" });
+    expect(service.getTransitions("song-landmark-gate-xuande")[0]).toMatchObject({ destinationName: "大内宫城·宣德门内", transitionKind: "gate" });
+    expect(service.getTransitions("song-landmark-office-kaifeng")[0]).toMatchObject({ destinationName: "开封府署·府署正门内", transitionKind: "door" });
+    expect(service.getTransitions("song-landmark-temple-xiangguo")[0]).toMatchObject({ destinationName: "大相国寺·山门内", transitionKind: "gate" });
     expect(db.prepare("SELECT facility_type FROM location_facilities WHERE location_id='song-landmark-bridge-zhou' AND is_active=1 ORDER BY facility_type").all())
       .toEqual([{ facility_type: "road" }, { facility_type: "settlement" }, { facility_type: "surroundings" }]);
     expect(db.prepare("SELECT facility_type FROM location_facilities WHERE location_id='song-landmark-market-zhou-night' AND is_active=1 ORDER BY facility_type").all())
       .toEqual([{ facility_type: "market" }, { facility_type: "road" }, { facility_type: "settlement" }, { facility_type: "surroundings" }]);
+    expect(db.prepare("SELECT facility_type FROM location_facilities WHERE location_id='kaifeng-panlou-kitchen' AND is_active=1 ORDER BY facility_type").all())
+      .toEqual([
+        { facility_type: "kitchen" }, { facility_type: "market" }, { facility_type: "settlement" },
+        { facility_type: "social" }, { facility_type: "surroundings" }, { facility_type: "water" },
+      ]);
   });
 
   it("reapplies the bundled world seed idempotently", () => {
@@ -107,7 +130,7 @@ describe("GameService", () => {
     importWorldSeed(db);
 
     expect(db.prepare("SELECT from_location,to_location,seed_revision FROM routes WHERE id='route-kaifeng-east-entry-1'").get())
-      .toEqual({ from_location: "song-overview-entry", to_location: "song-street-east-entry-m1-p2", seed_revision: 8 });
+      .toEqual({ from_location: "song-overview-entry", to_location: "song-street-east-entry-m1-p2", seed_revision: 9 });
     expect(validateWorldMap(db).errors).toEqual([]);
   });
 
@@ -602,7 +625,7 @@ describe("GameService", () => {
     expect(respawned.injuryUntil).not.toBeNull();
   });
 
-  it("upgrades the former public-map hierarchy into one continuous overworld", () => {
+  it("upgrades the former public-map hierarchy into one continuous overworld with single-floor interiors", () => {
     db.prepare(`INSERT INTO map_layers(id,name,description,parent_layer_id,version,is_active,seed_revision,created_at,updated_at)
       VALUES ('song-legacy-layer','旧大宋层','旧层级。','world-root',1,1,2,?,?)`).run(clock.toISOString(), clock.toISOString());
     db.prepare(`INSERT INTO locations(
@@ -626,7 +649,7 @@ describe("GameService", () => {
     expect(db.prepare("SELECT is_active FROM routes WHERE id='route-entrance-road'").get()).toEqual({ is_active: 0 });
     expect(db.prepare("SELECT is_active FROM locations WHERE id='song-legacy-prefecture'").get()).toEqual({ is_active: 0 });
     expect(service.getLocation("song-landmark-bridge-zhou")).toMatchObject({ layerId: "world-root", regionId: "song" });
-    expect(service.getLayers()).toHaveLength(2);
+    expect(service.getLayers()).toHaveLength(7);
     expect(validateWorldMap(db).errors).toEqual([]);
   });
 

@@ -415,6 +415,10 @@ test.describe("game map", () => {
     await expect(page.getByLabel("地图信息")).toContainText("大宋·东京开封府");
     await expect(page.getByLabel("下一步可前往地点")).toContainText("御街");
     await expect(page.getByRole("heading", { name: "八方世界 · 局部地图" })).toBeVisible();
+    await transitionTo(page, "大内宫城·宣德门内");
+    await moveTo(page, "大内宫城·龙墀");
+    await expect(page.getByRole("heading", { name: "大内宫城·一层平面 · 局部地图" })).toBeVisible();
+    await expect(page.getByLabel("地图信息")).toContainText("大内宫城");
   });
 
   test("crosses the continuous Palos overworld from Loumen Road", async ({ page }) => {

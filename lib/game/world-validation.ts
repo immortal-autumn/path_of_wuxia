@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { DIRECTION_DELTAS, OPPOSITE_DIRECTION } from "./map";
 import { DIRECTIONS, type Direction } from "./types";
-import { buildWorldSeed, WORLD_SEED_REVISION } from "./world-data";
+import { buildWorldSeed, KAIFENG_BUILDING_LAYER_IDS, WORLD_SEED_REVISION } from "./world-data";
 
 export type MapValidationReport = {
   ok: boolean;
@@ -16,6 +16,7 @@ export type MapValidationReport = {
     songLocations: number;
     palosLocations: number;
     homeLocations: number;
+    buildingLocations: number;
     overworldLocations: number;
     reachableLocations: number;
   };
@@ -56,7 +57,7 @@ export function validateWorldMap(db: DatabaseSync): MapValidationReport {
       cursor = parents.get(cursor) ?? null;
     }
   }
-  const canonicalLayers = new Set(["world-root", "home-ground"]);
+  const canonicalLayers = new Set(["world-root", "home-ground", ...KAIFENG_BUILDING_LAYER_IDS]);
   const obsoleteSeedLayers = db.prepare("SELECT id FROM map_layers WHERE is_active=1 AND (seed_revision>0 OR id IN ('song-overview','palos-overview'))").all() as Array<{ id: string }>;
   for (const layer of obsoleteSeedLayers) {
     if (!canonicalLayers.has(layer.id)) errors.push(`种子地图层 ${layer.id} 不应在连续大地图中保持活动。`);
@@ -175,12 +176,14 @@ export function validateWorldMap(db: DatabaseSync): MapValidationReport {
     songLocations: scalar("SELECT COUNT(*) AS count FROM locations WHERE is_active=1 AND region_id='song'"),
     palosLocations: scalar("SELECT COUNT(DISTINCT s.location_id) AS count FROM location_sources s JOIN locations l ON l.id=s.location_id AND l.is_active=1 WHERE s.source_id='source-palworld-map'"),
     homeLocations: scalar("SELECT COUNT(DISTINCT s.location_id) AS count FROM location_sources s JOIN locations l ON l.id=s.location_id AND l.is_active=1 WHERE s.source_id='source-home-design'"),
+    buildingLocations: scalar("SELECT COUNT(*) AS count FROM locations WHERE is_active=1 AND layer_id LIKE 'kaifeng-%-ground'"),
     overworldLocations: scalar("SELECT COUNT(*) AS count FROM locations WHERE is_active=1 AND layer_id='world-root'"),
     reachableLocations: reachable.size,
   };
   if (counts.songLocations < 500) errors.push(`东京开封府地点只有 ${counts.songLocations} 个，至少需要500个。`);
   if (counts.palosLocations < 250) errors.push(`帕洛斯来源地点只有 ${counts.palosLocations} 个，至少需要250个。`);
   if (counts.locations < 500) errors.push(`地图地点总数只有 ${counts.locations} 个，至少需要500个。`);
+  if (counts.buildingLocations < 41) errors.push(`东京开封府五座可进入建筑只有 ${counts.buildingLocations} 个室内地点，应至少有41个。`);
   const geographicBounds = db.prepare(`
     SELECT region_id,MIN(grid_x) AS min_x,MAX(grid_x) AS max_x,MIN(grid_y) AS min_y,MAX(grid_y) AS max_y
     FROM locations WHERE is_active=1 AND region_id IN ('song','palos') GROUP BY region_id
@@ -209,6 +212,18 @@ export function validateWorldMap(db: DatabaseSync): MapValidationReport {
   for (const id of requiredKaifengLocations) {
     if (!db.prepare("SELECT 1 FROM locations WHERE id=? AND is_active=1 AND region_id='song'").get(id)) {
       errors.push(`东京开封府关键历史地点 ${id} 不存在。`);
+    }
+  }
+  const requiredBuildingRoutes = [
+    "route-kaifeng-palace-entrance",
+    "route-kaifeng-prefecture-entrance",
+    "route-kaifeng-xiangguo-entrance",
+    "route-kaifeng-guozijian-entrance",
+    "route-kaifeng-panlou-entrance",
+  ];
+  for (const id of requiredBuildingRoutes) {
+    if (!db.prepare("SELECT 1 FROM routes WHERE id=? AND is_active=1 AND route_type='transition'").get(id)) {
+      errors.push(`东京开封府建筑入口 ${id} 不存在。`);
     }
   }
   const kaifengRouteStats = db.prepare(`
