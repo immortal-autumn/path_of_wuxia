@@ -59,7 +59,7 @@ export type WorldSeedAction = {
   locationId: string;
   name: string;
   description: string;
-  silverDelta: number;
+  cashWenDelta: number;
   hpDelta: number;
   resultTemplate: string;
 };
@@ -460,10 +460,10 @@ export function buildWorldSeed(): WorldSeedData {
   const locations: WorldSeedLocation[] = [];
   const routes: WorldSeedRoute[] = [];
   const actions: WorldSeedAction[] = [
-    { id: "observe-entrance", locationId: "home-entrance", name: "整理衣装", description: "在玄关整理衣装，准备出门。", silverDelta: 0, hpDelta: 0, resultTemplate: "{name}在玄关整理好衣装。" },
-    { id: "observe-road", locationId: "loumen-road", name: "观察街道", description: "看看楼门路上来往的人群。", silverDelta: 0, hpDelta: 0, resultTemplate: "{name}站在楼门路上观察四周。" },
-    { id: "observe-song", locationId: "song-gate", name: "眺望东京", description: "从入口眺望北宋东京开封府。", silverDelta: 0, hpDelta: 0, resultTemplate: "{name}在入口处眺望东京城。" },
-    { id: "observe-construction", locationId: "world-construction-site", name: "查看建设告示", description: "查看楼门路东端的封路与建设告示。", silverDelta: 0, hpDelta: 0, resultTemplate: "{name}查看了东境建设告示。" },
+    { id: "observe-entrance", locationId: "home-entrance", name: "整理衣装", description: "在玄关整理衣装，准备出门。", cashWenDelta: 0, hpDelta: 0, resultTemplate: "{name}在玄关整理好衣装。" },
+    { id: "observe-road", locationId: "loumen-road", name: "观察街道", description: "看看楼门路上来往的人群。", cashWenDelta: 0, hpDelta: 0, resultTemplate: "{name}站在楼门路上观察四周。" },
+    { id: "observe-song", locationId: "song-gate", name: "眺望东京", description: "从入口眺望北宋东京开封府。", cashWenDelta: 0, hpDelta: 0, resultTemplate: "{name}在入口处眺望东京城。" },
+    { id: "observe-construction", locationId: "world-construction-site", name: "查看建设告示", description: "查看楼门路东端的封路与建设告示。", cashWenDelta: 0, hpDelta: 0, resultTemplate: "{name}查看了东境建设告示。" },
   ];
   const baseLocationSources: WorldSeedData["baseLocationSources"] = [];
   const shopfronts: WorldSeedShopfront[] = [];
@@ -549,7 +549,7 @@ export function buildWorldSeed(): WorldSeedData {
   homeRoutes.forEach(([fromLocation, toLocation], index) => addNormal(`route-home-ground-${index + 1}-v4`, fromLocation, toLocation));
   actions.push({
     id: "action-training-room-focus", locationId: "home-training-room", name: "静心修炼",
-    description: "停留在修炼房中，修为会按服务器时间自动增长。", silverDelta: 0, hpDelta: 0,
+    description: "停留在修炼房中，修为会按服务器时间自动增长。", cashWenDelta: 0, hpDelta: 0,
     resultTemplate: "{name}在修炼房中静心吐纳。",
   });
 

@@ -1,6 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { seedActionCatalog } from "./action-catalog";
 import { seedItemCatalog } from "./item-catalog";
+import { seedShopCatalog } from "./shop-catalog";
 import { CHUNK_SIZE, GRID_SIZE } from "./map";
 import { buildWorldSeed, WORLD_SEED_REVISION } from "./world-data";
 
@@ -146,10 +147,10 @@ export function applyWorldSeed(db: DatabaseSync): WorldSeedReport {
 
   const actionInsert = db.prepare(`
     INSERT INTO action_definitions(
-      id,location_id,name,description,stamina_delta,silver_delta,cultivation_delta,hp_delta,result_template
+      id,location_id,name,description,stamina_delta,cash_wen_delta,cultivation_delta,hp_delta,result_template
     ) VALUES (?,?,?,?,0,?,0,?,?)
     ON CONFLICT(id) DO UPDATE SET location_id=excluded.location_id,name=excluded.name,
-      description=excluded.description,stamina_delta=0,silver_delta=excluded.silver_delta,
+      description=excluded.description,stamina_delta=0,cash_wen_delta=excluded.cash_wen_delta,
       cultivation_delta=0,hp_delta=excluded.hp_delta,result_template=excluded.result_template
   `);
   const actionTemplateInsert = db.prepare(`
@@ -170,12 +171,12 @@ export function applyWorldSeed(db: DatabaseSync): WorldSeedReport {
       seed_revision=excluded.seed_revision,updated_at=excluded.updated_at
   `);
   for (const action of seed.actions) {
-    actionInsert.run(action.id, action.locationId, action.name, action.description, action.silverDelta, action.hpDelta, action.resultTemplate);
+    actionInsert.run(action.id, action.locationId, action.name, action.description, action.cashWenDelta, action.hpDelta, action.resultTemplate);
     actionTemplateInsert.run(
       action.id,
       action.name,
       action.description,
-      JSON.stringify({ success: { silverDelta: action.silverDelta, hpDelta: action.hpDelta } }),
+      JSON.stringify({ success: { cashWenDelta: action.cashWenDelta, hpDelta: action.hpDelta } }),
       action.resultTemplate,
       WORLD_SEED_REVISION,
       now,
@@ -201,6 +202,7 @@ export function applyWorldSeed(db: DatabaseSync): WorldSeedReport {
 
   seedActionCatalog(db, seed.locations, WORLD_SEED_REVISION, now);
   seedItemCatalog(db, WORLD_SEED_REVISION, now);
+  seedShopCatalog(db, seed.shopfronts, WORLD_SEED_REVISION, now);
 
   const sourceLinkInsert = db.prepare(`
     INSERT INTO location_sources(location_id,source_id,source_key) VALUES (?,?,?)

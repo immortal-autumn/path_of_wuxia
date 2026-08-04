@@ -380,7 +380,7 @@ async function main() {
           const result = command.type === "trade.respond"
             ? service.respondTrade(context.playerId, command.tradeId, command.accept, onlinePlayerIds())
             : command.type === "trade.offer"
-              ? service.offerTrade(context.playerId, command.tradeId, command.silver, command.items)
+              ? service.offerTrade(context.playerId, command.tradeId, command.cashWen, command.items)
               : command.type === "trade.confirm"
                 ? service.confirmTrade(context.playerId, command.tradeId)
                 : service.cancelTrade(context.playerId, command.tradeId);
@@ -416,6 +416,23 @@ async function main() {
         if (command.type === "loot.take") {
           const result = service.takeLoot(context.playerId, command.lootPileId);
           sendSnapshot(socket, context);
+          send(socket, { type: "ack", requestId: command.requestId, message: result.message });
+          return;
+        }
+
+        if (command.type === "shop.inspect") {
+          send(socket, { type: "shop.snapshot", requestId: command.requestId, shop: service.inspectShop(context.playerId, command.shopId) });
+          send(socket, { type: "ack", requestId: command.requestId });
+          return;
+        }
+
+        if (command.type === "shop.buy" || command.type === "shop.sell") {
+          const result = command.type === "shop.buy"
+            ? service.buyFromShop(context.playerId, command.requestId, command.shopId, command.definitionId, command.quantity)
+            : service.sellToShop(context.playerId, command.requestId, command.shopId, command.itemId, command.quantity);
+          send(socket, { type: "self.updated", player: result.player });
+          send(socket, { type: "inventory.updated", inventory: result.inventory });
+          send(socket, { type: "shop.snapshot", requestId: command.requestId, shop: result.shop });
           send(socket, { type: "ack", requestId: command.requestId, message: result.message });
           return;
         }

@@ -130,7 +130,7 @@ export type ActionCheck = {
 };
 
 export type ActionOutcome = {
-  silverDelta?: number;
+  cashWenDelta?: number;
   hpDelta?: number;
   cultivationDelta?: number;
   skillExperience?: number;
@@ -361,7 +361,7 @@ export type TradeOfferItem = {
   quantity: number;
 };
 
-export type TradeOffer = { silver: number; items: TradeOfferItem[] };
+export type TradeOffer = { cashWen: number; items: TradeOfferItem[] };
 
 export type TradeSession = {
   id: string;
@@ -414,7 +414,7 @@ export type CombatTurn = {
 export type LootPile = {
   id: string;
   locationId: string;
-  silver: number;
+  cashWen: number;
   sourcePlayerId: string | null;
   sourcePlayerName: string | null;
   items: Array<{ name: string; quantity: number; quality: number }>;
@@ -425,7 +425,7 @@ export type ActionDefinition = {
   locationId: string;
   name: string;
   description: string;
-  silverDelta: number;
+  cashWenDelta: number;
   hpDelta: number;
 };
 
@@ -478,7 +478,7 @@ export type PlayerSelf = {
   maxHp: number;
   endurance: number;
   maxEndurance: number;
-  silver: number;
+  cashWen: number;
   currentLocation: string;
   attributes: BaseAttributes;
   derived: DerivedStats;
@@ -491,6 +491,31 @@ export type PlayerSelf = {
 };
 
 export type OnlinePlayer = { id: string; name: string; title: string; currentLocation: string };
+
+export type ShopSummary = {
+  id: string;
+  name: string;
+  category: string;
+  isOpen: boolean;
+};
+
+export type ShopStockItem = {
+  definitionId: string;
+  name: string;
+  description: string;
+  category: string;
+  quantity: number;
+  buyPriceWen: number;
+  sellPriceWen: number;
+};
+
+export type ShopState = ShopSummary & {
+  locationId: string;
+  opensMinute: number;
+  closesMinute: number;
+  tillWen: number;
+  stock: ShopStockItem[];
+};
 export type WorldStatus = { timeZone: "Asia/Shanghai"; dateTime: string; announcement: string; onlineCount: number; serverTime: string };
 export type WorldEvent = { id: number; playerId: string | null; eventType: string; content: string; createdAt: string };
 export type PrivateEvent = { id: number; eventType: string; content: string; createdAt: string };
@@ -516,6 +541,7 @@ export type GameSnapshot = {
   actions: ActionDefinition[];
   actionState: ActionSystemState;
   inventory: InventoryState;
+  shop: ShopSummary | null;
   social: SocialState;
   combat: CombatState | null;
   lootPiles: LootPile[];

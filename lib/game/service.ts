@@ -25,6 +25,7 @@ import {
 import { createWorldStatus } from "./time";
 import { ensureStarterInventory } from "./item-catalog";
 import { agentTokenHash } from "./npc-auth";
+import { formatCashWen } from "./currency";
 import type {
   ActionJob,
   ActionOutcome,
@@ -63,6 +64,8 @@ import type {
   Relationship,
   RouteType,
   SessionIdentity,
+  ShopState,
+  ShopSummary,
   SocialState,
   TradeOffer,
   TransitionKind,
@@ -83,7 +86,7 @@ const FAMILY_NAMES = ["沈", "顾", "谢", "陆", "裴", "苏", "叶", "楚", "�
 const GIVEN_NAMES = ["听澜", "照夜", "临风", "知微", "怀瑾", "清和", "无尘", "青崖", "长歌", "星河", "问舟", "霁月", "凌霜", "砚秋", "云归", "观棋", "景行", "含章", "疏影", "逐风"];
 
 type PlayerRow = {
-  id: string; name: string; title: string; hp: number; silver: number; current_location: string;
+  id: string; name: string; title: string; hp: number; cash_wen: number; current_location: string;
   strength: number; agility: number; constitution: number; root: number; comprehension: number; spirit: number;
   unspent_points: number; realm_index: number; realm_level: number; cultivation_progress: number;
   endurance: number; training_anchor_at: string | null; training_multiplier: number;
@@ -179,7 +182,7 @@ function mapActionJob(row: ActionJobRow): ActionJob {
 
 function actionOutcomeSummary(outcome: ActionOutcome) {
   const parts: string[] = [];
-  if (outcome.silverDelta) parts.push(`银两${outcome.silverDelta > 0 ? "+" : ""}${outcome.silverDelta}`);
+  if (outcome.cashWenDelta) parts.push(`钱贯${outcome.cashWenDelta > 0 ? "+" : "-"}${formatCashWen(Math.abs(outcome.cashWenDelta))}`);
   if (outcome.hpDelta) parts.push(`气血${outcome.hpDelta > 0 ? "+" : ""}${outcome.hpDelta}`);
   if (outcome.cultivationDelta) parts.push(`修为${outcome.cultivationDelta > 0 ? "+" : ""}${outcome.cultivationDelta}`);
   if (outcome.needDeltas) {
@@ -199,10 +202,10 @@ function cleanText(value: string, label: string, maxLength: number) {
 }
 
 function effectSummary(action: ActionDefinition) {
-  return ([ ["银两", action.silverDelta], ["气血", action.hpDelta] ] as const)
-    .filter(([, value]) => value !== 0)
-    .map(([label, value]) => `${label}${value > 0 ? "+" : ""}${value}`)
-    .join(" · ");
+  const effects: string[] = [];
+  if (action.cashWenDelta) effects.push(`钱贯${action.cashWenDelta > 0 ? "+" : "-"}${formatCashWen(Math.abs(action.cashWenDelta))}`);
+  if (action.hpDelta) effects.push(`气血${action.hpDelta > 0 ? "+" : ""}${action.hpDelta}`);
+  return effects.join(" · ");
 }
 
 function transitionLabel(kind: TransitionKind, destination: string) {
@@ -221,12 +224,32 @@ function straightDirection(dx: number, dy: number): Direction | null {
   ))?.[0] ?? null) as Direction | null;
 }
 
-type StoredTradeOffer = { silver: number; items: Array<{ itemId: string; quantity: number }> };
+type StoredTradeOffer = { cashWen: number; items: Array<{ itemId: string; quantity: number }> };
+type ShopRow = {
+  id: string; location_id: string; name: string; category: string;
+  opens_minute: number; closes_minute: number; till_wen: number;
+};
+
+function chinaMinuteOfDay(at: Date) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(at);
+  const hour = Number(parts.find((part) => part.type === "hour")?.value ?? 0);
+  const minute = Number(parts.find((part) => part.type === "minute")?.value ?? 0);
+  return hour * 60 + minute;
+}
+
+function shopIsOpen(shop: Pick<ShopRow, "opens_minute" | "closes_minute">, at: Date) {
+  const minute = chinaMinuteOfDay(at);
+  if (shop.opens_minute === shop.closes_minute) return true;
+  if (shop.opens_minute < shop.closes_minute) return minute >= shop.opens_minute && minute < shop.closes_minute;
+  return minute >= shop.opens_minute || minute < shop.closes_minute;
+}
 
 function parseStoredTradeOffer(value: string): StoredTradeOffer {
   const parsed = JSON.parse(value) as Partial<StoredTradeOffer>;
   return {
-    silver: Number.isInteger(parsed.silver) && (parsed.silver ?? 0) >= 0 ? parsed.silver! : 0,
+    cashWen: Number.isInteger(parsed.cashWen) && (parsed.cashWen ?? 0) >= 0 ? parsed.cashWen! : 0,
     items: Array.isArray(parsed.items)
       ? parsed.items.flatMap((item) => (
         item && typeof item.itemId === "string" && Number.isInteger(item.quantity) && item.quantity > 0
@@ -243,6 +266,28 @@ export class GameService {
     private readonly now: () => Date = () => new Date(),
     private readonly randomPercent: () => number = () => randomInt(100),
   ) {}
+
+  private changeCashWen(
+    playerId: string,
+    deltaWen: number,
+    reason: string,
+    referenceType: string,
+    referenceId: string,
+    at = this.now().toISOString(),
+  ) {
+    if (!Number.isSafeInteger(deltaWen)) throw new Error("钱贯变动数值不合法。");
+    const wallet = this.db.prepare("SELECT cash_wen FROM player_wallets WHERE player_id=?").get(playerId) as { cash_wen: number } | undefined;
+    if (!wallet) throw new Error("角色钱袋尚未建立。");
+    const balance = wallet.cash_wen + deltaWen;
+    if (!Number.isSafeInteger(balance) || balance < 0) throw new Error("钱贯不足。");
+    this.db.prepare("UPDATE player_wallets SET cash_wen=?,updated_at=? WHERE player_id=?").run(balance, at, playerId);
+    this.db.prepare(`
+      INSERT INTO currency_ledger(
+        id,player_id,delta_wen,balance_after_wen,reason,reference_type,reference_id,created_at
+      ) VALUES (?,?,?,?,?,?,?,?)
+    `).run(randomUUID(), playerId, deltaWen, balance, reason, referenceType, referenceId, at);
+    return balance;
+  }
 
   private assertCanTakeGameAction(playerId: string) {
     const player = this.getPlayerRow(playerId);
@@ -651,14 +696,165 @@ export class GameService {
     });
   }
 
+  private shopForPlayer(playerId: string, shopId: string) {
+    const row = this.db.prepare(`
+      SELECT shop.id,shop.location_id,shop.name,shop.category,shop.opens_minute,shop.closes_minute,shop.till_wen
+      FROM players player
+      JOIN shop_service_locations service_location ON service_location.location_id=player.current_location
+      JOIN shops shop ON shop.id=service_location.shop_id AND shop.is_active=1
+      WHERE player.id=? AND shop.id=?
+    `).get(playerId, shopId) as ShopRow | undefined;
+    if (!row) throw new Error("这家店铺不在当前位置。");
+    return row;
+  }
+
+  private assertShopMutationAllowed(playerId: string, shopId: string) {
+    this.assertCanTakeGameAction(playerId);
+    if (this.db.prepare("SELECT 1 FROM action_jobs WHERE player_id=? AND status IN ('running','paused') LIMIT 1").get(playerId)) {
+      throw new Error("进行中的行动结束或取消后才能买卖。");
+    }
+    const shop = this.shopForPlayer(playerId, shopId);
+    if (!shopIsOpen(shop, this.now())) throw new Error("店铺当前已经打烊。");
+    return shop;
+  }
+
+  getCurrentShopSummary(playerId: string): ShopSummary | null {
+    const player = this.getPlayerRow(playerId);
+    const shop = this.db.prepare(`
+      SELECT shop.id,shop.location_id,shop.name,shop.category,shop.opens_minute,shop.closes_minute,shop.till_wen
+      FROM shop_service_locations service_location JOIN shops shop ON shop.id=service_location.shop_id
+      WHERE service_location.location_id=? AND shop.is_active=1
+    `).get(player.current_location) as ShopRow | undefined;
+    return shop ? { id: shop.id, name: shop.name, category: shop.category, isOpen: shopIsOpen(shop, this.now()) } : null;
+  }
+
+  inspectShop(playerId: string, shopId: string): ShopState {
+    const shop = this.shopForPlayer(playerId, shopId);
+    const stock = this.db.prepare(`
+      SELECT stock.item_definition_id,definition.name,definition.description,definition.category,
+        stock.quantity,stock.buy_price_wen,stock.sell_price_wen
+      FROM shop_stock stock JOIN item_definitions definition ON definition.id=stock.item_definition_id
+      WHERE stock.shop_id=? AND definition.is_active=1 ORDER BY definition.category,definition.name,definition.id
+    `).all(shop.id) as Array<{
+      item_definition_id: string; name: string; description: string; category: string;
+      quantity: number; buy_price_wen: number; sell_price_wen: number;
+    }>;
+    return {
+      id: shop.id,
+      locationId: shop.location_id,
+      name: shop.name,
+      category: shop.category,
+      isOpen: shopIsOpen(shop, this.now()),
+      opensMinute: shop.opens_minute,
+      closesMinute: shop.closes_minute,
+      tillWen: shop.till_wen,
+      stock: stock.map((item) => ({
+        definitionId: item.item_definition_id,
+        name: item.name,
+        description: item.description,
+        category: item.category,
+        quantity: item.quantity,
+        buyPriceWen: item.buy_price_wen,
+        sellPriceWen: item.sell_price_wen,
+      })),
+    };
+  }
+
+  private shopPayloadHash(payload: Record<string, unknown>) {
+    return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+  }
+
+  private replayedShopTransaction(playerId: string, requestId: string, payloadHash: string) {
+    const prior = this.db.prepare(`
+      SELECT payload_hash FROM shop_transactions WHERE player_id=? AND request_id=?
+    `).get(playerId, requestId) as { payload_hash: string } | undefined;
+    if (!prior) return false;
+    if (prior.payload_hash !== payloadHash) throw new Error("同一请求编号不能用于不同的店铺交易。");
+    return true;
+  }
+
+  buyFromShop(playerId: string, requestId: string, shopId: string, definitionId: string, quantity: number) {
+    return inTransaction(this.db, () => {
+      const payloadHash = this.shopPayloadHash({ side: "buy", shopId, definitionId, quantity });
+      if (this.replayedShopTransaction(playerId, requestId, payloadHash)) {
+        return { shop: this.inspectShop(playerId, shopId), inventory: this.getInventoryState(playerId), player: this.getPlayer(playerId), message: "这笔购买已经完成。" };
+      }
+      const shop = this.assertShopMutationAllowed(playerId, shopId);
+      const stock = this.db.prepare(`
+        SELECT quantity,buy_price_wen FROM shop_stock WHERE shop_id=? AND item_definition_id=?
+      `).get(shop.id, definitionId) as { quantity: number; buy_price_wen: number } | undefined;
+      if (!stock) throw new Error("店铺没有经营这种货物。");
+      if (stock.quantity < quantity) throw new Error("店铺库存不足。");
+      const totalWen = stock.buy_price_wen * quantity;
+      if (!Number.isSafeInteger(totalWen) || totalWen <= 0) throw new Error("购买金额不合法。");
+      const at = this.now().toISOString();
+      this.changeCashWen(playerId, -totalWen, `在${shop.name}购物`, "shop-buy", requestId, at);
+      const changed = this.db.prepare(`
+        UPDATE shop_stock SET quantity=quantity-?,updated_at=?
+        WHERE shop_id=? AND item_definition_id=? AND quantity>=?
+      `).run(quantity, at, shop.id, definitionId, quantity);
+      if (changed.changes !== 1) throw new Error("店铺库存刚刚发生变化，请重试。");
+      this.db.prepare("UPDATE shops SET till_wen=till_wen+?,updated_at=? WHERE id=?").run(totalWen, at, shop.id);
+      this.grantItem(playerId, definitionId, quantity, 1, false, at);
+      this.db.prepare(`
+        INSERT INTO shop_transactions(
+          id,request_id,shop_id,player_id,side,item_definition_id,quantity,unit_price_wen,total_wen,payload_hash,created_at
+        ) VALUES (?,?,?,?,'buy',?,?,?,?,?,?)
+      `).run(randomUUID(), requestId, shop.id, playerId, definitionId, quantity, stock.buy_price_wen, totalWen, payloadHash, at);
+      return { shop: this.inspectShop(playerId, shopId), inventory: this.getInventoryState(playerId), player: this.getPlayer(playerId), message: `已花费${formatCashWen(totalWen)}购得${quantity}件货物。` };
+    });
+  }
+
+  sellToShop(playerId: string, requestId: string, shopId: string, itemId: string, quantity: number) {
+    return inTransaction(this.db, () => {
+      const payloadHash = this.shopPayloadHash({ side: "sell", shopId, itemId, quantity });
+      if (this.replayedShopTransaction(playerId, requestId, payloadHash)) {
+        return { shop: this.inspectShop(playerId, shopId), inventory: this.getInventoryState(playerId), player: this.getPlayer(playerId), message: "这笔出售已经完成。" };
+      }
+      const shop = this.assertShopMutationAllowed(playerId, shopId);
+      const item = this.db.prepare(`
+        SELECT instance.id,instance.definition_id,instance.quantity,instance.bound,instance.equipped_slot,
+          COALESCE((SELECT SUM(quantity) FROM item_reservations WHERE item_instance_id=instance.id),0) AS reserved
+        FROM item_instances instance WHERE instance.id=? AND instance.owner_player_id=?
+      `).get(itemId, playerId) as {
+        id: string; definition_id: string; quantity: number; bound: number; equipped_slot: string | null; reserved: number;
+      } | undefined;
+      if (!item) throw new Error("要出售的物品已经不存在。");
+      if (item.bound) throw new Error("绑定物品不能出售。");
+      if (item.equipped_slot) throw new Error("请先卸下物品再出售。");
+      if (quantity > item.quantity - item.reserved) throw new Error("可出售数量不足或物品已被行动预留。");
+      const stock = this.db.prepare(`
+        SELECT sell_price_wen FROM shop_stock WHERE shop_id=? AND item_definition_id=?
+      `).get(shop.id, item.definition_id) as { sell_price_wen: number } | undefined;
+      if (!stock) throw new Error("这家店不收购这种物品。");
+      const totalWen = stock.sell_price_wen * quantity;
+      if (!Number.isSafeInteger(totalWen) || totalWen <= 0) throw new Error("出售金额不合法。");
+      if (shop.till_wen < totalWen) throw new Error("店铺柜上现钱不足，暂时无法收购。");
+      const at = this.now().toISOString();
+      if (quantity === item.quantity) this.db.prepare("DELETE FROM item_instances WHERE id=?").run(item.id);
+      else this.db.prepare("UPDATE item_instances SET quantity=quantity-?,updated_at=? WHERE id=?").run(quantity, at, item.id);
+      this.db.prepare("UPDATE shop_stock SET quantity=quantity+?,updated_at=? WHERE shop_id=? AND item_definition_id=?")
+        .run(quantity, at, shop.id, item.definition_id);
+      this.db.prepare("UPDATE shops SET till_wen=till_wen-?,updated_at=? WHERE id=?").run(totalWen, at, shop.id);
+      this.changeCashWen(playerId, totalWen, `向${shop.name}售货`, "shop-sell", requestId, at);
+      this.db.prepare(`
+        INSERT INTO shop_transactions(
+          id,request_id,shop_id,player_id,side,item_definition_id,quantity,unit_price_wen,total_wen,payload_hash,created_at
+        ) VALUES (?,?,?,?,'sell',?,?,?,?,?,?)
+      `).run(randomUUID(), requestId, shop.id, playerId, item.definition_id, quantity, stock.sell_price_wen, totalWen, payloadHash, at);
+      return { shop: this.inspectShop(playerId, shopId), inventory: this.getInventoryState(playerId), player: this.getPlayer(playerId), message: `已售得${formatCashWen(totalWen)}。` };
+    });
+  }
+
   private playerSelect() {
     return `
-      SELECT p.id,p.name,p.title,p.hp,p.silver,p.current_location,
+      SELECT p.id,p.name,p.title,p.hp,wallet.cash_wen,p.current_location,
              pr.strength,pr.agility,pr.constitution,pr.root,pr.comprehension,pr.spirit,
              pr.unspent_points,pr.realm_index,pr.realm_level,pr.cultivation_progress,
              pr.endurance,pr.training_anchor_at,COALESCE(le.multiplier,0) AS training_multiplier,
              p.vision_bonus_until,p.vision_depth_bonus,p.injury_until
       FROM players p JOIN player_progression pr ON pr.player_id=p.id
+      JOIN player_wallets wallet ON wallet.player_id=p.id
       LEFT JOIN location_effects le ON le.location_id=p.current_location AND le.effect_type='cultivation'
     `;
   }
@@ -691,7 +887,7 @@ export class GameService {
     return {
       id: row.id, name: row.name, title: row.title, hp: Math.min(row.hp, derived.maxHp), maxHp: derived.maxHp,
       endurance: Math.min(row.endurance, derived.maxEndurance), maxEndurance: derived.maxEndurance,
-      silver: row.silver, currentLocation: row.current_location, attributes, derived,
+      cashWen: row.cash_wen, currentLocation: row.current_location, attributes, derived,
       cultivation: {
         realmIndex: row.realm_index, realmName: REALMS[row.realm_index] ?? REALMS[0], level: row.realm_level,
         progress: row.cultivation_progress, nextLevelCost: levelCost, unspentAttributePoints: row.unspent_points,
@@ -777,6 +973,12 @@ export class GameService {
         INSERT INTO players(id,name,title,hp,max_hp,stamina,max_stamina,cultivation,silver,current_location,created_at,updated_at,last_seen_at)
         VALUES (?,?,'初入世界',?,?,?, ?,0,20,'home-entrance',?,?,?)
       `).run(playerId, name, initial.maxHp, initial.maxHp, initial.maxEndurance, initial.maxEndurance, createdAt, createdAt, createdAt);
+      this.db.prepare("INSERT INTO player_wallets(player_id,cash_wen,updated_at) VALUES (?,20000,?)").run(playerId, createdAt);
+      this.db.prepare(`
+        INSERT INTO currency_ledger(
+          id,player_id,delta_wen,balance_after_wen,reason,reference_type,reference_id,created_at
+        ) VALUES (?,?,20000,20000,'初始钱贯','opening','player',?)
+      `).run(randomUUID(), playerId, createdAt);
       this.db.prepare("INSERT INTO player_progression(player_id,endurance,updated_at) VALUES (?,?,?)").run(playerId, initial.maxEndurance, createdAt);
       ensureStarterInventory(this.db, playerId, createdAt);
       this.db.prepare("INSERT INTO player_visited_locations(player_id,location_id,first_visited_at,last_visited_at) VALUES (?,'home-entrance',?,?)")
@@ -990,7 +1192,7 @@ export class GameService {
 
   getActions(locationIds?: string[]) {
     let sql = `
-      SELECT a.id,a.location_id,a.name,a.description,a.silver_delta,a.hp_delta
+      SELECT a.id,a.location_id,a.name,a.description,a.cash_wen_delta,a.hp_delta
       FROM action_definitions a JOIN locations l ON l.id=a.location_id WHERE l.is_active=1
     `;
     const params: string[] = [];
@@ -1000,10 +1202,10 @@ export class GameService {
       params.push(...locationIds);
     }
     return (this.db.prepare(`${sql} ORDER BY a.id`).all(...params) as Array<{
-      id: string; location_id: string; name: string; description: string; silver_delta: number; hp_delta: number;
+      id: string; location_id: string; name: string; description: string; cash_wen_delta: number; hp_delta: number;
     }>).map((row) => ({
       id: row.id, locationId: row.location_id, name: row.name, description: row.description,
-      silverDelta: row.silver_delta, hpDelta: row.hp_delta,
+      cashWenDelta: row.cash_wen_delta, hpDelta: row.hp_delta,
     }));
   }
 
@@ -1108,9 +1310,11 @@ export class GameService {
 
     const derived = deriveStats(attributes, row.realm_index);
     const hp = Math.max(0, Math.min(derived.maxHp, row.hp + (outcome.hpDelta ?? 0)));
-    const silver = Math.max(0, row.silver + (outcome.silverDelta ?? 0));
-    this.db.prepare("UPDATE players SET hp=?,silver=?,updated_at=?,last_seen_at=? WHERE id=?")
-      .run(hp, silver, timestamp, timestamp, playerId);
+    this.db.prepare("UPDATE players SET hp=?,updated_at=?,last_seen_at=? WHERE id=?")
+      .run(hp, timestamp, timestamp, playerId);
+    if (outcome.cashWenDelta) {
+      this.changeCashWen(playerId, outcome.cashWenDelta, template.name, "action-job", job.id, timestamp);
+    }
 
     if (outcome.cultivationDelta) {
       const advanced = this.advanceCultivation(row, outcome.cultivationDelta);
@@ -1531,10 +1735,13 @@ export class GameService {
     nextNeeds.updatedAt = timestamp;
     this.writeNeeds(playerId, nextNeeds);
     const derived = deriveStats(attributes, row.realm_index);
-    this.db.prepare("UPDATE players SET hp=?,silver=?,updated_at=?,last_seen_at=? WHERE id=?").run(
+    this.db.prepare("UPDATE players SET hp=?,updated_at=?,last_seen_at=? WHERE id=?").run(
       Math.max(0, Math.min(derived.maxHp, row.hp + (outcome.hpDelta ?? 0))),
-      Math.max(0, row.silver + (outcome.silverDelta ?? 0)), timestamp, timestamp, playerId,
+      timestamp, timestamp, playerId,
     );
+    if (outcome.cashWenDelta) {
+      this.changeCashWen(playerId, outcome.cashWenDelta, template.name, "skill", template.id, timestamp);
+    }
     if (outcome.cultivationDelta) {
       const advanced = this.advanceCultivation(row, outcome.cultivationDelta);
       this.db.prepare("UPDATE player_progression SET realm_level=?,cultivation_progress=?,unspent_points=?,updated_at=? WHERE player_id=?")
@@ -2054,7 +2261,7 @@ export class GameService {
       this.db.prepare(`
         INSERT INTO trade_sessions(
           id,player_a_id,player_b_id,status,offer_a_json,offer_b_json,confirmed_a,confirmed_b,expires_at,created_at,updated_at
-        ) VALUES (?,?,?,'pending','{"silver":0,"items":[]}','{"silver":0,"items":[]}',0,0,?,?,?)
+        ) VALUES (?,?,?,'pending','{"cashWen":0,"items":[]}','{"cashWen":0,"items":[]}',0,0,?,?,?)
       `).run(randomUUID(), playerId, targetPlayerId, new Date(now.getTime() + 5 * 60_000).toISOString(), now.toISOString(), now.toISOString());
       return { affectedPlayerIds: [playerId, targetPlayerId], message: `已向${target.name}发出交易请求。` };
     });
@@ -2083,7 +2290,7 @@ export class GameService {
 
   private validateTradeOffer(playerId: string, offer: StoredTradeOffer) {
     const player = this.getPlayerRow(playerId);
-    if (offer.silver > player.silver) throw new Error("交易报价中的银两不足。");
+    if (offer.cashWen > player.cash_wen) throw new Error("交易报价中的钱贯不足。");
     if (offer.items.length > 16 || new Set(offer.items.map((item) => item.itemId)).size !== offer.items.length) {
       throw new Error("交易物品报价不合法。");
     }
@@ -2105,7 +2312,7 @@ export class GameService {
     return result;
   }
 
-  offerTrade(playerId: string, tradeId: string, silver: number, items: Array<{ itemId: string; quantity: number }>) {
+  offerTrade(playerId: string, tradeId: string, cashWen: number, items: Array<{ itemId: string; quantity: number }>) {
     return inTransaction(this.db, () => {
       this.cleanupExpiredSocial();
       const row = this.db.prepare(`
@@ -2114,7 +2321,7 @@ export class GameService {
       `).get(tradeId, this.now().toISOString(), playerId, playerId) as { player_a_id: string; player_b_id: string } | undefined;
       if (!row) throw new Error("交易不存在、未开始或已过期。");
       this.assertDirectInteraction(row.player_a_id, row.player_b_id);
-      const offer = { silver, items } satisfies StoredTradeOffer;
+      const offer = { cashWen, items } satisfies StoredTradeOffer;
       this.validateTradeOffer(playerId, offer);
       const side = row.player_a_id === playerId ? "a" : "b";
       this.db.prepare(`UPDATE trade_sessions SET offer_${side}_json=?,confirmed_a=0,confirmed_b=0,updated_at=? WHERE id=?`)
@@ -2172,10 +2379,12 @@ export class GameService {
       const finalB = parseStoredTradeOffer(row.offer_b_json);
       this.validateTradeOffer(row.player_a_id, finalA);
       this.validateTradeOffer(row.player_b_id, finalB);
-      this.db.prepare("UPDATE players SET silver=silver-?+?,updated_at=? WHERE id=?")
-        .run(finalA.silver, finalB.silver, timestamp, row.player_a_id);
-      this.db.prepare("UPDATE players SET silver=silver-?+?,updated_at=? WHERE id=?")
-        .run(finalB.silver, finalA.silver, timestamp, row.player_b_id);
+      this.changeCashWen(
+        row.player_a_id, finalB.cashWen - finalA.cashWen, "玩家直接交易", "trade", tradeId, timestamp,
+      );
+      this.changeCashWen(
+        row.player_b_id, finalA.cashWen - finalB.cashWen, "玩家直接交易", "trade", tradeId, timestamp,
+      );
       this.transferTradeItems(row.player_a_id, row.player_b_id, finalA, timestamp);
       this.transferTradeItems(row.player_b_id, row.player_a_id, finalB, timestamp);
       this.db.prepare("UPDATE trade_sessions SET status='completed',updated_at=? WHERE id=?").run(timestamp, tradeId);
@@ -2202,7 +2411,7 @@ export class GameService {
   private displayTradeOffer(value: string): TradeOffer {
     const offer = parseStoredTradeOffer(value);
     return {
-      silver: offer.silver,
+      cashWen: offer.cashWen,
       items: offer.items.map((offered) => {
         const row = this.db.prepare(`
           SELECT i.definition_id,d.name FROM item_instances i JOIN item_definitions d ON d.id=i.definition_id WHERE i.id=?
@@ -2344,17 +2553,18 @@ export class GameService {
     const loser = this.getPlayer(loserId);
     const lootId = randomUUID();
     this.db.prepare(`
-      INSERT INTO loot_piles(id,location_id,silver,source_player_id,created_at,updated_at) VALUES (?,?,?,?,?,?)
-    `).run(lootId, combat.location_id, loser.silver, loserId, at, at);
+      INSERT INTO loot_piles(id,location_id,silver,cash_wen,source_player_id,created_at,updated_at) VALUES (?,?,0,?,?,?,?)
+    `).run(lootId, combat.location_id, loser.cashWen, loserId, at, at);
     this.db.prepare(`
       UPDATE item_instances SET owner_player_id=NULL,loot_pile_id=?,equipped_slot=NULL,updated_at=?
       WHERE owner_player_id=? AND bound=0
     `).run(lootId, at, loserId);
-    this.db.prepare("UPDATE players SET hp=0,silver=0,updated_at=?,last_seen_at=? WHERE id=?").run(at, at, loserId);
+    this.db.prepare("UPDATE players SET hp=0,updated_at=?,last_seen_at=? WHERE id=?").run(at, at, loserId);
+    if (loser.cashWen > 0) this.changeCashWen(loserId, -loser.cashWen, "战败掉落", "loot", lootId, at);
     this.db.prepare(`
       UPDATE combat_sessions SET status='completed',acting_player_id=NULL,turn_deadline=NULL,winner_id=?,loser_id=?,ended_at=?,updated_at=? WHERE id=?
     `).run(winnerId, loserId, at, at, combat.id);
-    const text = `${winner.name}击败${loser.name}；落败者的全部银两与未绑定物品掉落在当前地点。`;
+    const text = `${winner.name}击败${loser.name}；落败者的全部钱贯与未绑定物品掉落在当前地点。`;
     this.db.prepare("INSERT INTO world_events(player_id,event_type,content,created_at) VALUES (?,'defeat',?,?)").run(winnerId, text, at);
     for (const participant of [winnerId, loserId]) {
       this.db.prepare("INSERT INTO private_events(player_id,event_type,content,created_at) VALUES (?,'combat',?,?)").run(participant, text, at);
@@ -2505,13 +2715,13 @@ export class GameService {
 
   getLootPiles(locationId: string): LootPile[] {
     const rows = this.db.prepare(`
-      SELECT pile.id,pile.location_id,pile.silver,pile.source_player_id,p.name AS source_player_name
+      SELECT pile.id,pile.location_id,pile.cash_wen,pile.source_player_id,p.name AS source_player_name
       FROM loot_piles pile LEFT JOIN players p ON p.id=pile.source_player_id WHERE pile.location_id=? ORDER BY pile.created_at DESC
     `).all(locationId) as Array<{
-      id: string; location_id: string; silver: number; source_player_id: string | null; source_player_name: string | null;
+      id: string; location_id: string; cash_wen: number; source_player_id: string | null; source_player_name: string | null;
     }>;
     return rows.map((row) => ({
-      id: row.id, locationId: row.location_id, silver: row.silver, sourcePlayerId: row.source_player_id,
+      id: row.id, locationId: row.location_id, cashWen: row.cash_wen, sourcePlayerId: row.source_player_id,
       sourcePlayerName: row.source_player_name,
       items: (this.db.prepare(`
         SELECT d.name,i.quantity,i.quality FROM item_instances i JOIN item_definitions d ON d.id=i.definition_id
@@ -2523,17 +2733,17 @@ export class GameService {
   takeLoot(playerId: string, lootPileId: string) {
     return inTransaction(this.db, () => {
       const player = this.assertCanTakeGameAction(playerId);
-      const pile = this.db.prepare("SELECT location_id,silver FROM loot_piles WHERE id=?").get(lootPileId) as {
-        location_id: string; silver: number;
+      const pile = this.db.prepare("SELECT location_id,cash_wen FROM loot_piles WHERE id=?").get(lootPileId) as {
+        location_id: string; cash_wen: number;
       } | undefined;
       if (!pile || pile.location_id !== player.current_location) throw new Error("战利品不在当前位置或已经被取走。");
       const timestamp = this.now().toISOString();
-      this.db.prepare("UPDATE players SET silver=silver+?,updated_at=? WHERE id=?").run(pile.silver, timestamp, playerId);
+      if (pile.cash_wen > 0) this.changeCashWen(playerId, pile.cash_wen, "拾取战利品", "loot", lootPileId, timestamp);
       this.db.prepare("UPDATE item_instances SET owner_player_id=?,loot_pile_id=NULL,updated_at=? WHERE loot_pile_id=?")
         .run(playerId, timestamp, lootPileId);
       this.db.prepare("DELETE FROM loot_piles WHERE id=?").run(lootPileId);
       this.db.prepare("INSERT INTO private_events(player_id,event_type,content,created_at) VALUES (?,'loot',?,?)")
-        .run(playerId, `取得战利品与${pile.silver}银两。`, timestamp);
+        .run(playerId, `取得战利品与${formatCashWen(pile.cash_wen)}。`, timestamp);
       return { player: this.getPlayer(playerId), inventory: this.getInventoryState(playerId), message: "战利品已收入行囊。" };
     });
   }
@@ -2565,6 +2775,7 @@ export class GameService {
       transitions: this.getTransitions(self.currentLocation), actions: this.getActions([self.currentLocation]),
       actionState: this.readActionState(playerId),
       inventory: this.getInventoryState(playerId),
+      shop: this.getCurrentShopSummary(playerId),
       social: this.getSocialState(playerId),
       combat: this.getCombatState(playerId),
       lootPiles: this.getLootPiles(self.currentLocation),
@@ -2875,7 +3086,7 @@ export class GameService {
           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,1)
         `).run(id, layerId, name, region?.name ?? "公共区域", description, position.x, position.y, regionId, gridX, gridY, chunk.chunkX, chunk.chunkY);
       }
-      this.db.prepare("INSERT OR IGNORE INTO action_definitions(id,location_id,name,description,stamina_delta,silver_delta,cultivation_delta,hp_delta,result_template) VALUES (?,?,'观察','观察这个地点的环境。',0,0,0,0,'{name}在此观察四周。')").run(`observe-${id}`, id);
+      this.db.prepare("INSERT OR IGNORE INTO action_definitions(id,location_id,name,description,stamina_delta,silver_delta,cultivation_delta,hp_delta,result_template,cash_wen_delta) VALUES (?,?,'观察','观察这个地点的环境。',0,0,0,0,'{name}在此观察四周。',0)").run(`observe-${id}`, id);
       const forward: MapEditOperation = { type: "location.create", location: { id, layerId, name, description, regionId, gridX, gridY } };
       return { forward, inverse: { type: "location.delete", locationId: id }, invalidatedChunks: [`${layerId}:${chunkKey(chunk.chunkX, chunk.chunkY)}`] };
     }
@@ -3045,15 +3256,16 @@ export class GameService {
       this.settleCultivationInternal(playerId, this.now(), false);
       const player = this.getPlayer(playerId);
       const row = this.db.prepare(`
-        SELECT id,location_id,name,description,silver_delta,hp_delta,result_template FROM action_definitions WHERE id=?
-      `).get(actionId) as { id: string; location_id: string; name: string; description: string; silver_delta: number; hp_delta: number; result_template: string } | undefined;
+        SELECT id,location_id,name,description,cash_wen_delta,hp_delta,result_template FROM action_definitions WHERE id=?
+      `).get(actionId) as { id: string; location_id: string; name: string; description: string; cash_wen_delta: number; hp_delta: number; result_template: string } | undefined;
       if (!row || row.location_id !== player.currentLocation) throw new Error("这里无法进行这项行动。");
-      const action: ActionDefinition = { id: row.id, locationId: row.location_id, name: row.name, description: row.description, silverDelta: row.silver_delta, hpDelta: row.hp_delta };
-      if (player.silver + action.silverDelta < 0) throw new Error("银两不足。");
+      const action: ActionDefinition = { id: row.id, locationId: row.location_id, name: row.name, description: row.description, cashWenDelta: row.cash_wen_delta, hpDelta: row.hp_delta };
+      if (player.cashWen + action.cashWenDelta < 0) throw new Error("钱贯不足。");
       const hp = Math.max(0, Math.min(player.maxHp, player.hp + action.hpDelta));
       const at = this.now().toISOString();
       const content = row.result_template.replace("{name}", player.name);
-      this.db.prepare("UPDATE players SET hp=?,silver=?,updated_at=?,last_seen_at=? WHERE id=?").run(hp, player.silver + action.silverDelta, at, at, playerId);
+      this.db.prepare("UPDATE players SET hp=?,updated_at=?,last_seen_at=? WHERE id=?").run(hp, at, at, playerId);
+      if (action.cashWenDelta) this.changeCashWen(playerId, action.cashWenDelta, action.name, "legacy-action", action.id, at);
       this.db.prepare("INSERT INTO action_logs(player_id,kind,action_id,action_template_id,from_location,to_location,result_text,created_at) VALUES (?,'action',?,?,?,?,?,?)")
         .run(playerId, action.id, action.id, player.currentLocation, player.currentLocation, content, at);
       const result = this.db.prepare("INSERT INTO world_events(player_id,event_type,content,created_at) VALUES (?,'action',?,?)").run(playerId, content, at);

@@ -13,6 +13,8 @@ import {
   minorAttributePoints,
 } from "../lib/game/progression";
 import { GameService } from "../lib/game/service";
+import { formatCashWen } from "../lib/game/currency";
+import { clientMessageSchema } from "../lib/game/protocol";
 import { npcAgentToken } from "../lib/game/npc-auth";
 import { UtilityNpcController } from "../lib/game/npc-controller";
 import { ensureNpcPopulation, NPC_POPULATION } from "../lib/game/npc-seed";
@@ -39,6 +41,13 @@ describe("GameService", () => {
     expect(conciseLocationName("嬴长嫚与楼夜秋之家·入口")).toBe("住宅入口");
     expect(conciseLocationName("东京城·大内·宣德门")).toBe("宣德门");
     expect(conciseLocationName("东京城·惠民药铺")).toBe("惠民药铺");
+  });
+
+  it("formats authoritative cash in guan and wen", () => {
+    expect(formatCashWen(0)).toBe("0文");
+    expect(formatCashWen(50)).toBe("50文");
+    expect(formatCashWen(1_000)).toBe("1贯");
+    expect(formatCashWen(12_345)).toBe("12贯345文");
   });
 
   it("seeds a source-tracked 500+ location world and preserves all ordinary direction slots", () => {
@@ -183,13 +192,14 @@ describe("GameService", () => {
     }
   });
 
-  it("installs schema-v9 active-skill duration storage without breaking legacy actions", () => {
+  it("installs schema-v10 economy and active-skill storage without breaking legacy actions", () => {
     const requiredTables = [
       "action_templates", "location_facilities", "location_action_bindings", "action_jobs", "player_needs",
       "skill_definitions", "player_skills", "item_definitions", "item_instances", "recipe_definitions",
       "crop_definitions", "farm_plots", "interaction_requests", "player_relationships", "trade_sessions",
       "combat_sessions", "loot_piles", "npc_profiles", "agent_credentials",
       "player_action_cooldowns", "player_active_skills",
+      "player_wallets", "currency_ledger", "player_starter_grants", "shops", "shop_service_locations", "shop_stock", "shop_transactions",
     ];
     const tables = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>).map((row) => row.name));
     expect(requiredTables.every((table) => tables.has(table))).toBe(true);
@@ -237,7 +247,7 @@ describe("GameService", () => {
     const custom = {
       id: "custom-test-action", name: "测试整理", description: "用于规则编辑测试。", category: "life" as const,
       targetKind: "self" as const, durationSeconds: 60, requirements: {}, check: {}, costs: {},
-      success: { silverDelta: 2 }, failure: {}, resultTemplate: "{name}完成测试整理。",
+      success: { cashWenDelta: 2_000 }, failure: {}, resultTemplate: "{name}完成测试整理。",
       adult: false, visibility: "private" as const, cooldownSeconds: 0,
     };
     expect(service.createActionRule(custom).rules.actions.find((action) => action.id === custom.id)).toMatchObject({ version: 1, seedRevision: 0 });
@@ -322,6 +332,9 @@ describe("GameService", () => {
     const player = service.createSession().player;
     let inventory = service.getInventoryState(player.id);
     expect(inventory.items.map((item) => item.name)).toEqual(expect.arrayContaining(["棉布衣", "布靴", "木剑", "清水", "家常饭"]));
+    const starterSeeds = inventory.items.find((item) => item.definitionId === "rice-seed")!;
+    db.prepare("DELETE FROM item_instances WHERE id=?").run(starterSeeds.id);
+    expect(service.getInventoryState(player.id).items.some((item) => item.id === starterSeeds.id)).toBe(false);
     const sword = inventory.items.find((item) => item.definitionId === "wooden-sword")!;
     expect(sword).toMatchObject({ bound: true, equippedSlot: "weapon", durability: 80 });
     expect(player.derived.maxAttack).toBe(45);
@@ -355,6 +368,62 @@ describe("GameService", () => {
     inventory = service.getInventoryState(player.id);
     expect(inventory.items.find((item) => item.id === "test-rice")).toBeUndefined();
     expect(inventory.items.filter((item) => item.definitionId === "simple-meal").reduce((sum, item) => sum + item.quantity, 0)).toBe(4);
+  });
+
+  it("runs finite-stock Song retail with cash ledger, opening hours and idempotent requests", () => {
+    expect(db.prepare("SELECT COUNT(*) AS count FROM shops WHERE is_active=1").get()).toEqual({ count: 120 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM shop_service_locations").get()).toEqual({ count: 168 });
+    const player = service.createSession().player;
+    const medicine = db.prepare("SELECT id,location_id,till_wen FROM shops WHERE name='惠民药铺'").get() as {
+      id: string; location_id: string; till_wen: number;
+    };
+    db.prepare("UPDATE players SET current_location=? WHERE id=?").run(medicine.location_id, player.id);
+    expect(service.getCurrentShopSummary(player.id)).toMatchObject({ id: medicine.id, name: "惠民药铺", isOpen: true });
+    const inspected = service.inspectShop(player.id, medicine.id);
+    const poultice = inspected.stock.find((item) => item.definitionId === "healing-poultice")!;
+    const originalStock = poultice.quantity;
+
+    const bought = service.buyFromShop(player.id, "shop-buy-request", medicine.id, poultice.definitionId, 1);
+    expect(bought.player.cashWen).toBe(20_000 - poultice.buyPriceWen);
+    expect(bought.shop.stock.find((item) => item.definitionId === poultice.definitionId)?.quantity).toBe(originalStock - 1);
+    expect(db.prepare("SELECT till_wen FROM shops WHERE id=?").get(medicine.id)).toEqual({ till_wen: medicine.till_wen + poultice.buyPriceWen });
+    expect(db.prepare("SELECT delta_wen FROM currency_ledger WHERE player_id=? ORDER BY rowid DESC LIMIT 1").get(player.id))
+      .toEqual({ delta_wen: -poultice.buyPriceWen });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM shop_transactions WHERE player_id=? AND request_id='shop-buy-request'").get(player.id))
+      .toEqual({ count: 1 });
+
+    const replayed = service.buyFromShop(player.id, "shop-buy-request", medicine.id, poultice.definitionId, 1);
+    expect(replayed.player.cashWen).toBe(bought.player.cashWen);
+    expect(replayed.shop.stock.find((item) => item.definitionId === poultice.definitionId)?.quantity).toBe(originalStock - 1);
+    expect(() => service.buyFromShop(player.id, "shop-buy-request", medicine.id, poultice.definitionId, 2))
+      .toThrow("同一请求编号");
+
+    const purchased = service.getInventoryState(player.id).items.find((item) => item.definitionId === poultice.definitionId && !item.bound)!;
+    const sold = service.sellToShop(player.id, "shop-sell-request", medicine.id, purchased.id, 1);
+    expect(sold.player.cashWen).toBe(20_000 - poultice.buyPriceWen + poultice.sellPriceWen);
+    expect(sold.shop.stock.find((item) => item.definitionId === poultice.definitionId)?.quantity).toBe(originalStock);
+    const bound = service.getInventoryState(player.id).items.find((item) => item.bound)!;
+    expect(() => service.sellToShop(player.id, "shop-bound-request", medicine.id, bound.id, 1)).toThrow("绑定物品不能出售");
+
+    db.prepare("UPDATE shop_stock SET quantity=3 WHERE shop_id=? AND item_definition_id=?").run(medicine.id, poultice.definitionId);
+    importWorldSeed(db);
+    expect(db.prepare("SELECT quantity FROM shop_stock WHERE shop_id=? AND item_definition_id=?").get(medicine.id, poultice.definitionId))
+      .toEqual({ quantity: 3 });
+
+    const beforeFailure = db.prepare("SELECT quantity FROM shop_stock WHERE shop_id=? AND item_definition_id=?").get(medicine.id, poultice.definitionId);
+    db.prepare("UPDATE player_wallets SET cash_wen=0 WHERE player_id=?").run(player.id);
+    expect(() => service.buyFromShop(player.id, "shop-no-cash", medicine.id, poultice.definitionId, 1)).toThrow("钱贯不足");
+    expect(db.prepare("SELECT quantity FROM shop_stock WHERE shop_id=? AND item_definition_id=?").get(medicine.id, poultice.definitionId)).toEqual(beforeFailure);
+
+    clock = new Date("2026-08-03T15:00:00.000Z");
+    expect(service.getCurrentShopSummary(player.id)).toMatchObject({ isOpen: false });
+    expect(() => service.buyFromShop(player.id, "shop-closed", medicine.id, poultice.definitionId, 1)).toThrow("已经打烊");
+    db.prepare("UPDATE players SET current_location='home-entrance' WHERE id=?").run(player.id);
+    expect(() => service.inspectShop(player.id, medicine.id)).toThrow("不在当前位置");
+
+    expect(clientMessageSchema.safeParse({ type: "shop.buy", requestId: "test", shopId: medicine.id, definitionId: poultice.definitionId, quantity: 1 }).success).toBe(true);
+    expect(clientMessageSchema.safeParse({ type: "trade.offer", requestId: "test", tradeId: "trade", cashWen: 1_000, items: [] }).success).toBe(true);
+    expect(clientMessageSchema.safeParse({ type: "trade.offer", requestId: "test", tradeId: "trade", silver: 1, items: [] }).success).toBe(false);
   });
 
   it("plants and harvests persistent real-time farm plots", () => {
@@ -555,7 +624,7 @@ describe("GameService", () => {
     expect(service.greetPlayer(first.id, second.id).event.eventType).toBe("social");
   });
 
-  it("atomically exchanges unbound items and silver after both trade confirmations", () => {
+  it("atomically exchanges unbound items and cash wen after both trade confirmations", () => {
     const first = service.createSession().player;
     const second = service.createSession().player;
     db.prepare(`
@@ -565,14 +634,14 @@ describe("GameService", () => {
     service.requestTrade(first.id, second.id);
     const tradeId = service.getSocialState(second.id).trades[0].id;
     service.respondTrade(second.id, tradeId, true, [first.id, second.id]);
-    service.offerTrade(first.id, tradeId, 5, [{ itemId: "trade-rice", quantity: 2 }]);
-    service.offerTrade(second.id, tradeId, 3, []);
+    service.offerTrade(first.id, tradeId, 5_000, [{ itemId: "trade-rice", quantity: 2 }]);
+    service.offerTrade(second.id, tradeId, 3_000, []);
     expect(service.confirmTrade(first.id, tradeId).message).toContain("等待对方");
     expect(service.getSocialState(first.id).trades[0]).toMatchObject({ ownConfirmed: true, otherConfirmed: false });
     expect(service.confirmTrade(second.id, tradeId).message).toBe("交易完成。");
 
-    expect(service.getPlayer(first.id).silver).toBe(18);
-    expect(service.getPlayer(second.id).silver).toBe(22);
+    expect(service.getPlayer(first.id).cashWen).toBe(18_000);
+    expect(service.getPlayer(second.id).cashWen).toBe(22_000);
     expect(db.prepare("SELECT quantity,owner_player_id FROM item_instances WHERE id='trade-rice'").get()).toEqual({ quantity: 1, owner_player_id: first.id });
     expect((db.prepare("SELECT SUM(quantity) AS quantity FROM item_instances WHERE owner_player_id=? AND definition_id='rice'").get(second.id) as { quantity: number }).quantity).toBe(2);
     expect(service.getSocialState(first.id).trades).toHaveLength(0);
@@ -606,7 +675,7 @@ describe("GameService", () => {
     expect(service.getPlayer(defender.id).hp).toBe(defender.hp);
   });
 
-  it("drops all silver and unbound items on defeat, then supports loot pickup and half-health respawn", () => {
+  it("drops all cash wen and unbound items on defeat, then supports loot pickup and half-health respawn", () => {
     const attacker = service.createSession().player;
     const defender = service.createSession().player;
     db.prepare(`
@@ -619,10 +688,10 @@ describe("GameService", () => {
     const combat = service.startCombat(attacker.id, defender.id);
     service.chooseCombatAction(attacker.id, combat.combatId, "attack");
 
-    expect(service.getPlayer(defender.id)).toMatchObject({ hp: 0, silver: 0, defeated: true });
+    expect(service.getPlayer(defender.id)).toMatchObject({ hp: 0, cashWen: 0, defeated: true });
     const piles = service.getLootPiles("home-entrance");
     expect(piles).toHaveLength(1);
-    expect(piles[0]).toMatchObject({ silver: 20, sourcePlayerId: defender.id });
+    expect(piles[0]).toMatchObject({ cashWen: 20_000, sourcePlayerId: defender.id });
     expect(piles[0].items).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: "稻米", quantity: 4 }),
       expect.objectContaining({ name: "布靴", quantity: 1 }),
@@ -631,13 +700,13 @@ describe("GameService", () => {
     expect(() => service.move(defender.id, "home-hall")).toThrow("请先返回玄关复起");
 
     service.takeLoot(attacker.id, piles[0].id);
-    expect(service.getPlayer(attacker.id).silver).toBe(40);
+    expect(service.getPlayer(attacker.id).cashWen).toBe(40_000);
     expect(service.getLootPiles("home-entrance")).toHaveLength(0);
     expect(db.prepare("SELECT owner_player_id,equipped_slot FROM item_instances WHERE id='combat-boots'").get())
       .toEqual({ owner_player_id: attacker.id, equipped_slot: null });
 
     const respawned = service.respawnPlayer(defender.id).player;
-    expect(respawned).toMatchObject({ currentLocation: "home-entrance", defeated: false, silver: 0 });
+    expect(respawned).toMatchObject({ currentLocation: "home-entrance", defeated: false, cashWen: 0 });
     expect(respawned.hp).toBe(Math.ceil(respawned.maxHp / 2));
     expect(respawned.injuryUntil).not.toBeNull();
   });
@@ -719,6 +788,60 @@ describe("GameService", () => {
       expect(upgraded.prepare("SELECT COUNT(*) AS count FROM player_visited_locations WHERE player_id=? AND location_id='palos-legacy-camp'").get(player.id))
         .toEqual({ count: 1 });
       expect(upgradedService.getVisitedMap(player.id).locations.map((location) => location.id)).not.toContain("palos-legacy-camp");
+      upgraded.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("migrates schema-v9 silver state to cash wen exactly once", () => {
+    const directory = mkdtempSync(join(tmpdir(), "wuxia-currency-migration-"));
+    const databasePath = join(directory, "game.db");
+    try {
+      const before = openGameDatabase(databasePath);
+      const beforeService = new GameService(before, () => new Date(clock), () => roll);
+      const first = beforeService.createSession().player;
+      const second = beforeService.createSession().player;
+      before.prepare("UPDATE players SET silver=7 WHERE id=?").run(first.id);
+      before.prepare(`
+        INSERT INTO loot_piles(id,location_id,silver,cash_wen,source_player_id,created_at,updated_at)
+        VALUES ('legacy-silver-loot','home-entrance',3,0,?,?,?)
+      `).run(second.id, clock.toISOString(), clock.toISOString());
+      before.prepare(`
+        INSERT INTO action_templates(
+          id,name,description,category,target_kind,duration_seconds,requirements_json,check_json,costs_json,
+          outcomes_json,result_template,adult,visibility,cooldown_seconds,version,is_active,seed_revision,created_at,updated_at
+        ) VALUES ('legacy-silver-action','旧银行动','用于迁移测试。','life','self',0,'{}','{}','{"silverDelta":-1}',
+          '{"success":{"silverDelta":2},"failure":{}}','{name}完成旧银行动。',0,'private',0,1,1,0,?,?)
+      `).run(clock.toISOString(), clock.toISOString());
+      beforeService.requestTrade(first.id, second.id);
+      const tradeId = beforeService.getSocialState(first.id).trades[0].id;
+      before.prepare("UPDATE trade_sessions SET offer_a_json=? WHERE id=?")
+        .run(JSON.stringify({ silver: 4, items: [] }), tradeId);
+      before.prepare("DELETE FROM currency_ledger WHERE player_id=?").run(first.id);
+      before.prepare("DELETE FROM player_wallets WHERE player_id=?").run(first.id);
+      before.prepare("DELETE FROM schema_migrations").run();
+      before.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (9,?)").run(clock.toISOString());
+      before.close();
+
+      let upgraded = openGameDatabase(databasePath);
+      let upgradedService = new GameService(upgraded, () => new Date(clock), () => roll);
+      expect(upgradedService.getPlayer(first.id).cashWen).toBe(7_000);
+      expect(upgradedService.getLootPiles("home-entrance").find((pile) => pile.id === "legacy-silver-loot")?.cashWen).toBe(3_000);
+      expect(JSON.parse((upgraded.prepare("SELECT costs_json FROM action_templates WHERE id='legacy-silver-action'").get() as { costs_json: string }).costs_json))
+        .toEqual({ cashWenDelta: -1_000 });
+      expect(JSON.parse((upgraded.prepare("SELECT outcomes_json FROM action_templates WHERE id='legacy-silver-action'").get() as { outcomes_json: string }).outcomes_json))
+        .toEqual({ success: { cashWenDelta: 2_000 }, failure: {} });
+      expect(upgradedService.getSocialState(first.id).trades[0].ownOffer.cashWen).toBe(4_000);
+      expect(upgraded.prepare("SELECT COUNT(*) AS count FROM currency_ledger WHERE player_id=?").get(first.id)).toEqual({ count: 1 });
+      upgraded.prepare("UPDATE players SET silver=99 WHERE id=?").run(first.id);
+      expect(upgradedService.getPlayer(first.id).cashWen).toBe(7_000);
+      upgraded.close();
+
+      upgraded = openGameDatabase(databasePath);
+      upgradedService = new GameService(upgraded, () => new Date(clock), () => roll);
+      expect(upgradedService.getPlayer(first.id).cashWen).toBe(7_000);
+      expect(upgraded.prepare("SELECT COUNT(*) AS count FROM currency_ledger WHERE player_id=?").get(first.id)).toEqual({ count: 1 });
       upgraded.close();
     } finally {
       rmSync(directory, { recursive: true, force: true });

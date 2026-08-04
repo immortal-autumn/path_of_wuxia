@@ -389,6 +389,43 @@ test.describe("game map", () => {
     await expect(page.getByRole("status")).toContainText("行动已取消");
   });
 
+  test("inspects a Song shop and confirms finite-stock buy and sell", async ({ page }) => {
+    await enterWorld(page);
+    await updatePlayer(page, "UPDATE players SET current_location=(SELECT location_id FROM shops WHERE name='惠民药铺') WHERE id=?");
+    await updatePlayer(page, "UPDATE shops SET opens_minute=0,closes_minute=0 WHERE name='惠民药铺' AND ?<>''");
+    await page.reload();
+    await expect(page.locator(".connection-badge")).toContainText("江湖在线");
+    const openShop = page.getByRole("button", { name: "查看惠民药铺" });
+    await expect(openShop).toContainText("正在营业");
+    await openShop.click();
+    let dialog = page.getByRole("dialog", { name: "店铺详情：惠民药铺" });
+    await expect(dialog).toContainText("钱袋 20贯");
+    await expect(dialog).toContainText("店柜 200贯");
+    const medicine = dialog.getByLabel("店铺货物").getByRole("button").filter({ hasText: "止血药膏" });
+    await expect(medicine).toContainText("存 12");
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
+
+    await openShop.click();
+    dialog = page.getByRole("dialog", { name: "店铺详情：惠民药铺" });
+    await dialog.getByLabel("店铺货物").getByRole("button").filter({ hasText: "止血药膏" }).click();
+    await dialog.getByLabel("店铺交易数量").fill("1");
+    await dialog.getByRole("button", { name: "确认购买" }).click();
+    await expect(page.getByRole("status")).toContainText("已花费");
+    await expect(dialog.getByLabel("店铺货物").getByRole("button").filter({ hasText: "止血药膏" })).toContainText("存 11");
+    const ownedMedicine = dialog.getByLabel("可售物品").getByRole("button").filter({ hasText: "止血药膏" });
+    await ownedMedicine.click();
+    await dialog.getByRole("button", { name: "确认出售" }).click();
+    await expect(page.getByRole("status")).toContainText("已售得");
+    await expect(dialog.getByLabel("店铺货物").getByRole("button").filter({ hasText: "止血药膏" })).toContainText("存 12");
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(dialog).toBeVisible();
+    expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await page.locator(".detail-modal-backdrop").click({ position: { x: 4, y: 4 } });
+    await expect(dialog).toBeHidden();
+  });
+
   test("walks the historical Tokyo Kaifeng street, river, bridge, and palace axes", async ({ page }) => {
     await enterWorld(page);
     await performAction(page, "整理衣装");
@@ -706,7 +743,7 @@ test.describe("real-time multiplayer", () => {
     const pendingTrade = second.getByLabel("交易会话").locator(".trade-card");
     await pendingTrade.getByRole("button", { name: "接受交易" }).click();
     const firstTrade = first.getByLabel("交易会话").locator(".trade-card");
-    await firstTrade.getByLabel("银两").fill("1");
+    await firstTrade.getByLabel("现钱（文）").fill("1000");
     await firstTrade.getByRole("button", { name: "更新报价" }).click();
     await firstTrade.getByRole("button", { name: "确认报价" }).click();
     const secondTrade = second.getByLabel("交易会话").locator(".trade-card");

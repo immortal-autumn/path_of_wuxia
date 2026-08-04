@@ -116,8 +116,8 @@ export const ACTION_CATALOG: CatalogAction[] = [
   {
     id: "action-work-shift", name: "做工八小时", description: "在城镇或市场完成一班现实八小时的工作。", category: "production",
     durationSeconds: 28_800, facilityTypes: ["settlement", "market"], check: { attribute: "constitution", difficulty: 45 },
-    success: { silverDelta: 40, needDeltas: { fatigue: 35, satiety: -25, hydration: -30, hygiene: -10, bladder: 25 } },
-    failure: { silverDelta: 15, needDeltas: { fatigue: 35, satiety: -25, hydration: -30, hygiene: -10, bladder: 25 } },
+    success: { cashWenDelta: 40_000, needDeltas: { fatigue: 35, satiety: -25, hydration: -30, hygiene: -10, bladder: 25 } },
+    failure: { cashWenDelta: 15_000, needDeltas: { fatigue: 35, satiety: -25, hydration: -30, hygiene: -10, bladder: 25 } },
     resultTemplate: "{name}完成了一班工作。",
   },
   {

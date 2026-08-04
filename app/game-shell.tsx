@@ -10,11 +10,13 @@ import type {
   GameSnapshot,
   Location,
   MapTransition,
+  ShopState,
   VisitedMap,
 } from "@/lib/game/types";
 import { DIRECTION_LABEL } from "@/lib/game/map";
 import { createClientId } from "@/lib/game/client-id";
 import { conciseLocationName } from "@/lib/game/location-label";
+import { formatCashWen } from "@/lib/game/currency";
 
 type ConnectionState = "connecting" | "online" | "reconnecting" | "offline";
 type Drawer = "world" | "actions" | "character" | "chat" | null;
@@ -660,6 +662,7 @@ function ActionsPanel({
   privateEvents,
   combat,
   lootPiles,
+  shop,
   pending,
   open,
   onStart,
@@ -671,7 +674,8 @@ function ActionsPanel({
   onRespawn,
   onTakeLoot,
   onTransition,
-}: Pick<GameSnapshot, "actionState" | "inventory" | "transitions" | "self" | "locations" | "privateEvents" | "combat" | "lootPiles"> & {
+  onInspectShop,
+}: Pick<GameSnapshot, "actionState" | "inventory" | "transitions" | "self" | "locations" | "privateEvents" | "combat" | "lootPiles" | "shop"> & {
   pending: boolean;
   open: boolean;
   onStart: (actionId: string) => void;
@@ -683,6 +687,7 @@ function ActionsPanel({
   onRespawn: () => void;
   onTakeLoot: (lootPileId: string) => void;
   onTransition: (locationId: string) => void;
+  onInspectShop: (shopId: string) => void;
 }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -719,7 +724,7 @@ function ActionsPanel({
           {self.defeated && (
             <div className="combat-card defeated-card" role="alert">
               <strong>你已在战斗中落败</strong>
-              <p>全部银两与所有未绑定物品已掉落。返回玄关可恢复一半气血。</p>
+              <p>全部钱贯与所有未绑定物品已掉落。返回玄关可恢复一半气血。</p>
               <button disabled={pending} onClick={onRespawn}>返回玄关复起</button>
             </div>
           )}
@@ -741,7 +746,7 @@ function ActionsPanel({
           {lootPiles.map((pile) => (
             <div className="combat-card loot-card" key={pile.id}>
               <strong>{pile.sourcePlayerName ?? "无名者"}的掉落</strong>
-              <p>{pile.silver} 银 · {pile.items.map((item) => `${item.name}×${item.quantity}`).join("、") || "无物品"}</p>
+              <p>{formatCashWen(pile.cashWen)} · {pile.items.map((item) => `${item.name}×${item.quantity}`).join("、") || "无物品"}</p>
               <button disabled={pending || regularActionLocked} onClick={() => onTakeLoot(pile.id)}>拾取全部</button>
             </div>
           ))}
@@ -773,6 +778,13 @@ function ActionsPanel({
               <span><strong>{transition.label}</strong><small>跨地图层通道</small></span>
             </button>
           ))}
+          {shop && (
+            <button className="action-card shop-action" disabled={pending || regularActionLocked} onClick={() => onInspectShop(shop.id)}>
+              <span className="action-mark">肆</span>
+              <span><strong>查看{shop.name}</strong><small>{shop.category} · {shop.isOpen ? "正在营业" : "已经打烊"}</small></span>
+              <em>查看货物、价格与库存后确认买卖</em>
+            </button>
+          )}
           {inventory.recipes.map((recipe) => (
             <button
               className="action-card production-action"
@@ -920,7 +932,7 @@ function CharacterPanel({
   onBlock: (targetPlayerId: string, blocked: boolean) => void;
   onTradeRequest: (targetPlayerId: string) => void;
   onTradeRespond: (tradeId: string, accept: boolean) => void;
-  onTradeOffer: (tradeId: string, silver: number, items: Array<{ itemId: string; quantity: number }>) => void;
+  onTradeOffer: (tradeId: string, cashWen: number, items: Array<{ itemId: string; quantity: number }>) => void;
   onTradeConfirm: (tradeId: string) => void;
   onTradeCancel: (tradeId: string) => void;
   onCombatStart: (targetPlayerId: string) => void;
@@ -934,7 +946,7 @@ function CharacterPanel({
   const [draft, setDraft] = useState<BaseAttributes>({ strength: 0, agility: 0, constitution: 0, root: 0, comprehension: 0, spirit: 0 });
   const [adultStatus, setAdultStatus] = useState(social.adultProfile.status);
   const [adultEnabled, setAdultEnabled] = useState(social.adultProfile.contentEnabled);
-  const [tradeDrafts, setTradeDrafts] = useState<Record<string, { silver: string; itemId: string; quantity: string }>>({});
+  const [tradeDrafts, setTradeDrafts] = useState<Record<string, { cashWen: string; itemId: string; quantity: string }>>({});
   const [detail, setDetail] = useState<{ kind: "skill" | "item"; id: string } | null>(null);
   const allocated = Object.values(draft).reduce((sum, value) => sum + value, 0);
   const progress = Math.min(100, (self.cultivation.progress / Math.max(1, self.cultivation.nextLevelCost)) * 100);
@@ -1167,7 +1179,7 @@ function CharacterPanel({
           <section aria-label="交易会话">
             <h3>交易</h3>
             {social.trades.map((trade) => {
-              const tradeDraft = tradeDrafts[trade.id] ?? { silver: String(trade.ownOffer.silver), itemId: "", quantity: "1" };
+              const tradeDraft = tradeDrafts[trade.id] ?? { cashWen: String(trade.ownOffer.cashWen), itemId: "", quantity: "1" };
               if (trade.status === "pending") return (
                 <article className="trade-card" key={trade.id}>
                   <strong>与 {trade.otherPlayerName} 的交易请求</strong>
@@ -1180,9 +1192,9 @@ function CharacterPanel({
               return (
                 <article className="trade-card" key={trade.id}>
                   <strong>与 {trade.otherPlayerName} 交易</strong>
-                  <p>我的报价：{trade.ownOffer.silver} 银 · {trade.ownOffer.items.map((item) => `${item.name}×${item.quantity}`).join("、") || "无物品"}</p>
-                  <p>对方报价：{trade.otherOffer.silver} 银 · {trade.otherOffer.items.map((item) => `${item.name}×${item.quantity}`).join("、") || "无物品"}</p>
-                  <label>银两<input type="number" min="0" value={tradeDraft.silver} onChange={(event) => setTradeDrafts((current) => ({ ...current, [trade.id]: { ...tradeDraft, silver: event.target.value } }))} /></label>
+                  <p>我的报价：{formatCashWen(trade.ownOffer.cashWen)} · {trade.ownOffer.items.map((item) => `${item.name}×${item.quantity}`).join("、") || "无物品"}</p>
+                  <p>对方报价：{formatCashWen(trade.otherOffer.cashWen)} · {trade.otherOffer.items.map((item) => `${item.name}×${item.quantity}`).join("、") || "无物品"}</p>
+                  <label>现钱（文）<input type="number" min="0" value={tradeDraft.cashWen} onChange={(event) => setTradeDrafts((current) => ({ ...current, [trade.id]: { ...tradeDraft, cashWen: event.target.value } }))} /></label>
                   <label>物品<select value={tradeDraft.itemId} onChange={(event) => setTradeDrafts((current) => ({ ...current, [trade.id]: { ...tradeDraft, itemId: event.target.value } }))}>
                     <option value="">不提供物品</option>
                     {tradableItems.map((item) => <option value={item.id} key={item.id}>{item.name} · 可用 {item.quantity - item.reservedQuantity}</option>)}
@@ -1191,7 +1203,7 @@ function CharacterPanel({
                   <div>
                     <button disabled={pending} onClick={() => onTradeOffer(
                       trade.id,
-                      Math.max(0, Number.parseInt(tradeDraft.silver || "0", 10) || 0),
+                      Math.max(0, Number.parseInt(tradeDraft.cashWen || "0", 10) || 0),
                       tradeDraft.itemId ? [{ itemId: tradeDraft.itemId, quantity: Math.max(1, Number.parseInt(tradeDraft.quantity || "1", 10) || 1) }] : [],
                     )}>更新报价</button>
                     <button disabled={pending || trade.ownConfirmed} onClick={() => onTradeConfirm(trade.id)}>{trade.ownConfirmed ? "已确认" : "确认报价"}</button>
@@ -1205,7 +1217,7 @@ function CharacterPanel({
           </section>
         </div>
       )}
-      <div className="character-numbers"><div><span>银两</span><strong>{self.silver}</strong><small>枚</small></div></div>
+      <div className="character-numbers"><div><span>钱贯</span><strong>{formatCashWen(self.cashWen)}</strong><small>贯 / 文</small></div></div>
     </section>
     {detail && typeof document !== "undefined" && createPortal(
       <div className="detail-modal-backdrop" onMouseDown={(event) => {
@@ -1272,6 +1284,107 @@ function CharacterPanel({
       document.body,
     )}
     </>
+  );
+}
+
+function minuteLabel(minute: number) {
+  const safe = Math.max(0, Math.min(1440, minute));
+  return `${String(Math.floor(safe / 60)).padStart(2, "0")}:${String(safe % 60).padStart(2, "0")}`;
+}
+
+function ShopModal({
+  shop,
+  inventory,
+  cashWen,
+  pending,
+  onBuy,
+  onSell,
+  onClose,
+}: {
+  shop: ShopState;
+  inventory: GameSnapshot["inventory"];
+  cashWen: number;
+  pending: boolean;
+  onBuy: (definitionId: string, quantity: number) => void;
+  onSell: (itemId: string, quantity: number) => void;
+  onClose: () => void;
+}) {
+  const [buyId, setBuyId] = useState(shop.stock[0]?.definitionId ?? "");
+  const [sellId, setSellId] = useState("");
+  const [quantity, setQuantity] = useState("1");
+  const selectedStock = shop.stock.find((item) => item.definitionId === buyId) ?? null;
+  const acceptedDefinitions = new Set(shop.stock.map((item) => item.definitionId));
+  const sellableItems = inventory.items.filter((item) => (
+    acceptedDefinitions.has(item.definitionId) && !item.bound && !item.equippedSlot && item.quantity > item.reservedQuantity
+  ));
+  const selectedOwned = sellableItems.find((item) => item.id === sellId) ?? null;
+  const selectedSellStock = selectedOwned ? shop.stock.find((item) => item.definitionId === selectedOwned.definitionId) ?? null : null;
+  const parsedQuantity = Math.max(1, Number.parseInt(quantity || "1", 10) || 1);
+
+  useEffect(() => {
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
+
+  return createPortal(
+    <div className="detail-modal-backdrop" onMouseDown={(event) => {
+      if (event.target === event.currentTarget) onClose();
+    }}>
+      <section className="detail-modal shop-modal" role="dialog" aria-modal="true" aria-label={`店铺详情：${shop.name}`}>
+        <header>
+          <div><p className="eyebrow">东京市易</p><h2>{shop.name}</h2></div>
+          <button type="button" onClick={onClose}>关闭</button>
+        </header>
+        <div className="shop-summary">
+          <span>{shop.category}</span>
+          <span>{minuteLabel(shop.opensMinute)}–{minuteLabel(shop.closesMinute)}</span>
+          <strong>{shop.isOpen ? "正在营业" : "已经打烊"}</strong>
+          <span>钱袋 {formatCashWen(cashWen)}</span>
+          <span>店柜 {formatCashWen(shop.tillWen)}</span>
+        </div>
+        <div className="shop-columns">
+          <section aria-label="店铺货物">
+            <h3>买入货物</h3>
+            <div className="shop-item-list">
+              {shop.stock.map((item) => (
+                <button key={item.definitionId} className={buyId === item.definitionId ? "selected" : ""} onClick={() => { setBuyId(item.definitionId); setSellId(""); }}>
+                  <span><strong>{item.name}</strong><small>{item.description}</small></span>
+                  <em>{formatCashWen(item.buyPriceWen)} · 存 {item.quantity}</em>
+                </button>
+              ))}
+            </div>
+          </section>
+          <section aria-label="可售物品">
+            <h3>出售行囊物品</h3>
+            <div className="shop-item-list">
+              {sellableItems.map((item) => {
+                const quote = shop.stock.find((stock) => stock.definitionId === item.definitionId);
+                return (
+                  <button key={item.id} className={sellId === item.id ? "selected" : ""} onClick={() => { setSellId(item.id); setBuyId(""); }}>
+                    <span><strong>{item.name}</strong><small>品质 {item.quality} · 可售 {item.quantity - item.reservedQuantity}</small></span>
+                    <em>{quote ? formatCashWen(quote.sellPriceWen) : "不收购"}</em>
+                  </button>
+                );
+              })}
+              {sellableItems.length === 0 && <p>行囊中没有本店收购的未绑定物品。</p>}
+            </div>
+          </section>
+        </div>
+        <footer className="shop-confirmation">
+          <label>数量<input aria-label="店铺交易数量" type="number" min="1" value={quantity} onChange={(event) => setQuantity(event.target.value)} /></label>
+          {selectedStock && (
+            <><span>合计 {formatCashWen(selectedStock.buyPriceWen * parsedQuantity)}</span><button disabled={pending || !shop.isOpen || parsedQuantity > selectedStock.quantity || selectedStock.buyPriceWen * parsedQuantity > cashWen} onClick={() => onBuy(selectedStock.definitionId, parsedQuantity)}>确认购买</button></>
+          )}
+          {selectedOwned && selectedSellStock && (
+            <><span>可得 {formatCashWen(selectedSellStock.sellPriceWen * parsedQuantity)}</span><button disabled={pending || !shop.isOpen || parsedQuantity > selectedOwned.quantity - selectedOwned.reservedQuantity || selectedSellStock.sellPriceWen * parsedQuantity > shop.tillWen} onClick={() => onSell(selectedOwned.id, parsedQuantity)}>确认出售</button></>
+          )}
+        </footer>
+      </section>
+    </div>,
+    document.body,
   );
 }
 
@@ -1356,6 +1469,7 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
   const [visitedMapLoading, setVisitedMapLoading] = useState(false);
   const [visitedMap, setVisitedMap] = useState<VisitedMap | null>(null);
   const [visitedLayerId, setVisitedLayerId] = useState("");
+  const [shopState, setShopState] = useState<ShopState | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const pendingRequestRef = useRef<string | null>(null);
   const visitedMapRequestRef = useRef<string | null>(null);
@@ -1386,7 +1500,10 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           return;
         }
 
-        if (message.type === "snapshot") setSnapshot(message.snapshot);
+        if (message.type === "snapshot") {
+          setSnapshot(message.snapshot);
+          setShopState((current) => current && message.snapshot.shop?.id !== current.id ? null : current);
+        }
         if (message.type === "self.updated") {
           setSnapshot((current) => ({ ...current, self: message.player }));
         }
@@ -1396,6 +1513,7 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
         if (message.type === "inventory.updated") {
           setSnapshot((current) => ({ ...current, inventory: message.inventory }));
         }
+        if (message.type === "shop.snapshot") setShopState(message.shop);
         if (message.type === "social.updated") {
           setSnapshot((current) => ({ ...current, social: message.social }));
         }
@@ -1508,6 +1626,7 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
     player.id !== snapshot.self.id && player.currentLocation === snapshot.self.currentLocation
   ));
   const drawerOpen = drawer !== null;
+
   const openVisitedMap = () => {
     setDrawer(null);
     setVisitedMapOpen(true);
@@ -1553,6 +1672,7 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           privateEvents={snapshot.privateEvents}
           combat={snapshot.combat}
           lootPiles={snapshot.lootPiles}
+          shop={snapshot.shop}
           pending={pending !== null || connection !== "online"}
           open={drawer === "actions"}
           onStart={(actionId) => sendCommand({ type: "action.start", actionId }, "action")}
@@ -1564,6 +1684,7 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           onRespawn={() => sendCommand({ type: "combat.respawn" }, "combat")}
           onTakeLoot={(lootPileId) => sendCommand({ type: "loot.take", lootPileId }, "loot")}
           onTransition={(locationId) => sendCommand({ type: "move", locationId }, "move")}
+          onInspectShop={(shopId) => sendCommand({ type: "shop.inspect", shopId }, "shop")}
         />
       </div>
 
@@ -1594,7 +1715,7 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           onBlock={(targetPlayerId, blocked) => sendCommand({ type: "player.block", targetPlayerId, blocked }, "social")}
           onTradeRequest={(targetPlayerId) => sendCommand({ type: "trade.request", targetPlayerId }, "trade")}
           onTradeRespond={(tradeId, accept) => sendCommand({ type: "trade.respond", tradeId, accept }, "trade")}
-          onTradeOffer={(tradeId, silver, items) => sendCommand({ type: "trade.offer", tradeId, silver, items }, "trade")}
+          onTradeOffer={(tradeId, cashWen, items) => sendCommand({ type: "trade.offer", tradeId, cashWen, items }, "trade")}
           onTradeConfirm={(tradeId) => sendCommand({ type: "trade.confirm", tradeId }, "trade")}
           onTradeCancel={(tradeId) => sendCommand({ type: "trade.cancel", tradeId }, "trade")}
           onCombatStart={(targetPlayerId) => sendCommand({ type: "combat.start", targetPlayerId }, "combat")}
@@ -1630,6 +1751,18 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
             if (sendCommand({ type: "travel.fast", destinationId }, "fast-travel")) setVisitedMapOpen(false);
           }}
           onClose={() => setVisitedMapOpen(false)}
+        />
+      )}
+
+      {shopState && (
+        <ShopModal
+          shop={shopState}
+          inventory={snapshot.inventory}
+          cashWen={snapshot.self.cashWen}
+          pending={pending !== null || connection !== "online"}
+          onBuy={(definitionId, quantity) => sendCommand({ type: "shop.buy", shopId: shopState.id, definitionId, quantity }, "shop")}
+          onSell={(itemId, quantity) => sendCommand({ type: "shop.sell", shopId: shopState.id, itemId, quantity }, "shop")}
+          onClose={() => setShopState(null)}
         />
       )}
 

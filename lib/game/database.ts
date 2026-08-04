@@ -6,7 +6,7 @@ import { ensureNpcPopulation } from "./npc-seed";
 
 export type GameDatabase = DatabaseSync;
 
-export const MAP_SCHEMA_VERSION = 9;
+export const MAP_SCHEMA_VERSION = 10;
 
 export function openGameDatabase(databasePath = process.env.DATABASE_PATH ?? resolve("data/wuxia.db")) {
   if (databasePath !== ":memory:") mkdirSync(dirname(databasePath), { recursive: true });
@@ -28,6 +28,27 @@ function hasColumn(db: GameDatabase, table: string, column: string) {
 function addColumn(db: GameDatabase, table: string, definition: string) {
   const column = definition.split(/\s+/, 1)[0];
   if (!hasColumn(db, table, column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
+}
+
+function migrateCurrencyOutcome(value: string) {
+  const parsed = JSON.parse(value) as Record<string, unknown>;
+  const migrate = (outcome: Record<string, unknown>) => {
+    if (typeof outcome.silverDelta === "number" && outcome.cashWenDelta === undefined) {
+      outcome.cashWenDelta = Math.trunc(outcome.silverDelta * 1_000);
+    }
+    delete outcome.silverDelta;
+  };
+  if (parsed.success && typeof parsed.success === "object" && !Array.isArray(parsed.success)) migrate(parsed.success as Record<string, unknown>);
+  if (parsed.failure && typeof parsed.failure === "object" && !Array.isArray(parsed.failure)) migrate(parsed.failure as Record<string, unknown>);
+  migrate(parsed);
+  return JSON.stringify(parsed);
+}
+
+function migrateStoredTradeOffer(value: string) {
+  const parsed = JSON.parse(value) as Record<string, unknown>;
+  if (typeof parsed.silver === "number" && parsed.cashWen === undefined) parsed.cashWen = Math.max(0, Math.trunc(parsed.silver * 1_000));
+  delete parsed.silver;
+  return JSON.stringify(parsed);
 }
 
 function migrate(db: GameDatabase) {
@@ -73,7 +94,8 @@ function migrate(db: GameDatabase) {
       id TEXT PRIMARY KEY, location_id TEXT NOT NULL REFERENCES locations(id), name TEXT NOT NULL,
       description TEXT NOT NULL, stamina_delta INTEGER NOT NULL DEFAULT 0,
       silver_delta INTEGER NOT NULL DEFAULT 0, cultivation_delta INTEGER NOT NULL DEFAULT 0,
-      hp_delta INTEGER NOT NULL DEFAULT 0, result_template TEXT NOT NULL
+      hp_delta INTEGER NOT NULL DEFAULT 0, result_template TEXT NOT NULL,
+      cash_wen_delta INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS players(
       id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, title TEXT NOT NULL DEFAULT '初入世界',
@@ -82,6 +104,18 @@ function migrate(db: GameDatabase) {
       cultivation INTEGER NOT NULL DEFAULT 0, silver INTEGER NOT NULL DEFAULT 20,
       current_location TEXT NOT NULL REFERENCES locations(id), created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL, last_seen_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS player_wallets(
+      player_id TEXT PRIMARY KEY REFERENCES players(id) ON DELETE CASCADE,
+      cash_wen INTEGER NOT NULL DEFAULT 0 CHECK(cash_wen>=0),updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS player_starter_grants(
+      player_id TEXT PRIMARY KEY REFERENCES players(id) ON DELETE CASCADE,granted_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS currency_ledger(
+      id TEXT PRIMARY KEY,player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+      delta_wen INTEGER NOT NULL,balance_after_wen INTEGER NOT NULL CHECK(balance_after_wen>=0),
+      reason TEXT NOT NULL,reference_type TEXT,reference_id TEXT,created_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS player_progression(
       player_id TEXT PRIMARY KEY REFERENCES players(id) ON DELETE CASCADE,
@@ -216,7 +250,8 @@ function migrate(db: GameDatabase) {
     );
     CREATE TABLE IF NOT EXISTS loot_piles(
       id TEXT PRIMARY KEY,location_id TEXT NOT NULL REFERENCES locations(id),silver INTEGER NOT NULL DEFAULT 0 CHECK(silver>=0),
-      source_player_id TEXT REFERENCES players(id) ON DELETE SET NULL,expires_at TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL
+      source_player_id TEXT REFERENCES players(id) ON DELETE SET NULL,expires_at TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,
+      cash_wen INTEGER NOT NULL DEFAULT 0 CHECK(cash_wen>=0)
     );
     CREATE TABLE IF NOT EXISTS item_definitions(
       id TEXT PRIMARY KEY,name TEXT NOT NULL,description TEXT NOT NULL,category TEXT NOT NULL,
@@ -238,6 +273,31 @@ function migrate(db: GameDatabase) {
       job_id TEXT NOT NULL REFERENCES action_jobs(id) ON DELETE CASCADE,
       item_instance_id TEXT NOT NULL REFERENCES item_instances(id) ON DELETE CASCADE,
       quantity INTEGER NOT NULL CHECK(quantity>0),PRIMARY KEY(job_id,item_instance_id)
+    );
+    CREATE TABLE IF NOT EXISTS shops(
+      id TEXT PRIMARY KEY,location_id TEXT NOT NULL UNIQUE REFERENCES locations(id),name TEXT NOT NULL,
+      category TEXT NOT NULL,opens_minute INTEGER NOT NULL CHECK(opens_minute BETWEEN 0 AND 1440),
+      closes_minute INTEGER NOT NULL CHECK(closes_minute BETWEEN 0 AND 1440),
+      till_wen INTEGER NOT NULL DEFAULT 0 CHECK(till_wen>=0),is_active INTEGER NOT NULL DEFAULT 1,
+      seed_revision INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS shop_service_locations(
+      shop_id TEXT NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
+      location_id TEXT NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+      PRIMARY KEY(shop_id,location_id),UNIQUE(location_id)
+    );
+    CREATE TABLE IF NOT EXISTS shop_stock(
+      shop_id TEXT NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
+      item_definition_id TEXT NOT NULL REFERENCES item_definitions(id),quantity INTEGER NOT NULL CHECK(quantity>=0),
+      buy_price_wen INTEGER NOT NULL CHECK(buy_price_wen>0),sell_price_wen INTEGER NOT NULL CHECK(sell_price_wen>0),
+      updated_at TEXT NOT NULL,PRIMARY KEY(shop_id,item_definition_id)
+    );
+    CREATE TABLE IF NOT EXISTS shop_transactions(
+      id TEXT PRIMARY KEY,request_id TEXT NOT NULL,shop_id TEXT NOT NULL REFERENCES shops(id),player_id TEXT NOT NULL REFERENCES players(id),
+      side TEXT NOT NULL CHECK(side IN ('buy','sell')),item_definition_id TEXT NOT NULL REFERENCES item_definitions(id),
+      quantity INTEGER NOT NULL CHECK(quantity>0),unit_price_wen INTEGER NOT NULL CHECK(unit_price_wen>0),
+      total_wen INTEGER NOT NULL CHECK(total_wen>0),payload_hash TEXT NOT NULL,created_at TEXT NOT NULL,
+      UNIQUE(player_id,request_id)
     );
     CREATE TABLE IF NOT EXISTS recipe_definitions(
       id TEXT PRIMARY KEY,name TEXT NOT NULL,description TEXT NOT NULL,facility_type TEXT NOT NULL,
@@ -351,6 +411,8 @@ function migrate(db: GameDatabase) {
   addColumn(db, "action_logs", "action_job_id TEXT REFERENCES action_jobs(id)");
   addColumn(db, "action_jobs", "duration_seconds INTEGER NOT NULL DEFAULT 0");
   addColumn(db, "skill_definitions", "skill_kind TEXT NOT NULL DEFAULT 'passive'");
+  addColumn(db, "action_definitions", "cash_wen_delta INTEGER NOT NULL DEFAULT 0");
+  addColumn(db, "loot_piles", "cash_wen INTEGER NOT NULL DEFAULT 0");
 
   if (previousVersion < 2) db.exec("UPDATE routes SET is_active=0; UPDATE locations SET is_active=0;");
   if (previousVersion < 3) {
@@ -479,6 +541,36 @@ function migrate(db: GameDatabase) {
         AND EXISTS (SELECT 1 FROM action_templates WHERE id='action-eagle-eye')
     `).run(now, now);
   }
+  if (previousVersion < 10) {
+    db.exec(`
+      UPDATE action_definitions SET cash_wen_delta=silver_delta*1000;
+      UPDATE loot_piles SET cash_wen=silver*1000;
+    `);
+    const templates = db.prepare("SELECT id,costs_json,outcomes_json FROM action_templates").all() as Array<{
+      id: string; costs_json: string; outcomes_json: string;
+    }>;
+    const updateTemplate = db.prepare("UPDATE action_templates SET costs_json=?,outcomes_json=? WHERE id=?");
+    for (const template of templates) {
+      updateTemplate.run(
+        migrateCurrencyOutcome(template.costs_json), migrateCurrencyOutcome(template.outcomes_json), template.id,
+      );
+    }
+    const trades = db.prepare("SELECT id,offer_a_json,offer_b_json FROM trade_sessions").all() as Array<{
+      id: string; offer_a_json: string; offer_b_json: string;
+    }>;
+    const updateTrade = db.prepare("UPDATE trade_sessions SET offer_a_json=?,offer_b_json=? WHERE id=?");
+    for (const trade of trades) updateTrade.run(migrateStoredTradeOffer(trade.offer_a_json), migrateStoredTradeOffer(trade.offer_b_json), trade.id);
+    db.prepare(`
+      INSERT OR IGNORE INTO player_wallets(player_id,cash_wen,updated_at)
+      SELECT id,MAX(0,silver*1000),? FROM players
+    `).run(now);
+    db.prepare(`
+      INSERT OR IGNORE INTO currency_ledger(
+        id,player_id,delta_wen,balance_after_wen,reason,reference_type,reference_id,created_at
+      ) SELECT 'currency-migration-'||player_id,player_id,cash_wen,cash_wen,
+        '旧银两按一银两等于一贯迁入','migration','schema-10',? FROM player_wallets
+    `).run(now);
+  }
 
   db.exec(`
     DROP INDEX IF EXISTS idx_active_grid;
@@ -513,6 +605,9 @@ function migrate(db: GameDatabase) {
     CREATE INDEX IF NOT EXISTS idx_combat_participants ON combat_sessions(attacker_id,defender_id,status);
     CREATE INDEX IF NOT EXISTS idx_private_events_player ON private_events(player_id,id DESC);
     CREATE INDEX IF NOT EXISTS idx_npc_think ON npc_profiles(next_think_at,player_id);
+    CREATE INDEX IF NOT EXISTS idx_currency_ledger_player ON currency_ledger(player_id,created_at,id);
+    CREATE INDEX IF NOT EXISTS idx_shop_service_location ON shop_service_locations(location_id,shop_id);
+    CREATE INDEX IF NOT EXISTS idx_shop_transactions_player ON shop_transactions(player_id,created_at,id);
   `);
   db.prepare("INSERT OR REPLACE INTO schema_migrations(version,applied_at) VALUES (?,?)").run(MAP_SCHEMA_VERSION, now);
 }
@@ -582,6 +677,17 @@ function seed(db: GameDatabase) {
       )
     `).run(now);
     ensureNpcPopulation(db, now);
+    db.prepare(`
+      INSERT OR IGNORE INTO player_wallets(player_id,cash_wen,updated_at)
+      SELECT id,MAX(0,silver*1000),? FROM players
+    `).run(now);
+    db.prepare(`
+      INSERT OR IGNORE INTO currency_ledger(
+        id,player_id,delta_wen,balance_after_wen,reason,reference_type,reference_id,created_at
+      ) SELECT 'currency-opening-'||player_id,player_id,cash_wen,cash_wen,
+        '初始钱贯','opening','player',? FROM player_wallets wallet
+      WHERE NOT EXISTS (SELECT 1 FROM currency_ledger ledger WHERE ledger.player_id=wallet.player_id)
+    `).run(now);
 
     db.prepare(`
       INSERT OR IGNORE INTO player_progression(player_id,cultivation_progress,endurance,updated_at)

@@ -36,7 +36,7 @@ export const actionCheckSchema = z.object({
 }).strict();
 
 export const actionOutcomeSchema = z.object({
-  silverDelta: z.number().int().min(-1_000_000).max(1_000_000).optional(),
+  cashWenDelta: z.number().int().min(-1_000_000_000).max(1_000_000_000).optional(),
   hpDelta: z.number().int().min(-1_000_000).max(1_000_000).optional(),
   cultivationDelta: z.number().int().min(-1_000_000).max(1_000_000).optional(),
   skillExperience: z.number().int().min(0).max(1_000_000).optional(),

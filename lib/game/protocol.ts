@@ -14,6 +14,7 @@ import type {
   MapViewport,
   OnlinePlayer,
   PlayerSelf,
+  ShopState,
   TransitionKind,
   VisitedMap,
   WorldEvent,
@@ -144,7 +145,7 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("trade.respond"), requestId, tradeId: id, accept: z.boolean() }),
   z.object({
     type: z.literal("trade.offer"), requestId, tradeId: id,
-    silver: z.number().int().min(0).max(1_000_000_000),
+    cashWen: z.number().int().min(0).max(1_000_000_000_000),
     items: z.array(z.object({ itemId: id, quantity: z.number().int().min(1).max(1_000_000) })).max(16),
   }),
   z.object({ type: z.literal("trade.confirm"), requestId, tradeId: id }),
@@ -165,6 +166,9 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("inventory.equip"), requestId, itemId: id }),
   z.object({ type: z.literal("inventory.unequip"), requestId, itemId: id }),
   z.object({ type: z.literal("inventory.use"), requestId, itemId: id }),
+  z.object({ type: z.literal("shop.inspect"), requestId, shopId: id }),
+  z.object({ type: z.literal("shop.buy"), requestId, shopId: id, definitionId: id, quantity: z.number().int().min(1).max(1_000_000) }),
+  z.object({ type: z.literal("shop.sell"), requestId, shopId: id, itemId: id, quantity: z.number().int().min(1).max(1_000_000) }),
   z.object({ type: z.literal("craft.start"), requestId, recipeId: id }),
   z.object({
     type: z.literal("farm.start"), requestId, plotId: id,
@@ -200,6 +204,7 @@ export type ServerMessage =
   | { type: "self.updated"; player: PlayerSelf }
   | { type: "action.updated"; actionState: ActionSystemState }
   | { type: "inventory.updated"; inventory: InventoryState }
+  | { type: "shop.snapshot"; requestId: string; shop: ShopState }
   | { type: "social.updated"; social: GameSnapshot["social"] }
   | { type: "rules.actions.snapshot"; requestId: string; rules: ActionRuleSnapshot }
   | { type: "rules.location.snapshot"; requestId: string; state: ActionRuleLocationState }
