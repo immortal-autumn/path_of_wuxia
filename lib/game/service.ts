@@ -26,6 +26,7 @@ import { createWorldStatus } from "./time";
 import { ensureStarterInventory } from "./item-catalog";
 import { agentTokenHash } from "./npc-auth";
 import { formatCashWen } from "./currency";
+import { MarketEngine } from "./market";
 import type {
   ActionJob,
   ActionOutcome,
@@ -716,6 +717,48 @@ export class GameService {
     const shop = this.shopForPlayer(playerId, shopId);
     if (!shopIsOpen(shop, this.now())) throw new Error("店铺当前已经打烊。");
     return shop;
+  }
+
+  private marketAvailableAt(locationId: string) {
+    return Boolean(this.db.prepare(`
+      SELECT 1 FROM location_facilities WHERE location_id=? AND facility_type='market' AND is_active=1
+    `).get(locationId));
+  }
+
+  private assertMarketAccess(playerId: string) {
+    const player = this.assertCanTakeGameAction(playerId);
+    if (!this.marketAvailableAt(player.current_location)) throw new Error("当前位置没有可用的市易行会。");
+    return player;
+  }
+
+  getMarketSnapshot(playerId: string) {
+    return inTransaction(this.db, () => {
+      this.assertMarketAccess(playerId);
+      return new MarketEngine(this.db, this.now).snapshot(playerId);
+    });
+  }
+
+  placeMarketOrder(
+    playerId: string,
+    requestId: string,
+    contractId: string,
+    side: "buy" | "sell",
+    limitPriceWen: number,
+    quantity: number,
+  ) {
+    return inTransaction(this.db, () => {
+      this.assertMarketAccess(playerId);
+      return new MarketEngine(this.db, this.now).placeOrder(
+        playerId, requestId, contractId, side, limitPriceWen, quantity,
+      );
+    });
+  }
+
+  cancelMarketOrder(playerId: string, orderId: string) {
+    return inTransaction(this.db, () => {
+      this.assertMarketAccess(playerId);
+      return new MarketEngine(this.db, this.now).cancelOrder(playerId, orderId);
+    });
   }
 
   getCurrentShopSummary(playerId: string): ShopSummary | null {
@@ -2776,6 +2819,7 @@ export class GameService {
       actionState: this.readActionState(playerId),
       inventory: this.getInventoryState(playerId),
       shop: this.getCurrentShopSummary(playerId),
+      marketAvailable: this.marketAvailableAt(self.currentLocation),
       social: this.getSocialState(playerId),
       combat: this.getCombatState(playerId),
       lootPiles: this.getLootPiles(self.currentLocation),

@@ -426,6 +426,38 @@ test.describe("game map", () => {
     await expect(dialog).toBeHidden();
   });
 
+  test("opens the guild order book, trades spot and cancels a resting order", async ({ page }) => {
+    await enterWorld(page);
+    await updatePlayer(page, "UPDATE players SET current_location=(SELECT location_id FROM shops WHERE name='惠民药铺') WHERE id=?");
+    await page.reload();
+    await expect(page.locator(".connection-badge")).toContainText("江湖在线");
+    await page.getByRole("button", { name: /打开市易行会/ }).click();
+    const dialog = page.getByRole("dialog", { name: "市易行会详情" });
+    await expect(dialog).toContainText("初始保证金 0文");
+    await expect(dialog.getByLabel("市场标的").getByRole("button")).toHaveCount(10);
+    await dialog.getByLabel("市场标的").getByRole("button").filter({ hasText: "粳米" }).click();
+    await expect(dialog).toContainText("粳米现货");
+
+    await dialog.getByRole("button", { name: "确认提交订单" }).click();
+    await expect(page.getByRole("status")).toContainText("全部成交");
+    await expect(dialog.getByLabel("市场持仓与委托")).toContainText("粳米现货");
+    await expect(dialog.getByLabel("市场持仓与委托")).toContainText("多 1手");
+
+    await dialog.getByLabel("市场限价（文）").fill("1");
+    await dialog.getByRole("button", { name: "确认提交订单" }).click();
+    await expect(page.getByRole("status")).toContainText("进入订单簿");
+    const cancel = dialog.getByRole("button", { name: "取消订单" });
+    await expect(cancel).toBeVisible();
+    await cancel.click();
+    await expect(page.getByRole("status")).toContainText("订单已取消");
+    await expect(dialog.getByText("没有未成交委托。")).toBeVisible();
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await dialog.getByRole("button", { name: "关闭" }).click();
+    await expect(dialog).toBeHidden();
+  });
+
   test("walks the historical Tokyo Kaifeng street, river, bridge, and palace axes", async ({ page }) => {
     await enterWorld(page);
     await performAction(page, "整理衣装");

@@ -12,6 +12,7 @@ import type {
   MapHistoryState,
   MapLock,
   MapViewport,
+  MarketSnapshot,
   OnlinePlayer,
   PlayerSelf,
   ShopState,
@@ -169,6 +170,13 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("shop.inspect"), requestId, shopId: id }),
   z.object({ type: z.literal("shop.buy"), requestId, shopId: id, definitionId: id, quantity: z.number().int().min(1).max(1_000_000) }),
   z.object({ type: z.literal("shop.sell"), requestId, shopId: id, itemId: id, quantity: z.number().int().min(1).max(1_000_000) }),
+  z.object({ type: z.literal("market.snapshot"), requestId }),
+  z.object({
+    type: z.literal("market.order.place"), requestId, contractId: id,
+    side: z.enum(["buy", "sell"]), limitPriceWen: z.number().int().min(1).max(1_000_000_000),
+    quantity: z.number().int().min(1).max(100_000),
+  }),
+  z.object({ type: z.literal("market.order.cancel"), requestId, orderId: id }),
   z.object({ type: z.literal("craft.start"), requestId, recipeId: id }),
   z.object({
     type: z.literal("farm.start"), requestId, plotId: id,
@@ -205,6 +213,7 @@ export type ServerMessage =
   | { type: "action.updated"; actionState: ActionSystemState }
   | { type: "inventory.updated"; inventory: InventoryState }
   | { type: "shop.snapshot"; requestId: string; shop: ShopState }
+  | { type: "market.snapshot"; requestId: string; market: MarketSnapshot }
   | { type: "social.updated"; social: GameSnapshot["social"] }
   | { type: "rules.actions.snapshot"; requestId: string; rules: ActionRuleSnapshot }
   | { type: "rules.location.snapshot"; requestId: string; state: ActionRuleLocationState }

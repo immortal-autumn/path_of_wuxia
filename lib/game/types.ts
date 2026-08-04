@@ -516,6 +516,72 @@ export type ShopState = ShopSummary & {
   tillWen: number;
   stock: ShopStockItem[];
 };
+
+export type MarketContractKind = "spot" | "future" | "call" | "put";
+export type MarketOrderSide = "buy" | "sell";
+
+export type MarketUnderlying = {
+  id: string;
+  name: string;
+  unit: string;
+  spotPriceWen: number;
+  previousSpotPriceWen: number;
+};
+
+export type MarketContract = {
+  id: string;
+  underlyingId: string;
+  name: string;
+  kind: MarketContractKind;
+  expiryAt: string | null;
+  horizonDays: number | null;
+  strikeWen: number | null;
+  multiplier: number;
+  markPriceWen: number;
+  bestBidWen: number | null;
+  bestAskWen: number | null;
+};
+
+export type MarketOrder = {
+  id: string;
+  contractId: string;
+  side: MarketOrderSide;
+  limitPriceWen: number;
+  quantity: number;
+  remainingQuantity: number;
+  status: string;
+  createdAt: string;
+};
+
+export type MarketPosition = {
+  contractId: string;
+  contractName: string;
+  kind: MarketContractKind;
+  quantity: number;
+  averagePriceWen: number;
+  markPriceWen: number;
+  unrealizedPnlWen: number;
+};
+
+export type MarketTrade = {
+  id: number;
+  contractId: string;
+  priceWen: number;
+  quantity: number;
+  createdAt: string;
+};
+
+export type MarketSnapshot = {
+  asOf: string;
+  underlyings: MarketUnderlying[];
+  contracts: MarketContract[];
+  orders: MarketOrder[];
+  positions: MarketPosition[];
+  trades: MarketTrade[];
+  reservedMarginWen: number;
+  maintenanceMarginWen: number;
+  clearingDebtWen: number;
+};
 export type WorldStatus = { timeZone: "Asia/Shanghai"; dateTime: string; announcement: string; onlineCount: number; serverTime: string };
 export type WorldEvent = { id: number; playerId: string | null; eventType: string; content: string; createdAt: string };
 export type PrivateEvent = { id: number; eventType: string; content: string; createdAt: string };
@@ -542,6 +608,7 @@ export type GameSnapshot = {
   actionState: ActionSystemState;
   inventory: InventoryState;
   shop: ShopSummary | null;
+  marketAvailable: boolean;
   social: SocialState;
   combat: CombatState | null;
   lootPiles: LootPile[];

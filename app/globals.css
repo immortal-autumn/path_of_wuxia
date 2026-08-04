@@ -1505,6 +1505,129 @@ h2 {
   }
 }
 
+.market-modal {
+  width: min(1060px, calc(100vw - 24px));
+}
+
+.market-account-summary,
+.market-underlyings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.market-account-summary > * {
+  padding: 4px 7px;
+  border: 1px solid var(--border-light);
+  font-size: 10px;
+}
+
+.market-underlyings > button {
+  display: grid;
+  gap: 2px;
+  min-width: 88px;
+  text-align: left;
+}
+
+.market-underlyings > button.selected {
+  border-width: 2px;
+}
+
+.market-underlyings span,
+.market-underlyings small {
+  font-size: 9px;
+}
+
+.market-workspace {
+  display: grid;
+  grid-template-columns: minmax(300px, 0.9fr) minmax(340px, 1.1fr);
+  gap: 14px;
+  padding: 14px;
+}
+
+.market-workspace h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.market-ticket,
+.market-workspace > section {
+  display: grid;
+  align-content: start;
+  gap: 9px;
+}
+
+.market-contract-controls {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.market-ticket label {
+  display: grid;
+  gap: 3px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.market-ticket select,
+.market-ticket input {
+  min-height: 32px;
+  border: 1px solid var(--border);
+  background: #fff;
+}
+
+.market-contract-detail {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border-top: 1px solid var(--border-light);
+  border-left: 1px solid var(--border-light);
+}
+
+.market-contract-detail > * {
+  padding: 6px;
+  border-right: 1px solid var(--border-light);
+  border-bottom: 1px solid var(--border-light);
+  font-size: 10px;
+}
+
+.market-position-list,
+.market-order-list {
+  display: grid;
+  gap: 5px;
+  max-height: 210px;
+  overflow: auto;
+}
+
+.market-position-list article,
+.market-order-list article {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 7px;
+  border: 1px solid var(--border-light);
+  font-size: 10px;
+}
+
+.market-position-list small,
+.market-order-list small {
+  color: var(--muted);
+}
+
+@media (max-width: 760px) {
+  .market-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .market-contract-controls {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .attribute-panel > p {
   margin: 0 0 6px;
   font-size: 12px;

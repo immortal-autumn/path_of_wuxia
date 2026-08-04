@@ -15,6 +15,7 @@ import {
 import { GameService } from "../lib/game/service";
 import { formatCashWen } from "../lib/game/currency";
 import { clientMessageSchema } from "../lib/game/protocol";
+import { marketExpiryAt } from "../lib/game/market";
 import { npcAgentToken } from "../lib/game/npc-auth";
 import { UtilityNpcController } from "../lib/game/npc-controller";
 import { ensureNpcPopulation, NPC_POPULATION } from "../lib/game/npc-seed";
@@ -192,7 +193,7 @@ describe("GameService", () => {
     }
   });
 
-  it("installs schema-v10 economy and active-skill storage without breaking legacy actions", () => {
+  it("installs schema-v11 market, economy and active-skill storage without breaking legacy actions", () => {
     const requiredTables = [
       "action_templates", "location_facilities", "location_action_bindings", "action_jobs", "player_needs",
       "skill_definitions", "player_skills", "item_definitions", "item_instances", "recipe_definitions",
@@ -200,6 +201,7 @@ describe("GameService", () => {
       "combat_sessions", "loot_piles", "npc_profiles", "agent_credentials",
       "player_action_cooldowns", "player_active_skills",
       "player_wallets", "currency_ledger", "player_starter_grants", "shops", "shop_service_locations", "shop_stock", "shop_transactions",
+      "market_underlyings", "market_contracts", "market_accounts", "market_orders", "market_trades", "market_positions", "market_ticks", "market_liquidations",
     ];
     const tables = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>).map((row) => row.name));
     expect(requiredTables.every((table) => tables.has(table))).toBe(true);
@@ -424,6 +426,80 @@ describe("GameService", () => {
     expect(clientMessageSchema.safeParse({ type: "shop.buy", requestId: "test", shopId: medicine.id, definitionId: poultice.definitionId, quantity: 1 }).success).toBe(true);
     expect(clientMessageSchema.safeParse({ type: "trade.offer", requestId: "test", tradeId: "trade", cashWen: 1_000, items: [] }).success).toBe(true);
     expect(clientMessageSchema.safeParse({ type: "trade.offer", requestId: "test", tradeId: "trade", silver: 1, items: [] }).success).toBe(false);
+  });
+
+  it("matches spot, futures and options with partial fills, margin and minute settlement", () => {
+    const first = service.createSession().player;
+    const second = service.createSession().player;
+    const marketLocation = (db.prepare("SELECT location_id FROM shops WHERE name='惠民药铺'").get() as { location_id: string }).location_id;
+    db.prepare("UPDATE players SET current_location=? WHERE id IN (?,?)").run(marketLocation, first.id, second.id);
+    expect(marketExpiryAt(clock, 1)).toBe("2026-08-04T12:00:00.000Z");
+
+    let market = service.getMarketSnapshot(first.id);
+    expect(market.underlyings).toHaveLength(10);
+    expect(market.contracts).toHaveLength(100);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM market_orders WHERE owner_kind='guild' AND status='open'").get()).toEqual({ count: 200 });
+
+    const riceSpot = market.contracts.find((contract) => contract.id === "spot-rice")!;
+    service.placeMarketOrder(first.id, "market-spot-buy", riceSpot.id, "buy", riceSpot.bestAskWen!, 1);
+    market = service.getMarketSnapshot(first.id);
+    expect(market.positions.find((position) => position.contractId === riceSpot.id)?.quantity).toBe(1);
+    expect(service.getPlayer(first.id).cashWen).toBe(20_000 - riceSpot.bestAskWen!);
+    const afterSpotReplay = service.placeMarketOrder(first.id, "market-spot-buy", riceSpot.id, "buy", riceSpot.bestAskWen!, 1);
+    expect(afterSpotReplay.market.positions.find((position) => position.contractId === riceSpot.id)?.quantity).toBe(1);
+    expect(() => service.placeMarketOrder(first.id, "market-spot-buy", riceSpot.id, "buy", riceSpot.bestAskWen!, 2))
+      .toThrow("同一请求编号");
+
+    const future = market.contracts.find((contract) => contract.underlyingId === "rice" && contract.kind === "future" && contract.horizonDays === 1)!;
+    const midpoint = Math.floor((future.bestBidWen! + future.bestAskWen!) / 2);
+    const resting = service.placeMarketOrder(first.id, "market-future-rest", future.id, "buy", midpoint, 2);
+    expect(resting.market.orders.find((order) => order.contractId === future.id)?.remainingQuantity).toBe(2);
+    service.placeMarketOrder(second.id, "market-future-cross", future.id, "sell", midpoint, 1);
+    market = service.getMarketSnapshot(first.id);
+    expect(market.positions.find((position) => position.contractId === future.id)?.quantity).toBe(1);
+    expect(market.orders.find((order) => order.contractId === future.id)?.remainingQuantity).toBe(1);
+    service.cancelMarketOrder(first.id, market.orders.find((order) => order.contractId === future.id)!.id);
+    expect(service.getMarketSnapshot(first.id).orders.some((order) => order.contractId === future.id)).toBe(false);
+
+    market = service.getMarketSnapshot(first.id);
+    const call = market.contracts.find((contract) => contract.underlyingId === "rice" && contract.kind === "call" && contract.horizonDays === 1)!;
+    service.placeMarketOrder(first.id, "market-call-buy", call.id, "buy", call.bestAskWen!, 1);
+    market = service.getMarketSnapshot(first.id);
+    const refreshedCall = market.contracts.find((contract) => contract.id === call.id)!;
+    service.placeMarketOrder(first.id, "market-call-write", call.id, "sell", refreshedCall.bestBidWen!, 2);
+    market = service.getMarketSnapshot(first.id);
+    expect(market.positions.find((position) => position.contractId === call.id)?.quantity).toBe(-1);
+    expect(market.reservedMarginWen).toBeGreaterThan(0);
+
+    clock = new Date(clock.getTime() + 60_000);
+    service.getMarketSnapshot(first.id);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM market_ticks").get()).toEqual({ count: 20 });
+    db.prepare("UPDATE player_wallets SET cash_wen=0 WHERE player_id=?").run(first.id);
+    clock = new Date(clock.getTime() + 60_000);
+    market = service.getMarketSnapshot(first.id);
+    expect(market.positions.some((position) => position.kind === "future" || position.quantity < 0)).toBe(false);
+    expect(market.clearingDebtWen).toBeGreaterThan(0);
+    expect((db.prepare("SELECT COUNT(*) AS count FROM market_liquidations WHERE player_id=?").get(first.id) as { count: number }).count).toBeGreaterThan(0);
+
+    expect(clientMessageSchema.safeParse({
+      type: "market.order.place", requestId: "market-test", contractId: future.id,
+      side: "sell", limitPriceWen: midpoint, quantity: 1,
+    }).success).toBe(true);
+  });
+
+  it("cash-settles European derivatives at the real China-time expiry", () => {
+    const player = service.createSession().player;
+    const marketLocation = (db.prepare("SELECT location_id FROM shops WHERE name='惠民药铺'").get() as { location_id: string }).location_id;
+    db.prepare("UPDATE players SET current_location=? WHERE id=?").run(marketLocation, player.id);
+    let market = service.getMarketSnapshot(player.id);
+    const call = market.contracts.find((contract) => contract.underlyingId === "rice" && contract.kind === "call" && contract.horizonDays === 1)!;
+    service.placeMarketOrder(player.id, "expiry-call-buy", call.id, "buy", call.bestAskWen!, 1);
+    expect(service.getMarketSnapshot(player.id).positions.find((position) => position.contractId === call.id)?.quantity).toBe(1);
+    clock = new Date(new Date(call.expiryAt!).getTime() + 1);
+    market = service.getMarketSnapshot(player.id);
+    expect(market.positions.some((position) => position.contractId === call.id)).toBe(false);
+    expect(db.prepare("SELECT status FROM market_contracts WHERE id=?").get(call.id)).toEqual({ status: "settled" });
+    expect(db.prepare("SELECT quantity FROM market_positions WHERE player_id=? AND contract_id=?").get(player.id, call.id)).toEqual({ quantity: 0 });
   });
 
   it("plants and harvests persistent real-time farm plots", () => {

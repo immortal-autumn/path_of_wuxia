@@ -437,6 +437,25 @@ async function main() {
           return;
         }
 
+        if (command.type === "market.snapshot") {
+          send(socket, { type: "market.snapshot", requestId: command.requestId, market: service.getMarketSnapshot(context.playerId) });
+          send(socket, { type: "self.updated", player: service.getPlayer(context.playerId) });
+          send(socket, { type: "ack", requestId: command.requestId });
+          return;
+        }
+
+        if (command.type === "market.order.place" || command.type === "market.order.cancel") {
+          const result = command.type === "market.order.place"
+            ? service.placeMarketOrder(
+              context.playerId, command.requestId, command.contractId, command.side, command.limitPriceWen, command.quantity,
+            )
+            : service.cancelMarketOrder(context.playerId, command.orderId);
+          send(socket, { type: "market.snapshot", requestId: command.requestId, market: result.market });
+          send(socket, { type: "self.updated", player: service.getPlayer(context.playerId) });
+          send(socket, { type: "ack", requestId: command.requestId, message: result.message });
+          return;
+        }
+
         if (command.type === "inventory.equip" || command.type === "inventory.unequip" || command.type === "inventory.use") {
           const result = command.type === "inventory.equip"
             ? service.equipItem(context.playerId, command.itemId)

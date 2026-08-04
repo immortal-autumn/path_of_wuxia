@@ -6,7 +6,7 @@ import { ensureNpcPopulation } from "./npc-seed";
 
 export type GameDatabase = DatabaseSync;
 
-export const MAP_SCHEMA_VERSION = 10;
+export const MAP_SCHEMA_VERSION = 11;
 
 export function openGameDatabase(databasePath = process.env.DATABASE_PATH ?? resolve("data/wuxia.db")) {
   if (databasePath !== ":memory:") mkdirSync(dirname(databasePath), { recursive: true });
@@ -298,6 +298,50 @@ function migrate(db: GameDatabase) {
       quantity INTEGER NOT NULL CHECK(quantity>0),unit_price_wen INTEGER NOT NULL CHECK(unit_price_wen>0),
       total_wen INTEGER NOT NULL CHECK(total_wen>0),payload_hash TEXT NOT NULL,created_at TEXT NOT NULL,
       UNIQUE(player_id,request_id)
+    );
+    CREATE TABLE IF NOT EXISTS market_underlyings(
+      id TEXT PRIMARY KEY,name TEXT NOT NULL,unit TEXT NOT NULL,spot_price_wen INTEGER NOT NULL CHECK(spot_price_wen>0),
+      previous_spot_price_wen INTEGER NOT NULL CHECK(previous_spot_price_wen>0),updated_minute TEXT NOT NULL,updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS market_contracts(
+      id TEXT PRIMARY KEY,underlying_id TEXT NOT NULL REFERENCES market_underlyings(id),name TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK(kind IN ('spot','future','call','put')),expiry_at TEXT,horizon_days INTEGER,
+      strike_wen INTEGER CHECK(strike_wen IS NULL OR strike_wen>0),multiplier INTEGER NOT NULL DEFAULT 1 CHECK(multiplier>0),
+      mark_price_wen INTEGER NOT NULL CHECK(mark_price_wen>=0),status TEXT NOT NULL DEFAULT 'active',created_at TEXT NOT NULL,updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS market_accounts(
+      player_id TEXT PRIMARY KEY REFERENCES players(id) ON DELETE CASCADE,reserved_margin_wen INTEGER NOT NULL DEFAULT 0 CHECK(reserved_margin_wen>=0),
+      maintenance_margin_wen INTEGER NOT NULL DEFAULT 0 CHECK(maintenance_margin_wen>=0),
+      clearing_debt_wen INTEGER NOT NULL DEFAULT 0 CHECK(clearing_debt_wen>=0),updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS market_orders(
+      id TEXT PRIMARY KEY,request_id TEXT NOT NULL,player_id TEXT REFERENCES players(id) ON DELETE CASCADE,
+      owner_kind TEXT NOT NULL CHECK(owner_kind IN ('player','guild')),contract_id TEXT NOT NULL REFERENCES market_contracts(id),
+      side TEXT NOT NULL CHECK(side IN ('buy','sell')),limit_price_wen INTEGER NOT NULL CHECK(limit_price_wen>0),
+      quantity INTEGER NOT NULL CHECK(quantity>0),remaining_quantity INTEGER NOT NULL CHECK(remaining_quantity>=0),
+      status TEXT NOT NULL,payload_hash TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,
+      UNIQUE(player_id,request_id)
+    );
+    CREATE TABLE IF NOT EXISTS market_trades(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,contract_id TEXT NOT NULL REFERENCES market_contracts(id),
+      buy_order_id TEXT NOT NULL REFERENCES market_orders(id),sell_order_id TEXT NOT NULL REFERENCES market_orders(id),
+      buyer_player_id TEXT REFERENCES players(id),seller_player_id TEXT REFERENCES players(id),
+      price_wen INTEGER NOT NULL CHECK(price_wen>0),quantity INTEGER NOT NULL CHECK(quantity>0),created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS market_positions(
+      player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,contract_id TEXT NOT NULL REFERENCES market_contracts(id),
+      quantity INTEGER NOT NULL DEFAULT 0,average_price_wen INTEGER NOT NULL DEFAULT 0 CHECK(average_price_wen>=0),
+      last_mark_price_wen INTEGER NOT NULL DEFAULT 0 CHECK(last_mark_price_wen>=0),updated_at TEXT NOT NULL,
+      PRIMARY KEY(player_id,contract_id)
+    );
+    CREATE TABLE IF NOT EXISTS market_ticks(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,minute_key TEXT NOT NULL,underlying_id TEXT NOT NULL REFERENCES market_underlyings(id),
+      spot_price_wen INTEGER NOT NULL CHECK(spot_price_wen>0),created_at TEXT NOT NULL,UNIQUE(minute_key,underlying_id)
+    );
+    CREATE TABLE IF NOT EXISTS market_liquidations(
+      id TEXT PRIMARY KEY,player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+      contract_id TEXT NOT NULL REFERENCES market_contracts(id),quantity INTEGER NOT NULL,price_wen INTEGER NOT NULL,
+      reason TEXT NOT NULL,created_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS recipe_definitions(
       id TEXT PRIMARY KEY,name TEXT NOT NULL,description TEXT NOT NULL,facility_type TEXT NOT NULL,
@@ -608,6 +652,11 @@ function migrate(db: GameDatabase) {
     CREATE INDEX IF NOT EXISTS idx_currency_ledger_player ON currency_ledger(player_id,created_at,id);
     CREATE INDEX IF NOT EXISTS idx_shop_service_location ON shop_service_locations(location_id,shop_id);
     CREATE INDEX IF NOT EXISTS idx_shop_transactions_player ON shop_transactions(player_id,created_at,id);
+    CREATE INDEX IF NOT EXISTS idx_market_contracts_active ON market_contracts(status,underlying_id,kind,expiry_at);
+    CREATE INDEX IF NOT EXISTS idx_market_orders_book ON market_orders(contract_id,status,side,limit_price_wen,created_at,id);
+    CREATE INDEX IF NOT EXISTS idx_market_orders_player ON market_orders(player_id,status,created_at,id);
+    CREATE INDEX IF NOT EXISTS idx_market_trades_contract ON market_trades(contract_id,id DESC);
+    CREATE INDEX IF NOT EXISTS idx_market_positions_player ON market_positions(player_id,contract_id);
   `);
   db.prepare("INSERT OR REPLACE INTO schema_migrations(version,applied_at) VALUES (?,?)").run(MAP_SCHEMA_VERSION, now);
 }

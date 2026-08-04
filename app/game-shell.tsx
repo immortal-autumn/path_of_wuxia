@@ -11,6 +11,7 @@ import type {
   Location,
   MapTransition,
   ShopState,
+  MarketSnapshot,
   VisitedMap,
 } from "@/lib/game/types";
 import { DIRECTION_LABEL } from "@/lib/game/map";
@@ -663,6 +664,7 @@ function ActionsPanel({
   combat,
   lootPiles,
   shop,
+  marketAvailable,
   pending,
   open,
   onStart,
@@ -675,7 +677,8 @@ function ActionsPanel({
   onTakeLoot,
   onTransition,
   onInspectShop,
-}: Pick<GameSnapshot, "actionState" | "inventory" | "transitions" | "self" | "locations" | "privateEvents" | "combat" | "lootPiles" | "shop"> & {
+  onOpenMarket,
+}: Pick<GameSnapshot, "actionState" | "inventory" | "transitions" | "self" | "locations" | "privateEvents" | "combat" | "lootPiles" | "shop" | "marketAvailable"> & {
   pending: boolean;
   open: boolean;
   onStart: (actionId: string) => void;
@@ -688,6 +691,7 @@ function ActionsPanel({
   onTakeLoot: (lootPileId: string) => void;
   onTransition: (locationId: string) => void;
   onInspectShop: (shopId: string) => void;
+  onOpenMarket: () => void;
 }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -783,6 +787,13 @@ function ActionsPanel({
               <span className="action-mark">肆</span>
               <span><strong>查看{shop.name}</strong><small>{shop.category} · {shop.isOpen ? "正在营业" : "已经打烊"}</small></span>
               <em>查看货物、价格与库存后确认买卖</em>
+            </button>
+          )}
+          {marketAvailable && (
+            <button className="action-card market-action" disabled={pending || regularActionLocked} onClick={onOpenMarket}>
+              <span className="action-mark">市</span>
+              <span><strong>打开市易行会</strong><small>十种现货 · 期货 · 欧式看涨/看跌</small></span>
+              <em>价格—时间优先订单簿与公会做市</em>
             </button>
           )}
           {inventory.recipes.map((recipe) => (
@@ -1388,6 +1399,132 @@ function ShopModal({
   );
 }
 
+function MarketModal({
+  market,
+  cashWen,
+  pending,
+  onPlace,
+  onCancel,
+  onClose,
+}: {
+  market: MarketSnapshot;
+  cashWen: number;
+  pending: boolean;
+  onPlace: (contractId: string, side: "buy" | "sell", priceWen: number, quantity: number) => void;
+  onCancel: (orderId: string) => void;
+  onClose: () => void;
+}) {
+  const [underlyingId, setUnderlyingId] = useState(market.underlyings[0]?.id ?? "");
+  const [kind, setKind] = useState<"spot" | "future" | "call" | "put">("spot");
+  const [horizon, setHorizon] = useState("1");
+  const [side, setSide] = useState<"buy" | "sell">("buy");
+  const [price, setPrice] = useState("");
+  const [quantity, setQuantity] = useState("1");
+  const candidates = market.contracts.filter((contract) => (
+    contract.underlyingId === underlyingId
+    && contract.kind === kind
+    && (kind === "spot" || contract.horizonDays === Number(horizon))
+  ));
+  const contract = candidates[0] ?? null;
+  const defaultPrice = side === "buy"
+    ? contract?.bestAskWen ?? contract?.markPriceWen ?? 1
+    : contract?.bestBidWen ?? contract?.markPriceWen ?? 1;
+  const parsedPrice = Math.max(1, Number.parseInt(price || String(defaultPrice), 10) || defaultPrice);
+  const parsedQuantity = Math.max(1, Number.parseInt(quantity || "1", 10) || 1);
+
+  useEffect(() => {
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
+
+  return createPortal(
+    <div className="detail-modal-backdrop" onMouseDown={(event) => {
+      if (event.target === event.currentTarget) onClose();
+    }}>
+      <section className="detail-modal market-modal" role="dialog" aria-modal="true" aria-label="市易行会详情">
+        <header>
+          <div><p className="eyebrow">开封市易</p><h2>现货、期货与期权</h2></div>
+          <button type="button" onClick={onClose}>关闭</button>
+        </header>
+        <div className="market-account-summary">
+          <span>钱袋 {formatCashWen(cashWen)}</span>
+          <span>初始保证金 {formatCashWen(market.reservedMarginWen)}</span>
+          <span>维持保证金 {formatCashWen(market.maintenanceMarginWen)}</span>
+          <span>清算债务 {formatCashWen(market.clearingDebtWen)}</span>
+          <time dateTime={market.asOf}>更新 {formatClock(market.asOf)}</time>
+        </div>
+        <div className="market-underlyings" aria-label="市场标的">
+          {market.underlyings.map((underlying) => (
+            <button key={underlying.id} className={underlyingId === underlying.id ? "selected" : ""} onClick={() => { setUnderlyingId(underlying.id); setPrice(""); }}>
+              <strong>{underlying.name}</strong>
+              <span>{formatCashWen(underlying.spotPriceWen)} / {underlying.unit}</span>
+              <small>{underlying.spotPriceWen >= underlying.previousSpotPriceWen ? "▲" : "▼"}{Math.abs(underlying.spotPriceWen - underlying.previousSpotPriceWen)}文</small>
+            </button>
+          ))}
+        </div>
+        <div className="market-workspace">
+          <section className="market-ticket" aria-label="市场下单">
+            <h3>限价委托</h3>
+            <div className="market-contract-controls">
+              <label>品种<select value={kind} onChange={(event) => { setKind(event.target.value as typeof kind); setPrice(""); }}>
+                <option value="spot">现货</option><option value="future">期货</option><option value="call">看涨期权</option><option value="put">看跌期权</option>
+              </select></label>
+              {kind !== "spot" && <label>期限<select value={horizon} onChange={(event) => { setHorizon(event.target.value); setPrice(""); }}>
+                <option value="1">1日</option><option value="7">7日</option><option value="30">30日</option>
+              </select></label>}
+              <label>方向<select value={side} onChange={(event) => { setSide(event.target.value as typeof side); setPrice(""); }}>
+                <option value="buy">买入 / 做多</option><option value="sell">卖出 / 做空或卖出持仓</option>
+              </select></label>
+            </div>
+            {contract ? (
+              <div className="market-contract-detail">
+                <strong>{contract.name}</strong>
+                <span>标记 {formatCashWen(contract.markPriceWen)}</span>
+                <span>买一 {contract.bestBidWen ? formatCashWen(contract.bestBidWen) : "—"}</span>
+                <span>卖一 {contract.bestAskWen ? formatCashWen(contract.bestAskWen) : "—"}</span>
+                <span>乘数 {contract.multiplier}</span>
+                <span>{contract.expiryAt ? `到期 ${new Date(contract.expiryAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}` : "连续现货"}</span>
+                {contract.strikeWen !== null && <span>执行价 {formatCashWen(contract.strikeWen)}</span>}
+              </div>
+            ) : <p>当前没有匹配合约。</p>}
+            <label>限价（文）<input aria-label="市场限价（文）" type="number" min="1" value={price || String(defaultPrice)} onChange={(event) => setPrice(event.target.value)} /></label>
+            <label>数量<input aria-label="市场订单数量" type="number" min="1" value={quantity} onChange={(event) => setQuantity(event.target.value)} /></label>
+            <p>名义金额 {formatCashWen(parsedPrice * parsedQuantity * (contract?.multiplier ?? 1))}</p>
+            <button disabled={pending || !contract} onClick={() => contract && onPlace(contract.id, side, parsedPrice, parsedQuantity)}>确认提交订单</button>
+          </section>
+          <section aria-label="市场持仓与委托">
+            <h3>持仓</h3>
+            <div className="market-position-list">
+              {market.positions.map((position) => (
+                <article key={position.contractId}>
+                  <strong>{position.contractName}</strong>
+                  <span>{position.quantity > 0 ? "多" : "空"} {Math.abs(position.quantity)}手</span>
+                  <small>均价 {formatCashWen(position.averagePriceWen)} · 标记 {formatCashWen(position.markPriceWen)} · 浮动 {position.unrealizedPnlWen >= 0 ? "+" : "-"}{formatCashWen(Math.abs(position.unrealizedPnlWen))}</small>
+                </article>
+              ))}
+              {market.positions.length === 0 && <p>暂无持仓。</p>}
+            </div>
+            <h3>未成交委托</h3>
+            <div className="market-order-list">
+              {market.orders.map((order) => (
+                <article key={order.id}>
+                  <span><strong>{order.side === "buy" ? "买" : "卖"} {formatCashWen(order.limitPriceWen)}</strong><small>{order.remainingQuantity} / {order.quantity}手</small></span>
+                  <button disabled={pending} onClick={() => onCancel(order.id)}>取消订单</button>
+                </article>
+              ))}
+              {market.orders.length === 0 && <p>没有未成交委托。</p>}
+            </div>
+          </section>
+        </div>
+      </section>
+    </div>,
+    document.body,
+  );
+}
+
 function ChatPanel({
   messages,
   selfId,
@@ -1470,6 +1607,7 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
   const [visitedMap, setVisitedMap] = useState<VisitedMap | null>(null);
   const [visitedLayerId, setVisitedLayerId] = useState("");
   const [shopState, setShopState] = useState<ShopState | null>(null);
+  const [marketState, setMarketState] = useState<MarketSnapshot | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const pendingRequestRef = useRef<string | null>(null);
   const visitedMapRequestRef = useRef<string | null>(null);
@@ -1503,6 +1641,7 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
         if (message.type === "snapshot") {
           setSnapshot(message.snapshot);
           setShopState((current) => current && message.snapshot.shop?.id !== current.id ? null : current);
+          if (!message.snapshot.marketAvailable) setMarketState(null);
         }
         if (message.type === "self.updated") {
           setSnapshot((current) => ({ ...current, self: message.player }));
@@ -1514,6 +1653,7 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           setSnapshot((current) => ({ ...current, inventory: message.inventory }));
         }
         if (message.type === "shop.snapshot") setShopState(message.shop);
+        if (message.type === "market.snapshot") setMarketState(message.market);
         if (message.type === "social.updated") {
           setSnapshot((current) => ({ ...current, social: message.social }));
         }
@@ -1673,6 +1813,7 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           combat={snapshot.combat}
           lootPiles={snapshot.lootPiles}
           shop={snapshot.shop}
+          marketAvailable={snapshot.marketAvailable}
           pending={pending !== null || connection !== "online"}
           open={drawer === "actions"}
           onStart={(actionId) => sendCommand({ type: "action.start", actionId }, "action")}
@@ -1685,6 +1826,7 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           onTakeLoot={(lootPileId) => sendCommand({ type: "loot.take", lootPileId }, "loot")}
           onTransition={(locationId) => sendCommand({ type: "move", locationId }, "move")}
           onInspectShop={(shopId) => sendCommand({ type: "shop.inspect", shopId }, "shop")}
+          onOpenMarket={() => sendCommand({ type: "market.snapshot" }, "market")}
         />
       </div>
 
@@ -1763,6 +1905,19 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           onBuy={(definitionId, quantity) => sendCommand({ type: "shop.buy", shopId: shopState.id, definitionId, quantity }, "shop")}
           onSell={(itemId, quantity) => sendCommand({ type: "shop.sell", shopId: shopState.id, itemId, quantity }, "shop")}
           onClose={() => setShopState(null)}
+        />
+      )}
+
+      {marketState && (
+        <MarketModal
+          market={marketState}
+          cashWen={snapshot.self.cashWen}
+          pending={pending !== null || connection !== "online"}
+          onPlace={(contractId, side, limitPriceWen, quantity) => sendCommand({
+            type: "market.order.place", contractId, side, limitPriceWen, quantity,
+          }, "market")}
+          onCancel={(orderId) => sendCommand({ type: "market.order.cancel", orderId }, "market")}
+          onClose={() => setMarketState(null)}
         />
       )}
 
