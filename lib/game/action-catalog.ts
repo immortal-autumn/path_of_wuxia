@@ -185,11 +185,8 @@ function isFastTravelHub(location: CatalogLocation) {
     "song-landmark-temple-xiangguo",
     "song-landmark-academy-guozijian",
     "song-landmark-market-patlou",
-    "palos-gate",
-    "palos-overview-entry",
   ].includes(location.id)
-    || location.id.startsWith("song-landmark-gate-")
-    || location.id.startsWith("palos-fasttravel-");
+    || location.id.startsWith("song-landmark-gate-");
 }
 
 function facilitiesFor(location: CatalogLocation) {
@@ -209,6 +206,18 @@ function facilitiesFor(location: CatalogLocation) {
   if (location.id === "kaifeng-panlou-main-hall" || location.id.includes("panlou-east-room") || location.id.includes("panlou-west-room")) {
     result.add("dining");
   }
+  if (location.id.startsWith("kaifeng-shop-")) {
+    result.add("settlement");
+    result.add("market");
+    result.add("shop");
+  }
+  if (
+    location.id.startsWith("song-street-")
+    && !["街", "沿岸", "牙道", "驿道"].some((part) => location.name.includes(part))
+  ) {
+    result.add("market");
+    result.add("shop");
+  }
   if (
     location.name.includes("官道") || location.name === "楼门路" || location.name.includes("道路")
     || location.name.includes("航路") || (location.regionId === "song" && ["街", "沿岸", "牙道", "驿道", "桥", "门"].some((part) => location.name.includes(part)))
@@ -219,11 +228,6 @@ function facilitiesFor(location: CatalogLocation) {
     location.name.includes("驿市")
     || (location.regionId === "song" && ["市", "瓦子", "行", "酒店", "相国寺", "甜水巷", "清风楼"].some((part) => location.name.includes(part)))
   ) result.add("market");
-  if (location.regionId === "palos") result.add("wilderness");
-  if (location.id.includes("dungeon")) result.add("dungeon");
-  if (location.id.includes("tower")) result.add("tower");
-  if (location.id.includes("fieldboss")) result.add("boss");
-  if (location.id.includes("memo")) result.add("lore");
   return [...result];
 }
 

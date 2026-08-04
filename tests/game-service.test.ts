@@ -38,8 +38,7 @@ describe("GameService", () => {
     expect(conciseLocationName("嬴长嫚与楼夜秋之家·门厅")).toBe("门厅");
     expect(conciseLocationName("嬴长嫚与楼夜秋之家·入口")).toBe("住宅入口");
     expect(conciseLocationName("东京城·大内·宣德门")).toBe("宣德门");
-    expect(conciseLocationName("帕洛斯洞窟·洞窟入口 5001")).toBe("洞窟 5001");
-    expect(conciseLocationName("帕洛斯传送点·被遗忘的岛屿教堂遗址")).toBe("被遗忘的岛屿教堂…");
+    expect(conciseLocationName("东京城·惠民药铺")).toBe("惠民药铺");
   });
 
   it("seeds a source-tracked 500+ location world and preserves all ordinary direction slots", () => {
@@ -49,6 +48,14 @@ describe("GameService", () => {
       "kaifeng-palace-ground",
       "kaifeng-panlou-ground",
       "kaifeng-prefecture-ground",
+      "kaifeng-shop-bath-ground",
+      "kaifeng-shop-books-ground",
+      "kaifeng-shop-medicine-ground",
+      "kaifeng-shop-pawn-ground",
+      "kaifeng-shop-silk-ground",
+      "kaifeng-shop-smithy-ground",
+      "kaifeng-shop-tea-ground",
+      "kaifeng-shop-warehouse-ground",
       "kaifeng-xiangguo-ground",
       "world-root",
     ]);
@@ -60,8 +67,7 @@ describe("GameService", () => {
     expect(service.getLocation("song-landmark-gate-xuande")).toMatchObject({ name: "东京城·大内·宣德门", gridX: -35, gridY: -7 });
     expect(service.getLocation("song-landmark-old-gate-zhuque")).toMatchObject({ name: "东京城·旧城·朱雀门", gridX: -35, gridY: 14 });
     expect(service.getLocation("song-landmark-temple-xiangguo")).toMatchObject({ name: "东京城·大相国寺", gridX: -15, gridY: 3 });
-    expect(service.getLocation("palos-fasttravel-1001")).toMatchObject({ layerId: "world-root", regionId: "palos", gridX: 20, gridY: 2 });
-    expect(service.getLocation("palos-fasttravel-1057")).toMatchObject({ gridX: 67, gridY: -11 });
+    expect(service.getLocation("world-construction-site")).toMatchObject({ layerId: "world-root", name: "东境建设中", gridX: 5, gridY: 2 });
     expect(service.getLocation("home-training-room")).toMatchObject({ layerId: "home-ground" });
     expect(service.getLocation("kaifeng-palace-daqing")).toMatchObject({ layerId: "kaifeng-palace-ground", name: "大内宫城·大庆殿" });
     expect(service.getLocation("kaifeng-prefecture-main-hall")).toMatchObject({ layerId: "kaifeng-prefecture-ground", name: "开封府署·府署正堂" });
@@ -70,13 +76,13 @@ describe("GameService", () => {
     const validation = validateWorldMap(db);
     expect(validation.errors).toEqual([]);
     expect(validation.counts).toMatchObject({
-      locations: 1511,
-      routes: 1561,
+      locations: 1050,
+      routes: 1100,
       songLocations: 935,
-      palosLocations: 510,
-      buildingLocations: 41,
-      fastTravelLocations: 89,
-      overworldLocations: 1449,
+      buildingLocations: 89,
+      shopfrontLocations: 120,
+      fastTravelLocations: 30,
+      overworldLocations: 940,
     });
     expect(validation.counts.songLocations).toBeGreaterThanOrEqual(250);
     expect(validation.counts.locations).toBeGreaterThanOrEqual(500);
@@ -89,10 +95,10 @@ describe("GameService", () => {
       JOIN locations f ON f.id=r.from_location JOIN locations t ON t.id=r.to_location
       WHERE r.is_active=1 AND r.id LIKE 'route-kaifeng-%' AND f.layer_id='world-root' AND t.layer_id='world-root'
     `).get()).toEqual({ count: 975 });
-    expect(db.prepare("SELECT COUNT(*) AS count FROM locations WHERE is_active=1 AND name='帕洛斯道路'").get()).toEqual({ count: 241 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM locations WHERE is_active=1 AND (region_id='palos' OR id LIKE 'palos-%')").get()).toEqual({ count: 0 });
     expect((db.prepare("SELECT COUNT(*) AS count FROM location_direction_slots").get() as { count: number }).count).toBeGreaterThan(500);
     expect((db.prepare("SELECT COUNT(*) AS count FROM routes r JOIN locations f ON f.id=r.from_location JOIN locations t ON t.id=r.to_location WHERE r.is_active=1 AND r.route_type<>'normal' AND f.layer_id='world-root' AND t.layer_id='world-root'").get() as { count: number }).count).toBe(0);
-    expect(validation.counts.layers).toBe(7);
+    expect(validation.counts.layers).toBe(15);
     expect(service.getTransitions("home-entrance")[0]).toMatchObject({ destinationName: "嬴长嫚与楼夜秋之家·入口", transitionKind: "door" });
     expect(service.getTransitions("song-landmark-gate-xuande")[0]).toMatchObject({ destinationName: "大内宫城·宣德门内", transitionKind: "gate" });
     expect(service.getTransitions("song-landmark-office-kaifeng")[0]).toMatchObject({ destinationName: "开封府署·府署正门内", transitionKind: "door" });
@@ -109,6 +115,13 @@ describe("GameService", () => {
         { facility_type: "kitchen" }, { facility_type: "market" }, { facility_type: "settlement" },
         { facility_type: "social" }, { facility_type: "surroundings" }, { facility_type: "water" },
       ]);
+    expect(db.prepare(`
+      SELECT f.facility_type FROM location_facilities f JOIN locations l ON l.id=f.location_id
+      WHERE l.name='东京城·惠民药铺' AND f.is_active=1 ORDER BY f.facility_type
+    `).all()).toEqual([
+      { facility_type: "market" }, { facility_type: "settlement" },
+      { facility_type: "shop" }, { facility_type: "surroundings" },
+    ]);
   });
 
   it("reapplies the bundled world seed idempotently", () => {
@@ -134,7 +147,7 @@ describe("GameService", () => {
     importWorldSeed(db);
 
     expect(db.prepare("SELECT from_location,to_location,seed_revision FROM routes WHERE id='route-kaifeng-east-entry-1'").get())
-      .toEqual({ from_location: "song-overview-entry", to_location: "song-street-east-entry-m1-p2", seed_revision: 9 });
+      .toEqual({ from_location: "song-overview-entry", to_location: "song-street-east-entry-m1-p2", seed_revision: 10 });
     expect(validateWorldMap(db).errors).toEqual([]);
   });
 
@@ -653,8 +666,63 @@ describe("GameService", () => {
     expect(db.prepare("SELECT is_active FROM routes WHERE id='route-entrance-road'").get()).toEqual({ is_active: 0 });
     expect(db.prepare("SELECT is_active FROM locations WHERE id='song-legacy-prefecture'").get()).toEqual({ is_active: 0 });
     expect(service.getLocation("song-landmark-bridge-zhou")).toMatchObject({ layerId: "world-root", regionId: "song" });
-    expect(service.getLayers()).toHaveLength(7);
+    expect(service.getLayers()).toHaveLength(15);
     expect(validateWorldMap(db).errors).toEqual([]);
+  });
+
+  it("retires legacy Palos state without losing private exploration history", () => {
+    const directory = mkdtempSync(join(tmpdir(), "wuxia-palos-retirement-"));
+    const databasePath = join(directory, "game.db");
+    try {
+      const before = openGameDatabase(databasePath);
+      const beforeService = new GameService(before, () => new Date(clock), () => roll);
+      const player = beforeService.createSession().player;
+      const npc = before.prepare("SELECT player_id FROM npc_profiles ORDER BY player_id LIMIT 1").get() as { player_id: string };
+      before.prepare(`
+        INSERT INTO map_regions(
+          id,layer_id,name,description,x,y,width,height,version,is_active,seed_revision,created_at,updated_at
+        ) VALUES ('palos','world-root','旧帕洛斯区域','待退役的旧区域。',32000,32000,160,160,1,1,9,?,?)
+      `).run(clock.toISOString(), clock.toISOString());
+      before.prepare(`
+        INSERT INTO locations(
+          id,layer_id,name,region,description,x,y,region_id,grid_x,grid_y,chunk_x,chunk_y,
+          version,is_active,seed_revision
+        ) VALUES ('palos-legacy-camp','world-root','旧帕洛斯营地','旧帕洛斯区域','待退役的旧地点。',
+          32000,32000,'palos',200,200,32,32,1,1,9)
+      `).run();
+      before.prepare("UPDATE players SET current_location='palos-legacy-camp' WHERE id IN (?,?)").run(player.id, npc.player_id);
+      before.prepare("UPDATE npc_profiles SET home_location_id='palos-legacy-camp' WHERE player_id=?").run(npc.player_id);
+      before.prepare(`
+        INSERT OR REPLACE INTO player_visited_locations(player_id,location_id,first_visited_at,last_visited_at)
+        VALUES (?,'palos-legacy-camp',?,?)
+      `).run(player.id, clock.toISOString(), clock.toISOString());
+      const item = before.prepare("SELECT id FROM item_instances WHERE owner_player_id=? ORDER BY id LIMIT 1").get(player.id) as { id: string };
+      const action = before.prepare("SELECT id FROM action_templates WHERE is_active=1 ORDER BY id LIMIT 1").get() as { id: string };
+      before.prepare(`
+        INSERT INTO action_jobs(
+          id,player_id,action_template_id,target_location_id,status,queue_position,started_at,completes_at,
+          duration_seconds,reserved_json,context_json,created_at,updated_at
+        ) VALUES ('palos-legacy-job',?,?, 'palos-legacy-camp','running',0,?,?,60,'{}','{}',?,?)
+      `).run(player.id, action.id, clock.toISOString(), new Date(clock.getTime() + 60_000).toISOString(), clock.toISOString(), clock.toISOString());
+      before.prepare("INSERT INTO item_reservations(job_id,item_instance_id,quantity) VALUES ('palos-legacy-job',?,1)").run(item.id);
+      before.close();
+
+      const upgraded = openGameDatabase(databasePath);
+      const upgradedService = new GameService(upgraded, () => new Date(clock), () => roll);
+      expect(upgradedService.getPlayer(player.id).currentLocation).toBe("loumen-road-east");
+      expect(upgradedService.getPlayer(npc.player_id).currentLocation).toBe("loumen-road-east");
+      expect(upgraded.prepare("SELECT home_location_id FROM npc_profiles WHERE player_id=?").get(npc.player_id))
+        .toEqual({ home_location_id: "loumen-road-east" });
+      expect(upgraded.prepare("SELECT status FROM action_jobs WHERE id='palos-legacy-job'").get()).toEqual({ status: "cancelled" });
+      expect(upgraded.prepare("SELECT COUNT(*) AS count FROM item_reservations WHERE job_id='palos-legacy-job'").get()).toEqual({ count: 0 });
+      expect(upgraded.prepare("SELECT is_active FROM locations WHERE id='palos-legacy-camp'").get()).toEqual({ is_active: 0 });
+      expect(upgraded.prepare("SELECT COUNT(*) AS count FROM player_visited_locations WHERE player_id=? AND location_id='palos-legacy-camp'").get(player.id))
+        .toEqual({ count: 1 });
+      expect(upgradedService.getVisitedMap(player.id).locations.map((location) => location.id)).not.toContain("palos-legacy-camp");
+      upgraded.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("preserves active locations and routes while upgrading older schema metadata", () => {
@@ -823,7 +891,7 @@ describe("GameService", () => {
     const nearby = service.createSession().player;
     const distant = service.createSession().player;
     db.prepare("UPDATE players SET current_location='home-hall' WHERE id=?").run(nearby.id);
-    db.prepare("UPDATE players SET current_location='palos-dungeon-5123' WHERE id=?").run(distant.id);
+    db.prepare("UPDATE players SET current_location='song-landmark-gate-nanxun' WHERE id=?").run(distant.id);
 
     const snapshot = service.getSnapshot(viewer.id, [viewer.id, nearby.id, distant.id]);
 
@@ -873,7 +941,7 @@ describe("GameService", () => {
     expect(acted.self.endurance).toBe(endurance);
     expect(acted.self.cultivation.progress).toBe(0);
     expect(() => service.move(player.id, "loumen-road-east")).not.toThrow();
-    expect(() => service.move(player.id, "palos-gate")).not.toThrow();
+    expect(() => service.move(player.id, "world-construction-site")).not.toThrow();
   });
 
   it("settles online and unlimited offline cultivation from server time only", () => {
@@ -934,10 +1002,12 @@ describe("GameService", () => {
   });
 
   it("searches bounded cross-layer targets and safely manages the layer hierarchy", () => {
-    expect(service.searchMapLocations("world-root", "初始台地", 10)).toMatchObject([
-      { id: "palos-fasttravel-1001", layerId: "world-root" },
+    expect(service.searchMapLocations("world-root", "惠民药铺", 10)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ layerId: "world-root", name: "东京城·惠民药铺" }),
+    ]));
+    expect(service.searchMapLocations("world-root", "建设中", 10)).toMatchObject([
+      { id: "world-construction-site", layerId: "world-root" },
     ]);
-    expect(service.searchMapLocations("world-root", "洞窟入口", 500)).toHaveLength(123);
 
     const player = service.createSession().player;
     const session = service.acquireMapLocks(player.id, ["layer:world-root"]);

@@ -1,8 +1,7 @@
 import { directionBetween, OPPOSITE_DIRECTION } from "./map";
-import { PALWORLD_MARKER_COORDINATES } from "./palworld-coordinates";
 import type { Direction, RouteType, TransitionKind } from "./types";
 
-export const WORLD_SEED_REVISION = 9;
+export const WORLD_SEED_REVISION = 10;
 export const WORLD_SEED_RETRIEVED_AT = "2026-08-04";
 
 export type WorldSeedSource = {
@@ -73,6 +72,15 @@ export type WorldSeedData = {
   routes: WorldSeedRoute[];
   actions: WorldSeedAction[];
   baseLocationSources: Array<{ locationId: string; sourceId: string; sourceKey: string }>;
+  shopfronts: WorldSeedShopfront[];
+};
+
+export type WorldSeedShopfront = {
+  id: string;
+  locationId: string;
+  name: string;
+  category: string;
+  documented: boolean;
 };
 
 const KAIFENG_STREETS = [
@@ -350,34 +358,32 @@ const KAIFENG_BUILDINGS = [
   },
 ] as const;
 
-export const KAIFENG_BUILDING_LAYER_IDS = KAIFENG_BUILDINGS.map((building) => building.layerId);
-
-const PAL_FAST_TRAVEL = [
-  "初始台地", "飞龙密域", "海风群岛·漂流者海滩", "探索者岔路", "草巨兽山陵", "竹林深处", "海风群岛教堂", "要塞遗迹", "雷恩盗猎团高塔入口", "小海湾",
-  "小青龙海滨", "被遗忘的岛屿教堂遗址", "火山脚", "冰鸟密域", "雷鸣龙密域", "被遗忘的岛屿", "破败教堂", "寒风呼啸之岛", "修行者瀑布", "小型聚落",
-  "剑豪密域", "溪谷入口", "彩蝶之森", "湿地之岛", "湿地岛教堂遗址", "天然陆桥", "东方荒岛", "跳岛海岸", "小鲨鱼地盘", "叶胖达之森",
-  "古老祭祀场", "双骑士大桥", "神速密域", "花兔山山顶", "湖心", "帕鲁保护团体高塔入口", "通往雪山的岔路", "守护者密域", "生者禁入山道", "冷水海滨",
-  "冰鼬之丘", "不溶湖", "纯白雪原", "伪善者之丘", "黑曜火山阿努比斯像", "永炎同心会高塔入口", "常夏海滨", "边远渔村", "古代文明遗址", "黑曜火山中腹",
-  "毁灭要塞都市", "基因研究部队高塔入口", "绝对零度之地", "沙丘入口", "沙漠之镇", "自卫团高塔入口", "沙丘深处",
+const KAIFENG_RETAIL_INTERIORS = [
+  { slug: "medicine", name: "惠民药铺", district: "maxing", category: "medicine", rooms: ["门厅", "药柜", "诊室", "炮制房", "药库", "后院"] },
+  { slug: "tea", name: "春风茶坊", district: "panlou", category: "tea", rooms: ["门厅", "茶堂", "雅座", "点茶台", "后厨", "储茶房"] },
+  { slug: "warehouse", name: "广济邸店", district: "bian-river", category: "warehouse", rooms: ["门厅", "客堂", "货栈", "账房", "马厩", "后院"] },
+  { slug: "silk", name: "汴京绫罗铺", district: "panlou", category: "textile", rooms: ["门厅", "绫罗堂", "量体间", "裁作间", "库房", "后院"] },
+  { slug: "pawn", name: "永通金银质库", district: "palace-cross", category: "finance", rooms: ["门厅", "柜台", "验货间", "契房", "金银库", "后院"] },
+  { slug: "books", name: "崇文书铺", district: "zhuque", category: "books", rooms: ["门厅", "书堂", "经籍架", "抄书间", "印作间", "书库"] },
+  { slug: "smithy", name: "通济铁器作", district: "junyi", category: "smithy", rooms: ["门面", "炉房", "锻台", "磨房", "铁料库", "后院"] },
+  { slug: "bath", name: "安乐浴堂", district: "liangmen", category: "bath", rooms: ["门厅", "更衣间", "浴池", "热水房", "休息堂", "后院"] },
 ] as const;
 
-const PAL_TOWERS = ["雷恩盗猎团高塔", "帕鲁保护团体高塔", "自卫团高塔", "基因研究部队高塔", "永炎同心会高塔"] as const;
-
-const PAL_FIELD_BOSSES = [
-  "森猛犸 Lv38", "疾旋鼬 Lv11", "企丸王 Lv15", "君王美露帕 Lv23", "毛掸儿 Lv23", "碧海龙 Lv17", "浪刃武士 Lv23", "雷角马 Lv31", "花丽娜 Lv11", "秘斯媞雅 Lv32",
-  "海誓龙 Lv23", "绸笠蛾 Lv11", "覆海龙 Lv30", "云海鹿 Lv25", "派克龙 Lv31", "覆海龙 Lv45", "迅雷鸟 Lv29", "烽歌龙 Lv23", "阿努比斯 Lv47", "荷鲁斯 Lv18",
-  "海象兽 Lv14", "夜幕魔蝠 Lv23", "空涡龙 Lv50", "魔渊龙 Lv48", "焰煌 Lv49", "花冠龙 Lv28", "天羽龙 Lv30", "女皇蜂 Lv31", "铠格力斯 Lv30", "猫蝠怪 Lv17",
-  "暴电熊 Lv31", "绿苔绒怪 Lv38", "覆海龙·东 Lv45", "踏春兔 Lv35", "白绒雪怪 Lv40", "百合女王 Lv38", "冥铠蝎 Lv44", "朱雀 Lv45", "波鲁杰克斯 Lv47", "圣光骑士 Lv50",
-  "唤夜兽 Lv49", "冰棘兽 Lv46", "唤冬兽 Lv50",
+const KAIFENG_SHOP_DISTRICTS = [
+  { streetId: "maxing", count: 24, names: ["惠民药铺", "保和堂", "广济药铺", "陈家香药铺", "仁济医馆", "顺安鞍辔行", "骏马行", "和剂药铺"] },
+  { streetId: "panlou", count: 24, names: ["春风茶坊", "汴京绫罗铺", "潘楼脚店", "会仙酒楼", "丰乐食店", "张家果子铺", "彩帛铺", "香茶铺"] },
+  { streetId: "bian-river", count: 18, names: ["广济邸店", "通津货栈", "顺成米行", "汴河木行", "丰盈油店", "盐引铺", "船脚牙行", "惠民粮铺"] },
+  { streetId: "zhuque", count: 18, names: ["崇文书铺", "孙好手馒头店", "御街肉行", "朱雀鱼行", "五味食店", "南门客店", "纸墨铺", "鞋履铺"] },
+  { streetId: "junyi", count: 12, names: ["通济铁器作", "开封木作", "铜器铺", "冠帽铺", "车马修作", "瓷器铺"] },
+  { streetId: "liangmen", count: 8, names: ["安乐浴堂", "梁门布铺", "染坊", "花木铺"] },
+  { streetId: "east-water", count: 8, names: ["东水门邸店", "河鲜行", "脚夫行", "竹木铺"] },
+  { streetId: "palace-cross", count: 8, names: ["永通金银质库", "界身珠玉铺", "金银彩帛铺", "文房铺"] },
 ] as const;
 
-const PAL_CATEGORIES = [
-  ["travel", "帕洛斯传送点", "公开地图中的传送点与主要地标。"],
-  ["towers", "帕洛斯高塔", "各组织高塔及其入口。"],
-  ["bosses", "帕洛斯野外头目", "公开地图中的野外头目地点。"],
-  ["dungeons", "帕洛斯洞窟", "公开地图中的123处洞窟入口。"],
-  ["memos", "帕洛斯手记", "漂流者与高塔首领留下的39份手记。"],
-] as const;
+export const KAIFENG_BUILDING_LAYER_IDS = [
+  ...KAIFENG_BUILDINGS.map((building) => building.layerId),
+  ...KAIFENG_RETAIL_INTERIORS.map((building) => `kaifeng-shop-${building.slug}-ground`),
+];
 
 function coordinateToken(value: number) {
   return value < 0 ? `m${Math.abs(value)}` : `p${value}`;
@@ -409,23 +415,21 @@ export function buildWorldSeed(): WorldSeedData {
       retrievedAt: WORLD_SEED_RETRIEVED_AT,
       notes: "公有领域史料；用于外城、旧城、大内、御街、四河、桥梁、街巷、市场、寺观与官署名称及相对关系。",
     },
-    {
-      id: "source-palworld-map",
-      title: "fa0311/palworld-map public/pin_data.json",
-      url: "https://github.com/fa0311/palworld-map/blob/31eb23472af96061ac868950a985f83ad5406298/public/pin_data.json",
-      contentVersion: "blob-1f8f90525b9463870630758fc066da493432bff0",
-      retrievedAt: WORLD_SEED_RETRIEVED_AT,
-      notes: "MIT许可坐标数据；267个具名帕洛斯公开地图标记：57传送点、5高塔、43野外头目、123洞窟与39手记。中文地名为演示译名。",
-    },
   ];
 
   const layers: WorldSeedLayer[] = [
-    { id: "world-root", name: "八方世界", description: "楼门路、北宋东京开封府与帕洛斯相连的连续大地图。", parentLayerId: null },
+    { id: "world-root", name: "八方世界", description: "楼门路与北宋东京开封府相连的连续大地图；东境仍在建设。", parentLayerId: null },
     { id: "home-ground", name: "嬴长嫚与楼夜秋之家", description: "庭院、起居、卧室、书房与修炼空间相连的单层住宅。", parentLayerId: "world-root" },
     ...KAIFENG_BUILDINGS.map((building) => ({
       id: building.layerId,
       name: building.layerName,
       description: building.layerDescription,
+      parentLayerId: "world-root",
+    })),
+    ...KAIFENG_RETAIL_INTERIORS.map((building) => ({
+      id: `kaifeng-shop-${building.slug}-ground`,
+      name: `${building.name}·一层平面`,
+      description: `${building.name}临街营业与后场作业相连的单层店铺。`,
       parentLayerId: "world-root",
     })),
   ];
@@ -442,6 +446,16 @@ export function buildWorldSeed(): WorldSeedData {
       width: 480,
       height: 1200,
     })),
+    ...KAIFENG_RETAIL_INTERIORS.map((building) => ({
+      id: `kaifeng-shop-${building.slug}`,
+      layerId: `kaifeng-shop-${building.slug}-ground`,
+      name: building.name,
+      description: `${building.name}的单层营业空间。`,
+      x: -240,
+      y: -240,
+      width: 480,
+      height: 800,
+    })),
   ];
   const locations: WorldSeedLocation[] = [];
   const routes: WorldSeedRoute[] = [];
@@ -449,9 +463,10 @@ export function buildWorldSeed(): WorldSeedData {
     { id: "observe-entrance", locationId: "home-entrance", name: "整理衣装", description: "在玄关整理衣装，准备出门。", silverDelta: 0, hpDelta: 0, resultTemplate: "{name}在玄关整理好衣装。" },
     { id: "observe-road", locationId: "loumen-road", name: "观察街道", description: "看看楼门路上来往的人群。", silverDelta: 0, hpDelta: 0, resultTemplate: "{name}站在楼门路上观察四周。" },
     { id: "observe-song", locationId: "song-gate", name: "眺望东京", description: "从入口眺望北宋东京开封府。", silverDelta: 0, hpDelta: 0, resultTemplate: "{name}在入口处眺望东京城。" },
-    { id: "observe-palos", locationId: "palos-gate", name: "眺望帕洛斯", description: "从入口眺望帕洛斯方向。", silverDelta: 0, hpDelta: 0, resultTemplate: "{name}在入口处眺望帕洛斯。" },
+    { id: "observe-construction", locationId: "world-construction-site", name: "查看建设告示", description: "查看楼门路东端的封路与建设告示。", silverDelta: 0, hpDelta: 0, resultTemplate: "{name}查看了东境建设告示。" },
   ];
   const baseLocationSources: WorldSeedData["baseLocationSources"] = [];
+  const shopfronts: WorldSeedShopfront[] = [];
   const coordinates = new Map<string, { gridX: number; gridY: number; layerId: string }>();
   const locationIdsByCell = new Map<string, string>();
   const normalEdges = new Set<string>();
@@ -481,98 +496,20 @@ export function buildWorldSeed(): WorldSeedData {
   const addTransition = (id: string, fromLocation: string, toLocation: string, transitionKind: TransitionKind) => {
     routes.push({ id, fromLocation, toLocation, routeType: "transition", transitionKind, fromDirection: null, toDirection: null });
   };
-  const reserveNearestCell = (layerId: string, targetX: number, targetY: number) => {
-    for (let radius = 0; ; radius += 1) {
-      for (let offsetY = -radius; offsetY <= radius; offsetY += 1) {
-        for (let offsetX = -radius; offsetX <= radius; offsetX += 1) {
-          if (Math.max(Math.abs(offsetX), Math.abs(offsetY)) !== radius) continue;
-          const gridX = targetX + offsetX;
-          const gridY = targetY + offsetY;
-          if (!locationIdsByCell.has(cellKey(layerId, gridX, gridY))) return { gridX, gridY };
-        }
-      }
-    }
-  };
-  const addGeographicRoadNetwork = ({
-    pointIds,
-    roadPrefix,
-    roadName,
-    description,
-    regionId,
-    sourceId,
-    sourceKeyPrefix,
-  }: {
-    pointIds: string[];
-    roadPrefix: string;
-    roadName: string;
-    description: string;
-    regionId: string;
-    sourceId: string;
-    sourceKeyPrefix: string;
-  }) => {
-    if (pointIds.length < 2) return;
-    const connected = [pointIds[0]];
-    const remaining = new Set(pointIds.slice(1));
-    const links: Array<[string, string]> = [];
-    while (remaining.size > 0) {
-      let nearest: { fromId: string; toId: string; distance: number } | null = null;
-      for (const fromId of connected) {
-        const from = coordinates.get(fromId)!;
-        for (const toId of remaining) {
-          const to = coordinates.get(toId)!;
-          const distance = Math.max(Math.abs(from.gridX - to.gridX), Math.abs(from.gridY - to.gridY));
-          if (!nearest || distance < nearest.distance) nearest = { fromId, toId, distance };
-        }
-      }
-      if (!nearest) throw new Error(`${roadName}无法连接全部地点。`);
-      links.push([nearest.fromId, nearest.toId]);
-      connected.push(nearest.toId);
-      remaining.delete(nearest.toId);
-    }
-
-    const ensureRoadCell = (gridX: number, gridY: number) => {
-      const existing = locationIdsByCell.get(cellKey("world-root", gridX, gridY));
-      if (existing) return existing;
-      const id = `${roadPrefix}-${coordinateToken(gridX)}-${coordinateToken(gridY)}`;
-      addLocation({
-        id, layerId: "world-root", name: roadName, description, regionId, gridX, gridY,
-        sourceId, sourceKey: `${sourceKeyPrefix}/${gridX}/${gridY}`,
-      });
-      return id;
-    };
-
-    for (const [fromId, toId] of links) {
-      const destination = coordinates.get(toId)!;
-      let currentId = fromId;
-      let current = coordinates.get(currentId)!;
-      while (current.gridX !== destination.gridX || current.gridY !== destination.gridY) {
-        const nextX = current.gridX + Math.sign(destination.gridX - current.gridX);
-        const nextY = current.gridY + Math.sign(destination.gridY - current.gridY);
-        const nextId = ensureRoadCell(nextX, nextY);
-        addNormal(
-          `route-${roadPrefix}-${coordinateToken(current.gridX)}-${coordinateToken(current.gridY)}-${coordinateToken(nextX)}-${coordinateToken(nextY)}`,
-          currentId,
-          nextId,
-        );
-        currentId = nextId;
-        current = coordinates.get(currentId)!;
-      }
-    }
-  };
   addLocation({ id: "home-entrance", layerId: "home-ground", name: "玄关", description: "嬴长嫚与楼夜秋之家的内外分界。", regionId: "home", gridX: 0, gridY: 0, sourceId: "source-home-design", sourceKey: "home/ground/entrance" });
   addLocation({ id: "home-exterior", layerId: "world-root", name: "嬴长嫚与楼夜秋之家·入口", description: "从楼门路进入住宅的门前。", regionId: "world-home", gridX: 3, gridY: 1, sourceId: "source-home-design", sourceKey: "outside/home-entrance" });
   addLocation({ id: "loumen-road-west", layerId: "world-root", name: "楼门路", description: "楼门路西段，沿街向西接入北宋东京开封府。", regionId: null, gridX: 2, gridY: 2, sourceId: "source-home-design", sourceKey: "outside/loumen-road/west" });
   addLocation({ id: "loumen-road", layerId: "world-root", name: "楼门路", description: "住宅门前的楼门路中段。", regionId: null, gridX: 3, gridY: 2, sourceId: "source-home-design", sourceKey: "outside/loumen-road/center" });
-  addLocation({ id: "loumen-road-east", layerId: "world-root", name: "楼门路", description: "楼门路东段，沿街向东接入帕洛斯海岸。", regionId: null, gridX: 4, gridY: 2, sourceId: "source-home-design", sourceKey: "outside/loumen-road/east" });
+  addLocation({ id: "loumen-road-east", layerId: "world-root", name: "楼门路", description: "楼门路东段通往仍在建设的东境边界。", regionId: null, gridX: 4, gridY: 2, sourceId: "source-home-design", sourceKey: "outside/loumen-road/east" });
   addLocation({ id: "song-gate", layerId: "world-root", name: "东京开封府入口", description: "由楼门路进入北宋东京开封府城市路网。", regionId: "song", gridX: 1, gridY: 2, sourceId: "source-song-wikipedia", sourceKey: "东京城/入口" });
-  addLocation({ id: "palos-gate", layerId: "world-root", name: "帕洛斯入口", description: "由楼门路进入帕洛斯连续群岛地图的入口。", regionId: "palos", gridX: 5, gridY: 2, sourceId: "source-palworld-map", sourceKey: "palos/gate" });
+  addLocation({ id: "world-construction-site", layerId: "world-root", name: "东境建设中", description: "楼门路东端设有围挡与告示，后续区域尚未开放。", regionId: null, gridX: 5, gridY: 2, sourceId: "source-home-design", sourceKey: "outside/east-construction" });
 
   addTransition("route-home-door-v4", "home-entrance", "home-exterior", "door");
   addNormal("route-home-road-v4", "home-exterior", "loumen-road");
   addNormal("route-loumen-west-v4", "loumen-road", "loumen-road-west");
   addNormal("route-loumen-east-v4", "loumen-road", "loumen-road-east");
   addNormal("route-road-song-v4", "loumen-road-west", "song-gate");
-  addNormal("route-road-palos-v4", "loumen-road-east", "palos-gate");
+  addNormal("route-road-construction-v10", "loumen-road-east", "world-construction-site");
 
   const homeLocations = [
     ["home-front-garden", "前庭", -1, 0], ["home-hall", "门厅", 0, 1],
@@ -705,55 +642,76 @@ export function buildWorldSeed(): WorldSeedData {
     previousEntryId = currentId;
   }
 
+  const shopCategory = (name: string) => {
+    if (["药", "医"].some((part) => name.includes(part))) return "medicine";
+    if (["茶"].some((part) => name.includes(part))) return "tea";
+    if (["酒", "食", "馒头", "肉", "鱼", "果子"].some((part) => name.includes(part))) return "food";
+    if (["绫罗", "彩帛", "布", "染"].some((part) => name.includes(part))) return "textile";
+    if (["金银", "质库", "珠玉", "盐引"].some((part) => name.includes(part))) return "finance";
+    if (["书", "纸墨", "文房"].some((part) => name.includes(part))) return "books";
+    if (["铁器", "木作", "铜器", "修作"].some((part) => name.includes(part))) return "craft";
+    if (["邸店", "货栈", "客店", "脚店"].some((part) => name.includes(part))) return "lodging";
+    if (name.includes("浴堂")) return "bath";
+    return "general";
+  };
+  for (const district of KAIFENG_SHOP_DISTRICTS) {
+    const candidates = locations
+      .filter((location) => location.id.startsWith(`song-street-${district.streetId}-`))
+      .sort((left, right) => left.gridY - right.gridY || left.gridX - right.gridX || left.id.localeCompare(right.id));
+    if (candidates.length < district.count) throw new Error(`${district.streetId} 没有足够街路地点铺设店面。`);
+    const selected = new Set<number>();
+    for (let index = 0; index < district.count; index += 1) {
+      let cursor = Math.floor(((index + 1) * candidates.length) / (district.count + 1));
+      while (selected.has(cursor)) cursor = (cursor + 1) % candidates.length;
+      selected.add(cursor);
+      const location = candidates[cursor];
+      const baseName = district.names[index % district.names.length];
+      const cycle = Math.floor(index / district.names.length);
+      const name = cycle === 0 ? baseName : `${baseName}${["东柜", "西柜", "南柜"][cycle - 1] ?? `${cycle + 1}号`}`;
+      location.name = `东京城·${name}`;
+      location.description = `${name}位于${KAIFENG_STREETS.find(([streetId]) => streetId === district.streetId)?.[1] ?? "东京街市"}，店面类型依据北宋东京行业记载复原，具体字号为项目推定。`;
+      shopfronts.push({
+        id: `shop-${district.streetId}-${String(index + 1).padStart(2, "0")}`,
+        locationId: location.id,
+        name,
+        category: shopCategory(name),
+        documented: false,
+      });
+    }
+  }
+
+  for (const shop of KAIFENG_RETAIL_INTERIORS) {
+    const frontage = shopfronts.find((candidate) => candidate.name === shop.name);
+    if (!frontage) throw new Error(`${shop.name} 缺少街面入口。`);
+    const layerId = `kaifeng-shop-${shop.slug}-ground`;
+    const regionId = `kaifeng-shop-${shop.slug}`;
+    const roomCoordinates = [[0, 2], [0, 1], [-1, 0], [1, 0], [0, 0], [0, -1]] as const;
+    const roomIds = shop.rooms.map((roomName, index) => {
+      const id = `kaifeng-shop-${shop.slug}-room-${index + 1}`;
+      addLocation({
+        id,
+        layerId,
+        name: `${shop.name}·${roomName}`,
+        description: `${shop.name}的${roomName}。`,
+        regionId,
+        gridX: roomCoordinates[index][0],
+        gridY: roomCoordinates[index][1],
+        sourceId: "source-song-map",
+        sourceKey: `东京梦华录/行业复原/${shop.slug}/${roomName}`,
+      });
+      return id;
+    });
+    [[0, 1], [1, 2], [1, 3], [1, 4], [4, 5]].forEach(([from, to], index) => {
+      addNormal(`route-kaifeng-shop-${shop.slug}-${index + 1}`, roomIds[from], roomIds[to]);
+    });
+    addTransition(`route-kaifeng-shop-${shop.slug}-entrance`, frontage.locationId, roomIds[0], "door");
+  }
+
   for (const location of locations) {
     if (location.regionId === "song" && location.sourceId === "source-song-wikipedia") {
       baseLocationSources.push({ locationId: location.id, sourceId: "source-song-map", sourceKey: "东京梦华录/城市关系" });
     }
   }
-
-  addLocation({
-    id: "palos-overview-entry", layerId: "world-root", name: "帕洛斯西部航路", description: "由楼门路抵达帕洛斯群岛西缘的航路。",
-    regionId: "palos", gridX: 6, gridY: 2, sourceId: "source-palworld-map", sourceKey: "palos/overview",
-  });
-  addNormal("route-world-palos-v3", "palos-gate", "palos-overview-entry");
-  const palosNetworkPoints = ["palos-overview-entry"];
-  PAL_CATEGORIES.forEach(([category, name]) => {
-    const markers: Array<{ id: string; name: string; description: string; sourceKey: string }> = [];
-    if (category === "travel") {
-      PAL_FAST_TRAVEL.forEach((markerName, index) => markers.push({ id: `palos-fasttravel-${1001 + index}`, name: markerName, description: "公开地图传送点。", sourceKey: String(1001 + index) }));
-    } else if (category === "towers") {
-      PAL_TOWERS.forEach((markerName, index) => markers.push({ id: `palos-tower-${2001 + index}`, name: markerName, description: "公开地图高塔。", sourceKey: String(2001 + index) }));
-    } else if (category === "bosses") {
-      PAL_FIELD_BOSSES.forEach((markerName, index) => markers.push({ id: `palos-fieldboss-${4001 + index}`, name: markerName, description: "公开地图野外头目标记；本演示不实现战斗。", sourceKey: String(4001 + index) }));
-    } else if (category === "dungeons") {
-      for (let marker = 5001; marker <= 5123; marker += 1) markers.push({ id: `palos-dungeon-${marker}`, name: `洞窟入口 ${marker}`, description: "公开地图洞窟标记。", sourceKey: String(marker) });
-    } else {
-      for (let marker = 10001; marker <= 10039; marker += 1) markers.push({ id: `palos-memo-${marker}`, name: `帕洛斯手记 ${marker - 10000}`, description: "公开地图手记标记。", sourceKey: String(marker) });
-    }
-    markers.forEach((marker) => {
-      const rawCoordinate = PALWORLD_MARKER_COORDINATES[marker.sourceKey as keyof typeof PALWORLD_MARKER_COORDINATES];
-      if (!rawCoordinate) throw new Error(`帕洛斯地点 ${marker.id} 缺少公开地图坐标。`);
-      const point = reserveNearestCell(
-        "world-root",
-        43 + Math.round(rawCoordinate[0] * 0.5),
-        13 - Math.round(rawCoordinate[1] * 0.5),
-      );
-      addLocation({
-        id: marker.id, layerId: "world-root", name: `${name}·${marker.name}`, description: marker.description,
-        regionId: "palos", ...point, sourceId: "source-palworld-map", sourceKey: marker.sourceKey,
-      });
-      palosNetworkPoints.push(marker.id);
-    });
-  });
-  addGeographicRoadNetwork({
-    pointIds: palosNetworkPoints,
-    roadPrefix: "palos-map-road",
-    roadName: "帕洛斯道路",
-    description: "依公开帕洛斯地图坐标连接邻近地标的道路。",
-    regionId: "palos",
-    sourceId: "source-palworld-map",
-    sourceKeyPrefix: "coordinate-road",
-  });
 
   const addRegionBounds = (id: string, name: string, description: string) => {
     const members = locations.filter((location) => location.regionId === id);
@@ -764,7 +722,6 @@ export function buildWorldSeed(): WorldSeedData {
     regions.push({ id, layerId: "world-root", name, description, x: minX, y: minY, width: maxX - minX, height: maxY - minY });
   };
   addRegionBounds("song", "大宋·东京开封府", "依《东京梦华录》与北宋东京城遗址资料复原的城门、宫城、御街、河桥与坊市路网。");
-  addRegionBounds("palos", "帕洛斯", "依公开地图标记坐标展开的帕洛斯群岛大区域。");
 
-  return { sources, layers, regions, locations, routes, actions, baseLocationSources };
+  return { sources, layers, regions, locations, routes, actions, baseLocationSources, shopfronts };
 }

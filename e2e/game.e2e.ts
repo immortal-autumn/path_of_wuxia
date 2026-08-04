@@ -427,17 +427,15 @@ test.describe("game map", () => {
     await expect(page.getByLabel("地图信息")).toContainText("大内宫城");
   });
 
-  test("crosses the continuous Palos overworld from Loumen Road", async ({ page }) => {
+  test("reaches the construction boundary after the Palos region removal", async ({ page }) => {
     await enterWorld(page);
     await enterOverworld(page);
     await moveToId(page, "loumen-road-east", "楼门路");
-    await moveTo(page, "帕洛斯入口");
-    await performAction(page, "眺望帕洛斯");
-    await moveTo(page, "帕洛斯西部航路");
-    await moveToId(page, "palos-map-road-p7-p3", "帕洛斯道路");
+    await moveTo(page, "东境建设中");
+    await performAction(page, "查看建设告示");
     await expect(page.getByRole("heading", { name: "八方世界 · 局部地图" })).toBeVisible();
     await page.reload();
-    await expect(page.locator('[data-location-id="palos-map-road-p7-p3"]')).toHaveClass(/current/);
+    await expect(page.locator('[data-location-id="world-construction-site"]')).toHaveClass(/current/);
   });
 
   test("moves when crypto.randomUUID is unavailable over plain HTTP", async ({ page }) => {
@@ -504,7 +502,7 @@ test.describe("map editor", () => {
       node.scrollWidth <= node.clientWidth && node.scrollHeight <= node.clientHeight
     )))).toBe(true);
     await expect(page.getByLabel("画布信息")).toContainText("当前地图八方世界");
-    await expect(page.getByLabel("当前地图").locator("option")).toHaveCount(7);
+    await expect(page.getByLabel("当前地图").locator("option")).toHaveCount(15);
     await expect(page.getByLabel("当前地图")).toContainText("大内宫城·一层平面");
     await expect(page.getByLabel("当前地图")).toContainText("开封府署·一层平面");
     await expect(page.getByLabel("当前地图")).toContainText("大相国寺·一层平面");
@@ -522,12 +520,13 @@ test.describe("map editor", () => {
     await expect(page.locator(".editor-selection-summary")).toContainText("楼门路");
     await expect(page.getByRole("button", { name: "完成编辑" })).toBeDisabled();
 
-    await page.getByLabel("定位地点").fill("初始台地");
+    await page.getByLabel("定位地点").fill("惠民药铺");
     await page.getByRole("button", { name: "查找" }).click();
-    await page.getByLabel("定位结果").selectOption("palos-fasttravel-1001");
-    await expect(page.getByRole("status")).toContainText("已定位至帕洛斯传送点·初始台地");
-    await expect(page.getByLabel("画布信息")).toContainText("已选地点：帕洛斯传送点·初始台地");
-    await expect(page.locator(".editor-location-name").filter({ hasText: "初始台地" })).toBeVisible();
+    const medicineShop = page.getByLabel("定位结果").locator("option").filter({ hasText: "惠民药铺" }).first();
+    await page.getByLabel("定位结果").selectOption((await medicineShop.getAttribute("value"))!);
+    await expect(page.getByRole("status")).toContainText("已定位至东京城·惠民药铺");
+    await expect(page.getByLabel("画布信息")).toContainText("已选地点：东京城·惠民药铺");
+    await expect(page.locator(".editor-location-name").filter({ hasText: "惠民药铺" })).toBeVisible();
     await expect(page.getByRole("button", { name: "完成编辑" })).toBeDisabled();
 
     await page.setViewportSize({ width: 768, height: 900 });
@@ -606,10 +605,10 @@ test.describe("map editor", () => {
     await page.getByRole("button", { name: "重做" }).click();
     await expect(page.locator(".editor-location")).toHaveCount(initialLocationCount + 1);
 
-    await page.getByLabel("连接目标").selectOption("palos-gate");
+    await page.getByLabel("连接目标").selectOption("world-construction-site");
     await page.getByRole("button", { name: "建立连接" }).click();
     await expect(page.getByRole("status")).toContainText("自动保存");
-    await expect(page.locator(".route-list")).toContainText("帕洛斯入口");
+    await expect(page.locator(".route-list")).toContainText("东境建设中");
 
     const game = await page.context().newPage();
     await enterWorld(game);

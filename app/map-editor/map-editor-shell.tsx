@@ -587,7 +587,7 @@ export default function MapEditorShell({
 
       <aside className="editor-tools bordered-box">
         <h2>地图范围</h2>
-        <p className="editor-tools-note">大宋与帕洛斯都属于“八方世界”；住宅楼层是独立室内地图。</p>
+        <p className="editor-tools-note">楼门路与东京开封府属于“八方世界”；住宅和公共建筑是独立单层室内地图。</p>
         <label>当前地图
           <select value={layerId} onChange={(event) => {
             const nextLayerId = event.target.value;
@@ -620,7 +620,7 @@ export default function MapEditorShell({
             <button>保存地图层</button>
             <button
               type="button"
-              disabled={["world-root", "home-ground", "song-overview", "palos-overview"].includes(selectedLayer.id)}
+              disabled={["world-root", "home-ground"].includes(selectedLayer.id)}
               onClick={deleteLayer}
             >删除空地图层</button>
           </form>

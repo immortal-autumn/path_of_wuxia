@@ -522,11 +522,38 @@ function seed(db: GameDatabase) {
     const now = new Date().toISOString();
     db.prepare(`
       INSERT INTO world_state(id,era,seed,announcement,updated_at)
-      VALUES (1,'北宋东京开封府与帕洛斯世界','path-of-wuxia-world-v9','单层住宅之外是一张连续大地图：楼门路向西进入北宋东京开封府的城门、御街、河桥与坊市路网，五座重要建筑可由街面入口进入单层内部，向东接入帕洛斯群岛坐标图。',?)
+      VALUES (1,'北宋东京开封府市井世界','path-of-wuxia-world-v10','现代住宅之外是一张以北宋东京开封府为主体的连续大地图：城门、御街、河桥、坊市与宋式店铺相连，楼门路东端区域仍在建设。',?)
       ON CONFLICT(id) DO UPDATE SET era=excluded.era,seed=excluded.seed,announcement=excluded.announcement,updated_at=excluded.updated_at
     `).run(now);
 
     applyWorldSeed(db);
+    db.prepare(`
+      DELETE FROM item_reservations WHERE job_id IN (
+        SELECT j.id FROM action_jobs j JOIN players p ON p.id=j.player_id
+        JOIN locations l ON l.id=p.current_location
+        WHERE l.is_active=0 AND (l.region_id='palos' OR l.id LIKE 'palos-%')
+          AND j.status IN ('running','queued','paused')
+      )
+    `).run();
+    db.prepare(`
+      UPDATE action_jobs SET status='cancelled',result_text='帕洛斯区域已移除，原地点行动已取消。',updated_at=?
+      WHERE player_id IN (
+        SELECT p.id FROM players p JOIN locations l ON l.id=p.current_location
+        WHERE l.is_active=0 AND (l.region_id='palos' OR l.id LIKE 'palos-%')
+      ) AND status IN ('running','queued','paused')
+    `).run(now);
+    db.prepare(`
+      UPDATE npc_profiles SET home_location_id='loumen-road-east',updated_at=?
+      WHERE home_location_id IN (
+        SELECT id FROM locations WHERE is_active=0 AND (region_id='palos' OR id LIKE 'palos-%')
+      )
+    `).run(now);
+    db.prepare(`
+      UPDATE players SET current_location='loumen-road-east',updated_at=?
+      WHERE current_location IN (
+        SELECT id FROM locations WHERE is_active=0 AND (region_id='palos' OR id LIKE 'palos-%')
+      )
+    `).run(now);
     db.prepare(`
       DELETE FROM item_reservations WHERE job_id IN (
         SELECT j.id FROM action_jobs j JOIN players p ON p.id=j.player_id

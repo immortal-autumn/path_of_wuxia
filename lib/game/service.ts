@@ -2812,7 +2812,7 @@ export class GameService {
       return { forward: operation, inverse: { type: "layer.update", layerId: current.id, patch: { name: current.name, description: current.description, parentLayerId: current.parentLayerId } }, invalidatedChunks: [] };
     }
     if (operation.type === "layer.delete") {
-      if (["world-root", "home-ground", "song-overview", "palos-overview"].includes(operation.layerId)) throw new Error("初始地图层不能删除。");
+      if (["world-root", "home-ground"].includes(operation.layerId)) throw new Error("初始地图层不能删除。");
       const current = this.getLayer(operation.layerId);
       const used = this.db.prepare("SELECT 1 FROM locations WHERE layer_id=? AND is_active=1 UNION SELECT 1 FROM map_layers WHERE parent_layer_id=? AND is_active=1 LIMIT 1").get(current.id, current.id);
       if (used) throw new Error("地图层仍包含地点或子层，不能删除。");

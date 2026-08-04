@@ -14,9 +14,9 @@ export type MapValidationReport = {
     routes: number;
     sourcedLocations: number;
     songLocations: number;
-    palosLocations: number;
     homeLocations: number;
     buildingLocations: number;
+    shopfrontLocations: number;
     fastTravelLocations: number;
     overworldLocations: number;
     reachableLocations: number;
@@ -68,12 +68,14 @@ export function validateWorldMap(db: DatabaseSync): MapValidationReport {
   }
   const publicLocationsOutsideOverworld = db.prepare(`
     SELECT l.id,l.layer_id FROM locations l
-    WHERE l.is_active=1 AND l.region_id IN ('song','palos') AND l.layer_id<>'world-root'
+    WHERE l.is_active=1 AND l.region_id='song' AND l.layer_id<>'world-root'
     ORDER BY l.id
   `).all() as Array<{ id: string; layer_id: string }>;
   if (publicLocationsOutsideOverworld.length > 0) {
-    errors.push(`${publicLocationsOutsideOverworld.length} 个大宋或帕洛斯地点没有位于连续大地图：${publicLocationsOutsideOverworld.slice(0, 8).map((item) => item.id).join("、")}。`);
+    errors.push(`${publicLocationsOutsideOverworld.length} 个东京公共地点没有位于连续大地图：${publicLocationsOutsideOverworld.slice(0, 8).map((item) => item.id).join("、")}。`);
   }
+  const activePalosLocations = (db.prepare("SELECT COUNT(*) AS count FROM locations WHERE is_active=1 AND (region_id='palos' OR id LIKE 'palos-%')").get() as { count: number }).count;
+  if (activePalosLocations > 0) errors.push(`已移除的帕洛斯仍有 ${activePalosLocations} 个活动地点。`);
   if (db.prepare("SELECT 1 FROM routes WHERE id='route-entrance-road' AND is_active=1").get()) {
     errors.push("旧版玄关直达楼门路路线仍处于活动状态。住宅应通过大地图上的房屋入口进出。");
   }
@@ -175,30 +177,26 @@ export function validateWorldMap(db: DatabaseSync): MapValidationReport {
     routes: routes.length,
     sourcedLocations: scalar("SELECT COUNT(DISTINCT s.location_id) AS count FROM location_sources s JOIN locations l ON l.id=s.location_id AND l.is_active=1"),
     songLocations: scalar("SELECT COUNT(*) AS count FROM locations WHERE is_active=1 AND region_id='song'"),
-    palosLocations: scalar("SELECT COUNT(DISTINCT s.location_id) AS count FROM location_sources s JOIN locations l ON l.id=s.location_id AND l.is_active=1 WHERE s.source_id='source-palworld-map'"),
     homeLocations: scalar("SELECT COUNT(DISTINCT s.location_id) AS count FROM location_sources s JOIN locations l ON l.id=s.location_id AND l.is_active=1 WHERE s.source_id='source-home-design'"),
     buildingLocations: scalar("SELECT COUNT(*) AS count FROM locations WHERE is_active=1 AND layer_id LIKE 'kaifeng-%-ground'"),
+    shopfrontLocations: buildWorldSeed().shopfronts.length,
     fastTravelLocations: scalar("SELECT COUNT(*) AS count FROM location_facilities WHERE is_active=1 AND facility_type='fast-travel'"),
     overworldLocations: scalar("SELECT COUNT(*) AS count FROM locations WHERE is_active=1 AND layer_id='world-root'"),
     reachableLocations: reachable.size,
   };
   if (counts.songLocations < 500) errors.push(`东京开封府地点只有 ${counts.songLocations} 个，至少需要500个。`);
-  if (counts.palosLocations < 250) errors.push(`帕洛斯来源地点只有 ${counts.palosLocations} 个，至少需要250个。`);
   if (counts.locations < 500) errors.push(`地图地点总数只有 ${counts.locations} 个，至少需要500个。`);
-  if (counts.buildingLocations < 41) errors.push(`东京开封府五座可进入建筑只有 ${counts.buildingLocations} 个室内地点，应至少有41个。`);
-  if (counts.fastTravelLocations < 70) errors.push(`世界只有 ${counts.fastTravelLocations} 个快速旅行枢纽，应至少有70个。`);
+  if (counts.buildingLocations < 89) errors.push(`东京开封府可进入建筑只有 ${counts.buildingLocations} 个室内地点，应至少有89个。`);
+  if (counts.shopfrontLocations !== 120) errors.push(`东京开封府店铺门面为 ${counts.shopfrontLocations} 个，应为120个。`);
+  if (counts.fastTravelLocations < 25) errors.push(`世界只有 ${counts.fastTravelLocations} 个快速旅行枢纽，应至少有25个。`);
   const geographicBounds = db.prepare(`
     SELECT region_id,MIN(grid_x) AS min_x,MAX(grid_x) AS max_x,MIN(grid_y) AS min_y,MAX(grid_y) AS max_y
-    FROM locations WHERE is_active=1 AND region_id IN ('song','palos') GROUP BY region_id
+    FROM locations WHERE is_active=1 AND region_id='song' GROUP BY region_id
   `).all() as Array<{ region_id: string; min_x: number; max_x: number; min_y: number; max_y: number }>;
   const boundsByRegion = new Map(geographicBounds.map((bounds) => [bounds.region_id, bounds]));
   const songBounds = boundsByRegion.get("song");
-  const palosBounds = boundsByRegion.get("palos");
   if (!songBounds || songBounds.max_x - songBounds.min_x < 60 || songBounds.max_y - songBounds.min_y < 70) {
     errors.push("东京开封府没有展开为足够宽高的历史城市布局。");
-  }
-  if (!palosBounds || palosBounds.max_x - palosBounds.min_x < 55 || palosBounds.max_y - palosBounds.min_y < 55) {
-    errors.push("帕洛斯地图没有按公开坐标展开为足够宽高的群岛布局。");
   }
   if (scalar("SELECT COUNT(*) AS count FROM locations WHERE is_active=1 AND region_id='song' AND name LIKE '东京城·%'") < 900) {
     errors.push("东京开封府缺少足够完整的城门、街路、河桥与坊市节点。");
@@ -223,13 +221,21 @@ export function validateWorldMap(db: DatabaseSync): MapValidationReport {
     "route-kaifeng-xiangguo-entrance",
     "route-kaifeng-guozijian-entrance",
     "route-kaifeng-panlou-entrance",
+    "route-kaifeng-shop-medicine-entrance",
+    "route-kaifeng-shop-tea-entrance",
+    "route-kaifeng-shop-warehouse-entrance",
+    "route-kaifeng-shop-silk-entrance",
+    "route-kaifeng-shop-pawn-entrance",
+    "route-kaifeng-shop-books-entrance",
+    "route-kaifeng-shop-smithy-entrance",
+    "route-kaifeng-shop-bath-entrance",
   ];
   for (const id of requiredBuildingRoutes) {
     if (!db.prepare("SELECT 1 FROM routes WHERE id=? AND is_active=1 AND route_type='transition'").get(id)) {
       errors.push(`东京开封府建筑入口 ${id} 不存在。`);
     }
   }
-  for (const id of ["home-entrance", "song-landmark-bridge-zhou", "palos-fasttravel-1001"]) {
+  for (const id of ["home-entrance", "song-landmark-bridge-zhou"]) {
     if (!db.prepare(`
       SELECT 1 FROM location_facilities
       WHERE location_id=? AND facility_type='fast-travel' AND is_active=1
@@ -259,8 +265,8 @@ export function validateWorldMap(db: DatabaseSync): MapValidationReport {
   if (kaifengEdgeCount - kaifengRouteStats.vertices + 1 < 20) {
     errors.push("东京开封府道路缺少城郭街区应有的环路结构。");
   }
-  if (scalar("SELECT COUNT(*) AS count FROM locations WHERE is_active=1 AND name='帕洛斯道路'") < 100) {
-    errors.push("帕洛斯地理布局缺少连接公开地标的道路网。");
+  if (!db.prepare("SELECT 1 FROM locations WHERE id='world-construction-site' AND is_active=1").get()) {
+    errors.push("楼门路东端缺少建设中终点。");
   }
   if (counts.sourcedLocations < expectedSeedIds.length) warnings.push("部分非种子地点没有来源记录；编辑器自建地点允许无来源。");
 
