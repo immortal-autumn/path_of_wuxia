@@ -140,8 +140,14 @@ test.describe("entries and session identity", () => {
         reject(new Error("NPC WebSocket flow timed out"));
       }, 8_000);
       let cancelSent = false;
+      let directiveSeen = false;
       socket.on("message", (raw) => {
-        const message = JSON.parse(raw.toString()) as ServerMessage;
+        const message = JSON.parse(raw.toString()) as ServerMessage | { type: "npc.directive"; directive: { kind: string } };
+        if (message.type === "npc.directive") {
+          directiveSeen = true;
+          expect(["move", "action", "hold"]).toContain(message.directive.kind);
+          return;
+        }
         if (message.type === "snapshot") {
           expect(message.snapshot.self.id).toBe("npc-001");
           expect(message.snapshot.self).not.toHaveProperty("controllerKind");
@@ -152,6 +158,7 @@ test.describe("entries and session identity", () => {
           socket.send(JSON.stringify({ type: "action.cancel", requestId: "npc-action-cancel", jobId: message.actionState.current.id }));
         }
         if (message.type === "ack" && message.requestId === "npc-action-cancel") {
+          expect(directiveSeen).toBe(true);
           clearTimeout(timeout);
           socket.close();
           resolve();
@@ -164,6 +171,74 @@ test.describe("entries and session identity", () => {
       });
       socket.on("error", reject);
     });
+  });
+
+  test("opens a resident detail, converses, accepts and completes a commission", async ({ page }) => {
+    await enterWorld(page);
+    await updatePlayer(page, `
+      UPDATE players SET current_location=(SELECT current_location FROM players WHERE id=?),hp=max_hp
+      WHERE id='npc-001'
+    `);
+    const npc = await new Promise<{ socket: WebSocket; name: string }>((resolve, reject) => {
+      const socket = new WebSocket("ws://127.0.0.1:3200/ws", {
+        headers: { authorization: `Bearer ${npcAgentToken("npc-001")}` },
+      });
+      const timeout = setTimeout(() => reject(new Error("NPC resident connection timed out")), 8_000);
+      socket.on("message", (raw) => {
+        const message = JSON.parse(raw.toString()) as ServerMessage;
+        if (message.type !== "snapshot") return;
+        clearTimeout(timeout);
+        resolve({ socket, name: message.snapshot.self.name });
+      });
+      socket.on("error", reject);
+    });
+
+    try {
+      const people = page.getByLabel("此地人物");
+      await expect(people).toContainText(npc.name);
+      await people.getByRole("button", { name: new RegExp(npc.name) }).click();
+      const modal = page.getByRole("dialog", { name: `人物详情：${npc.name}` });
+      await expect(modal).toContainText(/店主|营作地点/);
+      await expect(modal).not.toContainText(/controller|credential|stableKey|personality|goals/i);
+      await modal.getByRole("button", { name: /问候/ }).click();
+      await expect(modal.getByRole("status")).toContainText(npc.name);
+      await modal.getByRole("button", { name: "接受委托" }).click();
+      await expect(page.locator(".notice")).toContainText("已接受委托");
+      await modal.getByRole("button", { name: "关闭" }).click();
+
+      await page.getByRole("button", { name: "委托" }).click();
+      await expect(page.getByLabel("委托册")).toContainText("州桥探路");
+      await expect(page.getByLabel("委托册")).toContainText("进行中");
+
+      await people.getByRole("button", { name: new RegExp(npc.name) }).click();
+      await expect(modal).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(modal).toBeHidden();
+      await people.getByRole("button", { name: new RegExp(npc.name) }).click();
+      await expect(modal).toBeVisible();
+      await page.locator(".detail-modal-backdrop").click({ position: { x: 2, y: 2 } });
+      await expect(modal).toBeHidden();
+
+      await updatePlayer(page, `
+        INSERT INTO player_visited_locations(player_id,location_id,first_visited_at,last_visited_at)
+        VALUES (?,'song-landmark-bridge-zhou',
+          strftime('%Y-%m-%dT%H:%M:%fZ','now','+1 second'),
+          strftime('%Y-%m-%dT%H:%M:%fZ','now','+1 second'))
+        ON CONFLICT(player_id,location_id) DO UPDATE SET last_visited_at=excluded.last_visited_at
+      `);
+      await page.reload();
+      await expect(page.locator(".connection-badge")).toContainText("江湖在线");
+      await expect(page.getByLabel("此地人物")).toContainText(npc.name);
+      await page.getByLabel("此地人物").getByRole("button", { name: new RegExp(npc.name) }).click();
+      const reopened = page.getByRole("dialog", { name: `人物详情：${npc.name}` });
+      await reopened.getByRole("button", { name: "完成并领取报酬" }).click();
+      await expect(page.locator(".notice")).toContainText("委托完成");
+      await reopened.getByRole("button", { name: "关闭" }).click();
+      await page.getByRole("button", { name: "委托" }).click();
+      await expect(page.getByLabel("委托册")).toContainText("已完成");
+    } finally {
+      npc.socket.close();
+    }
   });
 });
 
@@ -248,7 +323,7 @@ test.describe("game map", () => {
     await moveTo(page, "玄关");
     await enterOverworld(page);
     await expect(page.getByRole("heading", { name: "八方世界 · 局部地图" })).toBeVisible();
-    await expect(page.locator(".map-node")).toHaveCount(8);
+    await expect(page.locator(".map-node")).toHaveCount(7);
     await expect(page.getByLabel("下一步可前往地点")).toContainText("上 · 嬴长嫚与楼夜秋之家·入口");
     await expect(page.getByLabel("下一步可前往地点")).toContainText("左 · 楼门路");
     await expect(page.getByLabel("下一步可前往地点")).toContainText("右 · 楼门路");

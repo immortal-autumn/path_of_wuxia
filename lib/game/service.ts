@@ -56,7 +56,11 @@ import type {
   MapRoute,
   MapTransition,
   MapViewport,
+  NpcCommission,
+  NpcCommissionOffer,
+  NpcStanding,
   OnlinePlayer,
+  PersonDetail,
   PrivateEvent,
   PlayerSelf,
   PlayerNeeds,
@@ -238,6 +242,24 @@ function chinaMinuteOfDay(at: Date) {
   const hour = Number(parts.find((part) => part.type === "hour")?.value ?? 0);
   const minute = Number(parts.find((part) => part.type === "minute")?.value ?? 0);
   return hour * 60 + minute;
+}
+
+function chinaDateKey(at: Date) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+  }).formatToParts(at);
+  const value = (type: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === type)?.value ?? "00";
+  return `${value("year")}-${value("month")}-${value("day")}`;
+}
+
+function standingLabel(value: number): NpcStanding["label"] {
+  if (value <= -50) return "仇视";
+  if (value <= -10) return "冷淡";
+  if (value <= 9) return "陌生";
+  if (value <= 29) return "相识";
+  if (value <= 49) return "信赖";
+  if (value <= 74) return "亲近";
+  return "敬重";
 }
 
 function shopIsOpen(shop: Pick<ShopRow, "opens_minute" | "closes_minute">, at: Date) {
@@ -2091,6 +2113,372 @@ export class GameService {
     }));
   }
 
+  private npcStanding(playerId: string, npcId: string): NpcStanding {
+    const row = this.db.prepare("SELECT standing FROM player_npc_standings WHERE player_id=? AND npc_id=?")
+      .get(playerId, npcId) as { standing: number } | undefined;
+    const value = row?.standing ?? 0;
+    return { value, label: standingLabel(value) };
+  }
+
+  private changeNpcStanding(
+    playerId: string,
+    npcId: string,
+    delta: number,
+    reason: string,
+    referenceId: string,
+    at: string,
+  ) {
+    const before = this.npcStanding(playerId, npcId).value;
+    const after = Math.max(-100, Math.min(100, before + delta));
+    const inserted = this.db.prepare(`
+      INSERT OR IGNORE INTO npc_standing_events(
+        id,player_id,npc_id,delta,standing_after,reason,reference_id,created_at
+      ) VALUES (?,?,?,?,?,?,?,?)
+    `).run(randomUUID(), playerId, npcId, after - before, after, reason, referenceId, at);
+    if (inserted.changes > 0) {
+      this.db.prepare(`
+        INSERT INTO player_npc_standings(player_id,npc_id,standing,updated_at) VALUES (?,?,?,?)
+        ON CONFLICT(player_id,npc_id) DO UPDATE SET standing=excluded.standing,updated_at=excluded.updated_at
+      `).run(playerId, npcId, after, at);
+    }
+    return this.npcStanding(playerId, npcId);
+  }
+
+  private assertPersonMeeting(playerId: string, personId: string, onlinePlayerIds: string[]) {
+    if (!onlinePlayerIds.includes(personId)) throw new Error("此人当前不在江湖中。");
+    const rows = this.db.prepare(`
+      SELECT player.id,player.name,player.title,player.current_location,player.hp,
+        CASE WHEN profile.player_id IS NULL THEN 0 ELSE 1 END AS is_npc
+      FROM players player LEFT JOIN npc_profiles profile ON profile.player_id=player.id
+      WHERE player.id IN (?,?)
+    `).all(playerId, personId) as Array<{
+      id: string; name: string; title: string; current_location: string; hp: number; is_npc: number;
+    }>;
+    const player = rows.find((row) => row.id === playerId);
+    const person = rows.find((row) => row.id === personId);
+    if (!player || !person) throw new Error("人物不存在。");
+    if (person.hp <= 0) throw new Error("此人负伤未归，暂时无法交谈。");
+    if (player.current_location !== person.current_location) throw new Error("只有身处同一地点才能交谈。");
+    return { player, person };
+  }
+
+  private assertNpcMeeting(playerId: string, npcId: string, onlinePlayerIds: string[]) {
+    const meeting = this.assertPersonMeeting(playerId, npcId, onlinePlayerIds);
+    if (meeting.person.is_npc !== 1) throw new Error("这不是可领取城中委托的人物。");
+    return { player: meeting.player, npc: meeting.person };
+  }
+
+  private currentNpcActivity(npcId: string, at = this.now()) {
+    const row = this.db.prepare(`
+      SELECT activity_kind FROM npc_schedule_entries
+      WHERE player_id=? AND start_minute<=? AND end_minute>?
+      ORDER BY start_minute DESC,id LIMIT 1
+    `).get(npcId, chinaMinuteOfDay(at), chinaMinuteOfDay(at)) as { activity_kind: string } | undefined;
+    return row?.activity_kind ?? null;
+  }
+
+  getPersonDetail(playerId: string, npcId: string, onlinePlayerIds: string[]): PersonDetail {
+    const meeting = this.assertPersonMeeting(playerId, npcId, onlinePlayerIds);
+    if (meeting.person.is_npc !== 1) {
+      return {
+        id: meeting.person.id, name: meeting.person.name, title: meeting.person.title, occupation: null,
+        biography: "与你同在此地的江湖人物。", workplace: null, homeArea: null, currentActivity: "在线",
+        standing: null, dialogueTopics: [], commissionOffers: [], publicRelationships: [],
+      };
+    }
+    const row = this.db.prepare(`
+      SELECT player.id,player.name,player.title,assignment.occupation_name,assignment.public_biography,
+        assignment.home_location_id,assignment.workplace_location_id,workplace.name AS workplace_name
+      FROM players player JOIN npc_assignments assignment ON assignment.player_id=player.id
+      JOIN locations workplace ON workplace.id=assignment.workplace_location_id
+      WHERE player.id=?
+    `).get(npcId) as {
+      id: string; name: string; title: string; occupation_name: string; public_biography: string;
+      home_location_id: string; workplace_location_id: string; workplace_name: string;
+    } | undefined;
+    if (!row) throw new Error("人物资料尚未建立。");
+    const standing = this.npcStanding(playerId, npcId);
+    const topics = this.db.prepare(`
+      SELECT topic.id,topic.title,topic.player_prompt,topic.minimum_standing
+      FROM npc_dialogue_assignments assignment JOIN npc_dialogue_topics topic ON topic.id=assignment.topic_id
+      WHERE assignment.player_id=? AND topic.is_active=1 ORDER BY topic.id
+    `).all(npcId) as Array<{ id: string; title: string; player_prompt: string; minimum_standing: number }>;
+    const relationships = this.db.prepare(`
+      SELECT relationship.relationship_kind,relationship.public_note,other.id,other.name
+      FROM npc_relationships relationship JOIN players other ON other.id=CASE
+        WHEN relationship.npc_a_id=? THEN relationship.npc_b_id ELSE relationship.npc_a_id END
+      WHERE relationship.npc_a_id=? OR relationship.npc_b_id=?
+      ORDER BY relationship.relationship_kind,other.name
+    `).all(npcId, npcId, npcId) as Array<{
+      relationship_kind: string; public_note: string; id: string; name: string;
+    }>;
+    return {
+      id: row.id,
+      name: row.name,
+      title: row.title,
+      occupation: row.occupation_name,
+      biography: row.public_biography,
+      workplace: { id: row.workplace_location_id, name: row.workplace_name },
+      homeArea: "东京开封府",
+      currentActivity: this.currentNpcActivity(npcId),
+      standing,
+      dialogueTopics: topics.map((topic) => ({
+        id: topic.id, title: topic.title, prompt: topic.player_prompt, available: standing.value >= topic.minimum_standing,
+      })),
+      commissionOffers: this.getNpcCommissionOffers(playerId, npcId),
+      publicRelationships: relationships.map((relationship) => ({
+        personId: relationship.id,
+        personName: relationship.name,
+        kind: relationship.relationship_kind,
+        note: relationship.public_note,
+      })),
+    };
+  }
+
+  chooseNpcDialogue(playerId: string, npcId: string, topicId: string, onlinePlayerIds: string[]) {
+    return inTransaction(this.db, () => {
+      const { npc } = this.assertNpcMeeting(playerId, npcId, onlinePlayerIds);
+      const topic = this.db.prepare(`
+        SELECT topic.id,topic.reply_template,topic.minimum_standing,topic.standing_delta,assignment.occupation_name
+        FROM npc_dialogue_assignments dialogue JOIN npc_dialogue_topics topic ON topic.id=dialogue.topic_id
+        JOIN npc_assignments assignment ON assignment.player_id=dialogue.player_id
+        WHERE dialogue.player_id=? AND topic.id=? AND topic.is_active=1
+      `).get(npcId, topicId) as {
+        id: string; reply_template: string; minimum_standing: number; standing_delta: number; occupation_name: string;
+      } | undefined;
+      if (!topic) throw new Error("此人没有准备谈论这个话题。");
+      if (this.npcStanding(playerId, npcId).value < topic.minimum_standing) throw new Error("交情尚浅，对方不愿谈及此事。");
+      const at = this.now();
+      const timestamp = at.toISOString();
+      const reply = topic.reply_template.replaceAll("{npc}", npc.name).replaceAll("{occupation}", topic.occupation_name);
+      const result = this.db.prepare(`
+        INSERT OR IGNORE INTO npc_dialogue_history(id,player_id,npc_id,topic_id,reply_text,created_at)
+        VALUES (?,?,?,?,?,?)
+      `).run(`dialogue-${playerId}-${npcId}-${topicId}-${chinaDateKey(at)}`, playerId, npcId, topicId, reply, timestamp);
+      if (result.changes > 0 && topic.standing_delta !== 0) {
+        this.changeNpcStanding(playerId, npcId, topic.standing_delta, "daily-dialogue", `${topicId}:${chinaDateKey(at)}`, timestamp);
+      }
+      return { reply, person: this.getPersonDetail(playerId, npcId, onlinePlayerIds) };
+    });
+  }
+
+  private settleExpiredCommissions(playerId: string, at = this.now()) {
+    this.db.prepare(`
+      UPDATE player_commissions SET status='expired',updated_at=?
+      WHERE player_id=? AND status='active' AND due_at<=?
+    `).run(at.toISOString(), playerId, at.toISOString());
+  }
+
+  private commissionReady(row: {
+    player_id: string; objective_kind: string; objective_json: string; accepted_at: string;
+  }) {
+    const objective = JSON.parse(row.objective_json) as Record<string, unknown>;
+    if (row.objective_kind === "visit" && typeof objective.locationId === "string") {
+      return Boolean(this.db.prepare(`
+        SELECT 1 FROM player_visited_locations WHERE player_id=? AND location_id=? AND last_visited_at>=?
+      `).get(row.player_id, objective.locationId, row.accepted_at));
+    }
+    if (row.objective_kind === "action" && typeof objective.actionTemplateId === "string") {
+      return Boolean(this.db.prepare(`
+        SELECT 1 FROM action_logs WHERE player_id=? AND action_template_id=? AND created_at>=? LIMIT 1
+      `).get(row.player_id, objective.actionTemplateId, row.accepted_at));
+    }
+    if (row.objective_kind === "deliver" && typeof objective.definitionId === "string") {
+      const quantity = Math.max(1, Number(objective.quantity ?? 1));
+      const available = this.db.prepare(`
+        SELECT COALESCE(SUM(item.quantity-COALESCE(reserved.quantity,0)),0) AS quantity
+        FROM item_instances item LEFT JOIN (
+          SELECT item_instance_id,SUM(quantity) AS quantity FROM item_reservations GROUP BY item_instance_id
+        ) reserved ON reserved.item_instance_id=item.id
+        WHERE item.owner_player_id=? AND item.definition_id=? AND item.bound=0
+          AND item.equipped_slot IS NULL AND item.locked_by_job_id IS NULL
+      `).get(row.player_id, objective.definitionId) as { quantity: number };
+      return available.quantity >= quantity;
+    }
+    return false;
+  }
+
+  private commissionObjectiveText(kind: string, objectiveJson: string) {
+    const objective = JSON.parse(objectiveJson) as Record<string, unknown>;
+    if (kind === "visit") {
+      const location = typeof objective.locationId === "string"
+        ? this.db.prepare("SELECT name FROM locations WHERE id=?").get(objective.locationId) as { name: string } | undefined
+        : undefined;
+      return `抵达${location?.name ?? "指定地点"}`;
+    }
+    if (kind === "action") {
+      const action = typeof objective.actionTemplateId === "string"
+        ? this.db.prepare("SELECT name FROM action_templates WHERE id=?").get(objective.actionTemplateId) as { name: string } | undefined
+        : undefined;
+      return `完成${action?.name ?? "指定行动"}`;
+    }
+    const item = typeof objective.definitionId === "string"
+      ? this.db.prepare("SELECT name FROM item_definitions WHERE id=?").get(objective.definitionId) as { name: string } | undefined
+      : undefined;
+    return `交付${Number(objective.quantity ?? 1)}份${item?.name ?? "指定货物"}`;
+  }
+
+  getPlayerCommissions(playerId: string): NpcCommission[] {
+    this.settleExpiredCommissions(playerId);
+    const rows = this.db.prepare(`
+      SELECT commission.*,template.title,template.description,template.objective_kind,npc.name AS npc_name
+      FROM player_commissions commission JOIN npc_commission_templates template ON template.id=commission.template_id
+      JOIN players npc ON npc.id=commission.npc_id
+      WHERE commission.player_id=? ORDER BY
+        CASE commission.status WHEN 'active' THEN 0 WHEN 'completed' THEN 1 ELSE 2 END,
+        commission.updated_at DESC LIMIT 40
+    `).all(playerId) as Array<{
+      id: string; player_id: string; npc_id: string; npc_name: string; template_id: string; title: string; description: string;
+      objective_kind: "visit" | "action" | "deliver"; objective_json: string; status: "active" | "completed" | "expired" | "abandoned";
+      reward_wen: number; standing_reward: number; accepted_at: string; due_at: string; completed_at: string | null;
+    }>;
+    return rows.map((row) => {
+      const ready = row.status === "active" && this.commissionReady(row);
+      return {
+        id: row.id, npcId: row.npc_id, npcName: row.npc_name, templateId: row.template_id,
+        title: row.title, description: row.description, objectiveKind: row.objective_kind,
+        objectiveText: this.commissionObjectiveText(row.objective_kind, row.objective_json),
+        status: ready ? "ready" : row.status, ready,
+        rewardWen: row.reward_wen, standingReward: row.standing_reward,
+        acceptedAt: row.accepted_at, dueAt: row.due_at, completedAt: row.completed_at,
+      };
+    });
+  }
+
+  private getNpcCommissionOffers(playerId: string, npcId: string): NpcCommissionOffer[] {
+    const active = new Set((this.db.prepare(`
+      SELECT template_id FROM player_commissions WHERE player_id=? AND npc_id=? AND status='active'
+    `).all(playerId, npcId) as Array<{ template_id: string }>).map((row) => row.template_id));
+    const rows = this.db.prepare(`
+      SELECT template.id,template.title,template.description,template.objective_kind,
+        template.reward_wen,template.standing_reward,template.duration_seconds
+      FROM npc_commission_offers offer JOIN npc_commission_templates template ON template.id=offer.template_id
+      WHERE offer.npc_id=? AND template.is_active=1 ORDER BY template.id
+    `).all(npcId) as Array<{
+      id: string; title: string; description: string; objective_kind: "visit" | "action" | "deliver";
+      reward_wen: number; standing_reward: number; duration_seconds: number;
+    }>;
+    return rows.map((row) => ({
+      templateId: row.id, title: row.title, description: row.description, objectiveKind: row.objective_kind,
+      rewardWen: row.reward_wen, standingReward: row.standing_reward, durationSeconds: row.duration_seconds,
+      available: !active.has(row.id), unavailableReason: active.has(row.id) ? "同一委托仍在进行中" : null,
+    }));
+  }
+
+  acceptNpcCommission(playerId: string, npcId: string, templateId: string, requestId: string, onlinePlayerIds: string[]) {
+    return inTransaction(this.db, () => {
+      const replay = this.db.prepare(`
+        SELECT npc_id,template_id FROM player_commissions WHERE player_id=? AND accept_request_id=?
+      `).get(playerId, requestId) as { npc_id: string; template_id: string } | undefined;
+      if (replay) {
+        if (replay.npc_id !== npcId || replay.template_id !== templateId) throw new Error("同一请求编号不能接受不同委托。");
+        return { commissions: this.getPlayerCommissions(playerId), message: "这份委托已经记入册中。" };
+      }
+      this.assertNpcMeeting(playerId, npcId, onlinePlayerIds);
+      this.settleExpiredCommissions(playerId);
+      const offer = this.db.prepare(`
+        SELECT template.* FROM npc_commission_offers offer JOIN npc_commission_templates template ON template.id=offer.template_id
+        WHERE offer.npc_id=? AND template.id=? AND template.is_active=1
+      `).get(npcId, templateId) as {
+        id: string; objective_json: string; reward_wen: number; standing_reward: number; duration_seconds: number; title: string;
+      } | undefined;
+      if (!offer) throw new Error("此人没有发布这份委托。");
+      if (this.db.prepare(`
+        SELECT 1 FROM player_commissions WHERE player_id=? AND npc_id=? AND template_id=? AND status='active'
+      `).get(playerId, npcId, templateId)) throw new Error("同一委托仍在进行中。");
+      const at = this.now();
+      const timestamp = at.toISOString();
+      this.db.prepare(`
+        INSERT INTO player_commissions(
+          id,player_id,npc_id,template_id,status,objective_json,reward_wen,standing_reward,
+          accept_request_id,accepted_at,due_at,updated_at
+        ) VALUES (?,?,?,?, 'active',?,?,?,?,?,?,?)
+      `).run(
+        `commission-${randomUUID()}`, playerId, npcId, templateId, offer.objective_json,
+        offer.reward_wen, offer.standing_reward, requestId, timestamp,
+        new Date(at.getTime() + offer.duration_seconds * 1000).toISOString(), timestamp,
+      );
+      return { commissions: this.getPlayerCommissions(playerId), message: `已接受委托：${offer.title}。` };
+    });
+  }
+
+  private consumeCommissionDelivery(playerId: string, definitionId: string, quantity: number, at: string) {
+    const items = this.db.prepare(`
+      SELECT item.id,item.quantity,COALESCE(reserved.quantity,0) AS reserved_quantity
+      FROM item_instances item LEFT JOIN (
+        SELECT item_instance_id,SUM(quantity) AS quantity FROM item_reservations GROUP BY item_instance_id
+      ) reserved ON reserved.item_instance_id=item.id
+      WHERE item.owner_player_id=? AND item.definition_id=? AND item.bound=0
+        AND item.equipped_slot IS NULL AND item.locked_by_job_id IS NULL
+      ORDER BY item.created_at,item.id
+    `).all(playerId, definitionId) as Array<{ id: string; quantity: number; reserved_quantity: number }>;
+    let remaining = quantity;
+    for (const item of items) {
+      const used = Math.min(remaining, Math.max(0, item.quantity - item.reserved_quantity));
+      if (used <= 0) continue;
+      if (used === item.quantity) this.db.prepare("DELETE FROM item_instances WHERE id=?").run(item.id);
+      else this.db.prepare("UPDATE item_instances SET quantity=quantity-?,updated_at=? WHERE id=?").run(used, at, item.id);
+      remaining -= used;
+      if (remaining === 0) break;
+    }
+    if (remaining > 0) throw new Error("可交付的货物不足。");
+  }
+
+  completeNpcCommission(playerId: string, commissionId: string, requestId: string, onlinePlayerIds: string[]) {
+    return inTransaction(this.db, () => {
+      const replay = this.db.prepare(`
+        SELECT id FROM player_commissions WHERE player_id=? AND completion_request_id=? AND status='completed'
+      `).get(playerId, requestId) as { id: string } | undefined;
+      if (replay) {
+        if (replay.id !== commissionId) throw new Error("同一请求编号不能完成不同委托。");
+        return { commissions: this.getPlayerCommissions(playerId), message: "这份委托已经完成并领过报酬。" };
+      }
+      this.settleExpiredCommissions(playerId);
+      const row = this.db.prepare(`
+        SELECT commission.*,template.title,template.objective_kind
+        FROM player_commissions commission JOIN npc_commission_templates template ON template.id=commission.template_id
+        WHERE commission.id=? AND commission.player_id=?
+      `).get(commissionId, playerId) as {
+        id: string; player_id: string; npc_id: string; title: string; objective_kind: string; objective_json: string;
+        status: string; accepted_at: string; reward_wen: number; standing_reward: number;
+      } | undefined;
+      if (!row) throw new Error("委托记录不存在。");
+      if (row.status !== "active") throw new Error(row.status === "expired" ? "委托已经过期。" : "委托已经结束。");
+      this.assertNpcMeeting(playerId, row.npc_id, onlinePlayerIds);
+      if (!this.commissionReady(row)) throw new Error("委托目标尚未完成。");
+      const at = this.now().toISOString();
+      const objective = JSON.parse(row.objective_json) as Record<string, unknown>;
+      if (row.objective_kind === "deliver") {
+        this.consumeCommissionDelivery(playerId, String(objective.definitionId), Math.max(1, Number(objective.quantity ?? 1)), at);
+      }
+      this.db.prepare(`
+        UPDATE player_commissions SET status='completed',completion_request_id=?,completed_at=?,updated_at=? WHERE id=?
+      `).run(requestId, at, at, commissionId);
+      this.changeCashWen(playerId, row.reward_wen, `完成委托：${row.title}`, "npc-commission", commissionId, at);
+      this.changeNpcStanding(playerId, row.npc_id, row.standing_reward, "commission", commissionId, at);
+      this.db.prepare("INSERT INTO private_events(player_id,event_type,content,created_at) VALUES (?,'commission',?,?)")
+        .run(playerId, `委托「${row.title}」完成，获得${formatCashWen(row.reward_wen)}。`, at);
+      return { commissions: this.getPlayerCommissions(playerId), message: `委托完成，获得${formatCashWen(row.reward_wen)}。` };
+    });
+  }
+
+  abandonNpcCommission(playerId: string, commissionId: string, requestId: string) {
+    return inTransaction(this.db, () => {
+      const row = this.db.prepare("SELECT status,completion_request_id FROM player_commissions WHERE id=? AND player_id=?")
+        .get(commissionId, playerId) as { status: string; completion_request_id: string | null } | undefined;
+      if (!row) throw new Error("委托记录不存在。");
+      if (row.status === "abandoned" && row.completion_request_id === requestId) {
+        return { commissions: this.getPlayerCommissions(playerId), message: "这份委托已经放弃。" };
+      }
+      if (row.status !== "active") throw new Error("只有进行中的委托可以放弃。");
+      const at = this.now().toISOString();
+      this.db.prepare(`
+        UPDATE player_commissions SET status='abandoned',completion_request_id=?,updated_at=? WHERE id=?
+      `).run(requestId, at, commissionId);
+      return { commissions: this.getPlayerCommissions(playerId), message: "已经放弃这份委托。" };
+    });
+  }
+
   private cleanupExpiredSocial(at = this.now()) {
     const timestamp = at.toISOString();
     this.db.prepare("UPDATE interaction_requests SET status='expired',updated_at=? WHERE status='pending' AND expires_at<=?")
@@ -2820,6 +3208,7 @@ export class GameService {
       inventory: this.getInventoryState(playerId),
       shop: this.getCurrentShopSummary(playerId),
       marketAvailable: this.marketAvailableAt(self.currentLocation),
+      commissions: this.getPlayerCommissions(playerId),
       social: this.getSocialState(playerId),
       combat: this.getCombatState(playerId),
       lootPiles: this.getLootPiles(self.currentLocation),

@@ -13,7 +13,9 @@ import type {
   MapLock,
   MapViewport,
   MarketSnapshot,
+  NpcCommission,
   OnlinePlayer,
+  PersonDetail,
   PlayerSelf,
   ShopState,
   TransitionKind,
@@ -177,6 +179,11 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
     quantity: z.number().int().min(1).max(100_000),
   }),
   z.object({ type: z.literal("market.order.cancel"), requestId, orderId: id }),
+  z.object({ type: z.literal("person.inspect"), requestId, personId: id }),
+  z.object({ type: z.literal("person.dialogue.choose"), requestId, personId: id, topicId: id }),
+  z.object({ type: z.literal("commission.accept"), requestId, personId: id, templateId: id }),
+  z.object({ type: z.literal("commission.complete"), requestId, commissionId: id }),
+  z.object({ type: z.literal("commission.abandon"), requestId, commissionId: id }),
   z.object({ type: z.literal("craft.start"), requestId, recipeId: id }),
   z.object({
     type: z.literal("farm.start"), requestId, plotId: id,
@@ -214,6 +221,9 @@ export type ServerMessage =
   | { type: "inventory.updated"; inventory: InventoryState }
   | { type: "shop.snapshot"; requestId: string; shop: ShopState }
   | { type: "market.snapshot"; requestId: string; market: MarketSnapshot }
+  | { type: "person.snapshot"; requestId: string; person: PersonDetail }
+  | { type: "person.dialogue.result"; requestId: string; person: PersonDetail; reply: string }
+  | { type: "commissions.updated"; requestId?: string; commissions: NpcCommission[] }
   | { type: "social.updated"; social: GameSnapshot["social"] }
   | { type: "rules.actions.snapshot"; requestId: string; rules: ActionRuleSnapshot }
   | { type: "rules.location.snapshot"; requestId: string; state: ActionRuleLocationState }

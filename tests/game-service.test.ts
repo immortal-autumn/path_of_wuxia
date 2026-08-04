@@ -854,10 +854,12 @@ describe("GameService", () => {
 
       const upgraded = openGameDatabase(databasePath);
       const upgradedService = new GameService(upgraded, () => new Date(clock), () => roll);
+      const assignedHome = upgraded.prepare("SELECT home_location_id FROM npc_assignments WHERE player_id=?")
+        .get(npc.player_id) as { home_location_id: string };
       expect(upgradedService.getPlayer(player.id).currentLocation).toBe("loumen-road-east");
       expect(upgradedService.getPlayer(npc.player_id).currentLocation).toBe("loumen-road-east");
       expect(upgraded.prepare("SELECT home_location_id FROM npc_profiles WHERE player_id=?").get(npc.player_id))
-        .toEqual({ home_location_id: "loumen-road-east" });
+        .toEqual(assignedHome);
       expect(upgraded.prepare("SELECT status FROM action_jobs WHERE id='palos-legacy-job'").get()).toEqual({ status: "cancelled" });
       expect(upgraded.prepare("SELECT COUNT(*) AS count FROM item_reservations WHERE job_id='palos-legacy-job'").get()).toEqual({ count: 0 });
       expect(upgraded.prepare("SELECT is_active FROM locations WHERE id='palos-legacy-camp'").get()).toEqual({ is_active: 0 });

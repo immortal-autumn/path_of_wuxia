@@ -517,6 +517,63 @@ export type ShopState = ShopSummary & {
   stock: ShopStockItem[];
 };
 
+export type NpcStanding = {
+  value: number;
+  label: "仇视" | "冷淡" | "陌生" | "相识" | "信赖" | "亲近" | "敬重";
+};
+
+export type NpcCommissionStatus = "active" | "ready" | "completed" | "expired" | "abandoned";
+
+export type NpcCommissionOffer = {
+  templateId: string;
+  title: string;
+  description: string;
+  objectiveKind: "visit" | "action" | "deliver";
+  rewardWen: number;
+  standingReward: number;
+  durationSeconds: number;
+  available: boolean;
+  unavailableReason: string | null;
+};
+
+export type NpcCommission = {
+  id: string;
+  npcId: string;
+  npcName: string;
+  templateId: string;
+  title: string;
+  description: string;
+  objectiveKind: "visit" | "action" | "deliver";
+  objectiveText: string;
+  status: NpcCommissionStatus;
+  ready: boolean;
+  rewardWen: number;
+  standingReward: number;
+  acceptedAt: string;
+  dueAt: string;
+  completedAt: string | null;
+};
+
+export type PersonDetail = {
+  id: string;
+  name: string;
+  title: string;
+  occupation: string | null;
+  biography: string | null;
+  workplace: { id: string; name: string } | null;
+  homeArea: string | null;
+  currentActivity: string | null;
+  standing: NpcStanding | null;
+  dialogueTopics: Array<{ id: string; title: string; prompt: string; available: boolean }>;
+  commissionOffers: NpcCommissionOffer[];
+  publicRelationships: Array<{
+    personId: string;
+    personName: string;
+    kind: string;
+    note: string;
+  }>;
+};
+
 export type MarketContractKind = "spot" | "future" | "call" | "put";
 export type MarketOrderSide = "buy" | "sell";
 
@@ -609,6 +666,7 @@ export type GameSnapshot = {
   inventory: InventoryState;
   shop: ShopSummary | null;
   marketAvailable: boolean;
+  commissions: NpcCommission[];
   social: SocialState;
   combat: CombatState | null;
   lootPiles: LootPile[];

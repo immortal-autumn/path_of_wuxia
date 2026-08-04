@@ -1,7 +1,8 @@
 import { createServer, type IncomingMessage } from "node:http";
 import next from "next";
 import WebSocket, { WebSocketServer } from "ws";
-import { closeGameDatabase } from "./lib/game/database";
+import { closeGameDatabase, getGameDatabase } from "./lib/game/database";
+import { resolveNpcScheduleDirective } from "./lib/game/npc-schedule";
 import { clientMessageSchema, type ServerMessage } from "./lib/game/protocol";
 import { getGameService, SESSION_COOKIE } from "./lib/game/service";
 import { worldStatusKey } from "./lib/game/time";
@@ -13,6 +14,7 @@ const service = getGameService();
 
 type SocketContext = {
   playerId: string;
+  clientKind: "browser" | "npc-agent";
   alive: boolean;
   visibleLocationIds: Set<string>;
 };
@@ -86,6 +88,12 @@ async function main() {
       service.getNeighborhood(snapshot.self.currentLocation, snapshot.self.visionDepth).locations.map((location) => location.id),
     );
     send(socket, { type: "snapshot", snapshot });
+    if (context.clientKind === "npc-agent" && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({
+        type: "npc.directive",
+        directive: resolveNpcScheduleDirective(getGameDatabase(), context.playerId, new Date(snapshot.world.serverTime)),
+      }));
+    }
   };
 
   const refreshPlayers = (playerIds: string[]) => {
@@ -97,13 +105,20 @@ async function main() {
 
   wss.on("connection", (socket, request) => {
     const token = readCookie(request, SESSION_COOKIE);
-    const player = service.getPlayerBySessionToken(token) ?? service.getPlayerByAgentToken(readBearerToken(request));
+    const browserPlayer = service.getPlayerBySessionToken(token);
+    const npcAgentPlayer = browserPlayer ? null : service.getPlayerByAgentToken(readBearerToken(request));
+    const player = browserPlayer ?? npcAgentPlayer;
     if (!player) {
       socket.close(4001, "会话无效");
       return;
     }
 
-    const context: SocketContext = { playerId: player.id, alive: true, visibleLocationIds: new Set() };
+    const context: SocketContext = {
+      playerId: player.id,
+      clientKind: npcAgentPlayer ? "npc-agent" : "browser",
+      alive: true,
+      visibleLocationIds: new Set(),
+    };
     sockets.set(socket, context);
     service.touchPlayers([player.id]);
     sendSnapshot(socket, context);
@@ -493,10 +508,63 @@ async function main() {
           return;
         }
 
-        const mutation =
-          command.type === "move"
-            ? service.move(context.playerId, command.locationId)
-            : service.act(context.playerId, command.actionId);
+        if (command.type === "person.inspect") {
+          send(socket, {
+            type: "person.snapshot",
+            requestId: command.requestId,
+            person: service.getPersonDetail(context.playerId, command.personId, onlinePlayerIds()),
+          });
+          send(socket, { type: "ack", requestId: command.requestId });
+          return;
+        }
+
+        if (command.type === "person.dialogue.choose") {
+          const result = service.chooseNpcDialogue(
+            context.playerId, command.personId, command.topicId, onlinePlayerIds(),
+          );
+          send(socket, {
+            type: "person.dialogue.result", requestId: command.requestId,
+            person: result.person, reply: result.reply,
+          });
+          send(socket, { type: "ack", requestId: command.requestId, message: "交谈完毕。" });
+          return;
+        }
+
+        if (command.type === "commission.accept") {
+          const result = service.acceptNpcCommission(
+            context.playerId, command.personId, command.templateId, command.requestId, onlinePlayerIds(),
+          );
+          send(socket, { type: "commissions.updated", requestId: command.requestId, commissions: result.commissions });
+          send(socket, {
+            type: "person.snapshot", requestId: command.requestId,
+            person: service.getPersonDetail(context.playerId, command.personId, onlinePlayerIds()),
+          });
+          send(socket, { type: "ack", requestId: command.requestId, message: result.message });
+          return;
+        }
+
+        if (command.type === "commission.complete") {
+          const result = service.completeNpcCommission(
+            context.playerId, command.commissionId, command.requestId, onlinePlayerIds(),
+          );
+          send(socket, { type: "commissions.updated", requestId: command.requestId, commissions: result.commissions });
+          send(socket, { type: "self.updated", player: service.getPlayer(context.playerId) });
+          send(socket, { type: "inventory.updated", inventory: service.getInventoryState(context.playerId) });
+          send(socket, { type: "ack", requestId: command.requestId, message: result.message });
+          return;
+        }
+
+        if (command.type === "commission.abandon") {
+          const result = service.abandonNpcCommission(context.playerId, command.commissionId, command.requestId);
+          send(socket, { type: "commissions.updated", requestId: command.requestId, commissions: result.commissions });
+          send(socket, { type: "ack", requestId: command.requestId, message: result.message });
+          return;
+        }
+
+        if (command.type !== "move" && command.type !== "act") throw new Error("无法识别这条指令。");
+        const mutation = command.type === "move"
+          ? service.move(context.playerId, command.locationId)
+          : service.act(context.playerId, command.actionId);
         send(socket, { type: "self.updated", player: mutation.self });
         broadcast({ type: "world.event", event: mutation.event });
         if (command.type === "move") {

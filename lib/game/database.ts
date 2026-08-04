@@ -3,10 +3,11 @@ import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { applyWorldSeed } from "./world-seed";
 import { ensureNpcPopulation } from "./npc-seed";
+import { seedNpcCity } from "./npc-catalog";
 
 export type GameDatabase = DatabaseSync;
 
-export const MAP_SCHEMA_VERSION = 11;
+export const MAP_SCHEMA_VERSION = 12;
 
 export function openGameDatabase(databasePath = process.env.DATABASE_PATH ?? resolve("data/wuxia.db")) {
   if (databasePath !== ":memory:") mkdirSync(dirname(databasePath), { recursive: true });
@@ -418,6 +419,79 @@ function migrate(db: GameDatabase) {
       token_hash TEXT PRIMARY KEY,player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
       label TEXT NOT NULL,created_at TEXT NOT NULL,expires_at TEXT,revoked_at TEXT
     );
+    CREATE TABLE IF NOT EXISTS npc_assignments(
+      player_id TEXT PRIMARY KEY REFERENCES npc_profiles(player_id) ON DELETE CASCADE,
+      cohort TEXT NOT NULL,occupation_key TEXT NOT NULL,occupation_name TEXT NOT NULL,
+      workplace_location_id TEXT NOT NULL REFERENCES locations(id),home_location_id TEXT NOT NULL REFERENCES locations(id),
+      shop_id TEXT REFERENCES shops(id),public_biography TEXT NOT NULL,seed_revision INTEGER NOT NULL,
+      created_at TEXT NOT NULL,updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS npc_routes(
+      id TEXT PRIMARY KEY,name TEXT NOT NULL,loop INTEGER NOT NULL DEFAULT 1 CHECK(loop IN (0,1)),
+      seed_revision INTEGER NOT NULL,is_active INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS npc_route_stops(
+      route_id TEXT NOT NULL REFERENCES npc_routes(id) ON DELETE CASCADE,sequence INTEGER NOT NULL,
+      location_id TEXT NOT NULL REFERENCES locations(id),dwell_minutes INTEGER NOT NULL DEFAULT 15 CHECK(dwell_minutes>0),
+      PRIMARY KEY(route_id,sequence)
+    );
+    CREATE TABLE IF NOT EXISTS npc_schedule_entries(
+      id TEXT PRIMARY KEY,player_id TEXT NOT NULL REFERENCES npc_profiles(player_id) ON DELETE CASCADE,
+      weekday_mask INTEGER NOT NULL DEFAULT 127 CHECK(weekday_mask BETWEEN 1 AND 127),
+      start_minute INTEGER NOT NULL CHECK(start_minute BETWEEN 0 AND 1439),end_minute INTEGER NOT NULL CHECK(end_minute BETWEEN 1 AND 1440),
+      activity_kind TEXT NOT NULL,target_kind TEXT NOT NULL CHECK(target_kind IN ('home','workplace','fixed','route')),
+      target_location_id TEXT REFERENCES locations(id),route_id TEXT REFERENCES npc_routes(id),seed_revision INTEGER NOT NULL,
+      CHECK(start_minute<end_minute)
+    );
+    CREATE TABLE IF NOT EXISTS npc_dialogue_topics(
+      id TEXT PRIMARY KEY,title TEXT NOT NULL,player_prompt TEXT NOT NULL,reply_template TEXT NOT NULL,
+      minimum_standing INTEGER NOT NULL DEFAULT -100,standing_delta INTEGER NOT NULL DEFAULT 0,
+      seed_revision INTEGER NOT NULL,is_active INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS npc_dialogue_assignments(
+      player_id TEXT NOT NULL REFERENCES npc_profiles(player_id) ON DELETE CASCADE,
+      topic_id TEXT NOT NULL REFERENCES npc_dialogue_topics(id) ON DELETE CASCADE,PRIMARY KEY(player_id,topic_id)
+    );
+    CREATE TABLE IF NOT EXISTS npc_dialogue_history(
+      id TEXT PRIMARY KEY,player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+      npc_id TEXT NOT NULL REFERENCES npc_profiles(player_id) ON DELETE CASCADE,topic_id TEXT NOT NULL REFERENCES npc_dialogue_topics(id),
+      reply_text TEXT NOT NULL,created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS player_npc_standings(
+      player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,npc_id TEXT NOT NULL REFERENCES npc_profiles(player_id) ON DELETE CASCADE,
+      standing INTEGER NOT NULL DEFAULT 0 CHECK(standing BETWEEN -100 AND 100),updated_at TEXT NOT NULL,PRIMARY KEY(player_id,npc_id)
+    );
+    CREATE TABLE IF NOT EXISTS npc_standing_events(
+      id TEXT PRIMARY KEY,player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+      npc_id TEXT NOT NULL REFERENCES npc_profiles(player_id) ON DELETE CASCADE,delta INTEGER NOT NULL,
+      standing_after INTEGER NOT NULL CHECK(standing_after BETWEEN -100 AND 100),reason TEXT NOT NULL,
+      reference_id TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(player_id,npc_id,reason,reference_id)
+    );
+    CREATE TABLE IF NOT EXISTS npc_commission_templates(
+      id TEXT PRIMARY KEY,title TEXT NOT NULL,description TEXT NOT NULL,
+      objective_kind TEXT NOT NULL CHECK(objective_kind IN ('visit','action','deliver')),objective_json TEXT NOT NULL,
+      reward_wen INTEGER NOT NULL CHECK(reward_wen>=0),standing_reward INTEGER NOT NULL CHECK(standing_reward>=0),
+      duration_seconds INTEGER NOT NULL CHECK(duration_seconds>0),repeat_cooldown_seconds INTEGER NOT NULL DEFAULT 86400,
+      seed_revision INTEGER NOT NULL,is_active INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS npc_commission_offers(
+      npc_id TEXT NOT NULL REFERENCES npc_profiles(player_id) ON DELETE CASCADE,
+      template_id TEXT NOT NULL REFERENCES npc_commission_templates(id),PRIMARY KEY(npc_id,template_id)
+    );
+    CREATE TABLE IF NOT EXISTS player_commissions(
+      id TEXT PRIMARY KEY,player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+      npc_id TEXT NOT NULL REFERENCES npc_profiles(player_id),template_id TEXT NOT NULL REFERENCES npc_commission_templates(id),
+      status TEXT NOT NULL CHECK(status IN ('active','completed','expired','abandoned')),
+      objective_json TEXT NOT NULL,reward_wen INTEGER NOT NULL,standing_reward INTEGER NOT NULL,
+      accept_request_id TEXT NOT NULL,completion_request_id TEXT,accepted_at TEXT NOT NULL,due_at TEXT NOT NULL,
+      completed_at TEXT,updated_at TEXT NOT NULL,UNIQUE(player_id,accept_request_id),UNIQUE(player_id,completion_request_id)
+    );
+    CREATE TABLE IF NOT EXISTS npc_relationships(
+      npc_a_id TEXT NOT NULL REFERENCES npc_profiles(player_id) ON DELETE CASCADE,
+      npc_b_id TEXT NOT NULL REFERENCES npc_profiles(player_id) ON DELETE CASCADE,
+      relationship_kind TEXT NOT NULL,public_note TEXT NOT NULL,seed_revision INTEGER NOT NULL,
+      PRIMARY KEY(npc_a_id,npc_b_id,relationship_kind),CHECK(npc_a_id<npc_b_id)
+    );
   `);
 
   const previousVersion = (db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number | null } | undefined)?.version ?? 0;
@@ -457,6 +531,9 @@ function migrate(db: GameDatabase) {
   addColumn(db, "skill_definitions", "skill_kind TEXT NOT NULL DEFAULT 'passive'");
   addColumn(db, "action_definitions", "cash_wen_delta INTEGER NOT NULL DEFAULT 0");
   addColumn(db, "loot_piles", "cash_wen INTEGER NOT NULL DEFAULT 0");
+  addColumn(db, "npc_schedule_entries", "weekday_mask INTEGER NOT NULL DEFAULT 127");
+  addColumn(db, "npc_dialogue_topics", "minimum_standing INTEGER NOT NULL DEFAULT -100");
+  addColumn(db, "npc_commission_templates", "repeat_cooldown_seconds INTEGER NOT NULL DEFAULT 86400");
 
   if (previousVersion < 2) db.exec("UPDATE routes SET is_active=0; UPDATE locations SET is_active=0;");
   if (previousVersion < 3) {
@@ -657,6 +734,11 @@ function migrate(db: GameDatabase) {
     CREATE INDEX IF NOT EXISTS idx_market_orders_player ON market_orders(player_id,status,created_at,id);
     CREATE INDEX IF NOT EXISTS idx_market_trades_contract ON market_trades(contract_id,id DESC);
     CREATE INDEX IF NOT EXISTS idx_market_positions_player ON market_positions(player_id,contract_id);
+    CREATE INDEX IF NOT EXISTS idx_npc_assignments_cohort ON npc_assignments(cohort,occupation_key,player_id);
+    CREATE INDEX IF NOT EXISTS idx_npc_schedule_player ON npc_schedule_entries(player_id,start_minute,end_minute);
+    CREATE INDEX IF NOT EXISTS idx_npc_dialogue_history ON npc_dialogue_history(player_id,npc_id,created_at);
+    CREATE INDEX IF NOT EXISTS idx_npc_standing_events ON npc_standing_events(player_id,npc_id,created_at);
+    CREATE INDEX IF NOT EXISTS idx_player_commissions ON player_commissions(player_id,status,due_at);
   `);
   db.prepare("INSERT OR REPLACE INTO schema_migrations(version,applied_at) VALUES (?,?)").run(MAP_SCHEMA_VERSION, now);
 }
@@ -726,6 +808,7 @@ function seed(db: GameDatabase) {
       )
     `).run(now);
     ensureNpcPopulation(db, now);
+    seedNpcCity(db, now);
     db.prepare(`
       INSERT OR IGNORE INTO player_wallets(player_id,cash_wen,updated_at)
       SELECT id,MAX(0,silver*1000),? FROM players

@@ -10,6 +10,7 @@ import type {
   GameSnapshot,
   Location,
   MapTransition,
+  PersonDetail,
   ShopState,
   MarketSnapshot,
   VisitedMap,
@@ -152,6 +153,7 @@ function MapPanel({
   onMove,
   onQinggong,
   onOpenVisitedMap,
+  onInspectPerson,
   visitedMapLoading,
   currentLayer,
 }: Pick<GameSnapshot, "locations" | "routes" | "self" | "onlinePlayers" | "qinggongTargets" | "currentLayer"> & {
@@ -159,6 +161,7 @@ function MapPanel({
   onMove: (locationId: string) => void;
   onQinggong: (locationId: string) => void;
   onOpenVisitedMap: () => void;
+  onInspectPerson: (personId: string) => void;
   visitedMapLoading: boolean;
 }) {
   const [inspectedLocationId, setInspectedLocationId] = useState<string | null>(null);
@@ -244,6 +247,7 @@ function MapPanel({
   const inspectedLocation = inspectedLocationId ? locationMap.get(inspectedLocationId) : null;
   const inspectedQinggongTarget = inspectedLocationId ? qinggongTargetMap.get(inspectedLocationId) : null;
   const nearbyPlayers = onlinePlayers.filter((player) => visibleLocationIds.has(player.currentLocation));
+  const peopleHere = onlinePlayers.filter((player) => player.id !== self.id && player.currentLocation === self.currentLocation);
 
   const mapBounds = useMemo(() => {
     if (visibleLocations.length === 0) return { minX: -260, minY: -160, maxX: 260, maxY: 160 };
@@ -464,6 +468,17 @@ function MapPanel({
         </svg>
       </div>
       <footer className="map-footer">
+        <div className="people-strip" aria-label="此地人物">
+          <strong>此地人物</strong>
+          <div>
+            {peopleHere.map((person) => (
+              <button key={person.id} type="button" disabled={pending} onClick={() => onInspectPerson(person.id)}>
+                <span>{person.name}</span><small>{person.title}</small>
+              </button>
+            ))}
+            {peopleHere.length === 0 && <span className="people-empty">此地暂时无人停留</span>}
+          </div>
+        </div>
         <div className="map-move-controls" aria-label="下一步可前往地点">
           <strong>下一步</strong>
           {moveOptions.map((option) => (
@@ -897,6 +912,7 @@ function CharacterPanel({
   self,
   inventory,
   social,
+  commissions,
   nearbyPlayers,
   location,
   open,
@@ -920,10 +936,12 @@ function CharacterPanel({
   onTradeConfirm,
   onTradeCancel,
   onCombatStart,
+  onAbandonCommission,
 }: {
   self: GameSnapshot["self"];
   inventory: GameSnapshot["inventory"];
   social: GameSnapshot["social"];
+  commissions: GameSnapshot["commissions"];
   nearbyPlayers: GameSnapshot["onlinePlayers"];
   location?: Location;
   open: boolean;
@@ -947,8 +965,9 @@ function CharacterPanel({
   onTradeConfirm: (tradeId: string) => void;
   onTradeCancel: (tradeId: string) => void;
   onCombatStart: (targetPlayerId: string) => void;
+  onAbandonCommission: (commissionId: string) => void;
 }) {
-  const [tab, setTab] = useState<"base" | "combat" | "cultivation" | "skills" | "inventory" | "social">("base");
+  const [tab, setTab] = useState<"base" | "combat" | "cultivation" | "skills" | "inventory" | "commissions" | "social">("base");
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);
@@ -1004,6 +1023,7 @@ function CharacterPanel({
         <button className={tab === "cultivation" ? "active" : ""} onClick={() => setTab("cultivation")}>修炼突破</button>
         <button className={tab === "skills" ? "active" : ""} onClick={() => setTab("skills")}>技能</button>
         <button className={tab === "inventory" ? "active" : ""} onClick={() => setTab("inventory")}>物品装备</button>
+        <button className={tab === "commissions" ? "active" : ""} onClick={() => setTab("commissions")}>委托</button>
         <button className={tab === "social" ? "active" : ""} onClick={() => setTab("social")}>交往交易</button>
       </div>
       {tab === "base" && (
@@ -1118,6 +1138,22 @@ function CharacterPanel({
               <span className="item-detail-hint">查看详情</span>
             </div>
           ))}
+        </div>
+      )}
+      {tab === "commissions" && (
+        <div className="commission-journal" aria-label="委托册">
+          {commissions.map((commission) => (
+            <article className={`commission-card status-${commission.status}`} key={commission.id}>
+              <header><strong>{commission.title}</strong><span>{commission.status === "ready" ? "可复命" : commission.status === "active" ? "进行中" : commission.status === "completed" ? "已完成" : commission.status === "expired" ? "已过期" : "已放弃"}</span></header>
+              <p>{commission.description}</p>
+              <small>发布人 {commission.npcName} · {commission.objectiveText}</small>
+              <small>报酬 {formatCashWen(commission.rewardWen)} · 好感 +{commission.standingReward}</small>
+              {(commission.status === "active" || commission.status === "ready") && (
+                <button disabled={pending} onClick={() => onAbandonCommission(commission.id)}>放弃委托</button>
+              )}
+            </article>
+          ))}
+          {commissions.length === 0 && <p>委托册尚为空白。可在地图下方选择“此地人物”，与城中居民交谈领取委托。</p>}
         </div>
       )}
       {tab === "social" && (
@@ -1525,6 +1561,111 @@ function MarketModal({
   );
 }
 
+function PersonDetailModal({
+  person,
+  commissions,
+  reply,
+  pending,
+  onDialogue,
+  onAccept,
+  onComplete,
+  onClose,
+}: {
+  person: PersonDetail;
+  commissions: GameSnapshot["commissions"];
+  reply: string | null;
+  pending: boolean;
+  onDialogue: (topicId: string) => void;
+  onAccept: (templateId: string) => void;
+  onComplete: (commissionId: string) => void;
+  onClose: () => void;
+}) {
+  const issuedCommissions = commissions.filter((commission) => commission.npcId === person.id);
+
+  useEffect(() => {
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
+
+  return createPortal(
+    <div className="detail-modal-backdrop" onMouseDown={(event) => {
+      if (event.target === event.currentTarget) onClose();
+    }}>
+      <section className="detail-modal person-modal" role="dialog" aria-modal="true" aria-label={`人物详情：${person.name}`}>
+        <header>
+          <div><p className="eyebrow">此地人物</p><h2>{person.name}</h2></div>
+          <button type="button" onClick={onClose}>关闭</button>
+        </header>
+        <div className="person-summary">
+          <p>{person.biography ?? "此人没有留下更多公开资料。"}</p>
+          <dl>
+            <div><dt>身份</dt><dd>{person.occupation ?? person.title}</dd></div>
+            <div><dt>当前行止</dt><dd>{person.currentActivity ?? "不详"}</dd></div>
+            <div><dt>营作地点</dt><dd>{person.workplace?.name ?? "未公开"}</dd></div>
+            <div><dt>居住区域</dt><dd>{person.homeArea ?? "未公开"}</dd></div>
+            <div><dt>与你的交情</dt><dd>{person.standing ? `${person.standing.label}（${person.standing.value}）` : "普通同道"}</dd></div>
+          </dl>
+        </div>
+        {person.dialogueTopics.length > 0 && (
+          <section className="person-section" aria-label="交谈话题">
+            <h3>交谈</h3>
+            <div className="person-actions">
+              {person.dialogueTopics.map((topic) => (
+                <button key={topic.id} disabled={pending || !topic.available} onClick={() => onDialogue(topic.id)}>
+                  <strong>{topic.title}</strong><small>{topic.prompt}</small>
+                </button>
+              ))}
+            </div>
+            {reply && <p className="dialogue-reply" role="status">{reply}</p>}
+          </section>
+        )}
+        {person.commissionOffers.length > 0 && (
+          <section className="person-section" aria-label="可领取委托">
+            <h3>可领取委托</h3>
+            <div className="person-commission-list">
+              {person.commissionOffers.map((offer) => (
+                <article key={offer.templateId}>
+                  <strong>{offer.title}</strong>
+                  <p>{offer.description}</p>
+                  <small>报酬 {formatCashWen(offer.rewardWen)} · 好感 +{offer.standingReward} · 限时 {durationText(offer.durationSeconds)}</small>
+                  <button disabled={pending || !offer.available} onClick={() => onAccept(offer.templateId)}>
+                    {offer.available ? "接受委托" : offer.unavailableReason ?? "暂不可领取"}
+                  </button>
+                </article>
+              ))}
+            </div>
+          </section>
+        )}
+        {issuedCommissions.some((commission) => commission.status === "active" || commission.status === "ready") && (
+          <section className="person-section" aria-label="向此人复命">
+            <h3>复命</h3>
+            {issuedCommissions.filter((commission) => commission.status === "active" || commission.status === "ready").map((commission) => (
+              <article className="commission-return" key={commission.id}>
+                <span><strong>{commission.title}</strong><small>{commission.objectiveText}</small></span>
+                <button disabled={pending || !commission.ready} onClick={() => onComplete(commission.id)}>
+                  {commission.ready ? "完成并领取报酬" : "目标尚未完成"}
+                </button>
+              </article>
+            ))}
+          </section>
+        )}
+        {person.publicRelationships.length > 0 && (
+          <section className="person-section" aria-label="公开关系">
+            <h3>城中关系</h3>
+            <ul>{person.publicRelationships.map((relationship) => (
+              <li key={`${relationship.personId}-${relationship.kind}`}><strong>{relationship.personName}</strong> · {relationship.note}</li>
+            ))}</ul>
+          </section>
+        )}
+      </section>
+    </div>,
+    document.body,
+  );
+}
+
 function ChatPanel({
   messages,
   selfId,
@@ -1608,6 +1749,8 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
   const [visitedLayerId, setVisitedLayerId] = useState("");
   const [shopState, setShopState] = useState<ShopState | null>(null);
   const [marketState, setMarketState] = useState<MarketSnapshot | null>(null);
+  const [personDetail, setPersonDetail] = useState<PersonDetail | null>(null);
+  const [personReply, setPersonReply] = useState<string | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const pendingRequestRef = useRef<string | null>(null);
   const visitedMapRequestRef = useRef<string | null>(null);
@@ -1654,6 +1797,17 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
         }
         if (message.type === "shop.snapshot") setShopState(message.shop);
         if (message.type === "market.snapshot") setMarketState(message.market);
+        if (message.type === "person.snapshot") {
+          setPersonDetail(message.person);
+          setPersonReply(null);
+        }
+        if (message.type === "person.dialogue.result") {
+          setPersonDetail(message.person);
+          setPersonReply(message.reply);
+        }
+        if (message.type === "commissions.updated") {
+          setSnapshot((current) => ({ ...current, commissions: message.commissions }));
+        }
         if (message.type === "social.updated") {
           setSnapshot((current) => ({ ...current, social: message.social }));
         }
@@ -1797,6 +1951,7 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           pending={pending !== null || connection !== "online" || snapshot.combat !== null || snapshot.self.defeated}
           visitedMapLoading={visitedMapLoading}
           onOpenVisitedMap={openVisitedMap}
+          onInspectPerson={(personId) => sendCommand({ type: "person.inspect", personId }, "person")}
           onMove={(locationId) => {
             setDrawer(null);
             sendCommand({ type: "move", locationId }, "move");
@@ -1838,6 +1993,7 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           self={snapshot.self}
           inventory={snapshot.inventory}
           social={snapshot.social}
+          commissions={snapshot.commissions}
           nearbyPlayers={nearbyPlayers}
           location={currentLocation}
           open={drawer === "character"}
@@ -1861,6 +2017,7 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           onTradeConfirm={(tradeId) => sendCommand({ type: "trade.confirm", tradeId }, "trade")}
           onTradeCancel={(tradeId) => sendCommand({ type: "trade.cancel", tradeId }, "trade")}
           onCombatStart={(targetPlayerId) => sendCommand({ type: "combat.start", targetPlayerId }, "combat")}
+          onAbandonCommission={(commissionId) => sendCommand({ type: "commission.abandon", commissionId }, "commission")}
         />
         <ChatPanel
           messages={snapshot.chatMessages}
@@ -1918,6 +2075,19 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           }, "market")}
           onCancel={(orderId) => sendCommand({ type: "market.order.cancel", orderId }, "market")}
           onClose={() => setMarketState(null)}
+        />
+      )}
+
+      {personDetail && (
+        <PersonDetailModal
+          person={personDetail}
+          commissions={snapshot.commissions}
+          reply={personReply}
+          pending={pending !== null || connection !== "online"}
+          onDialogue={(topicId) => sendCommand({ type: "person.dialogue.choose", personId: personDetail.id, topicId }, "person")}
+          onAccept={(templateId) => sendCommand({ type: "commission.accept", personId: personDetail.id, templateId }, "commission")}
+          onComplete={(commissionId) => sendCommand({ type: "commission.complete", commissionId }, "commission")}
+          onClose={() => { setPersonDetail(null); setPersonReply(null); }}
         />
       )}
 

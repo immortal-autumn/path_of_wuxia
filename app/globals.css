@@ -613,6 +613,42 @@ h2 {
   border-top: 1px solid var(--border-light);
 }
 
+.people-strip {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--border-light);
+  font-size: 10px;
+}
+
+.people-strip > div {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.people-strip button {
+  display: grid;
+  flex: 0 0 auto;
+  min-width: 92px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  background: #fff;
+  cursor: pointer;
+  text-align: left;
+}
+
+.people-strip button small,
+.people-empty {
+  color: var(--muted);
+  font-size: 9px;
+}
+
 .map-legend {
   display: flex;
   gap: 10px;
@@ -1090,8 +1126,50 @@ h2 {
 .cultivation-panel,
 .skills-panel,
 .inventory-panel,
+.commission-journal,
 .social-panel {
   margin-bottom: 10px;
+}
+
+.commission-journal {
+  display: grid;
+  gap: 8px;
+}
+
+.commission-card {
+  display: grid;
+  gap: 5px;
+  padding: 8px;
+  border: 1px solid var(--border-light);
+}
+
+.commission-card header,
+.commission-return {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.commission-card p,
+.commission-card small {
+  margin: 0;
+}
+
+.commission-card small {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.commission-card.status-ready {
+  border: 2px solid var(--border);
+}
+
+.commission-card button {
+  justify-self: end;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  background: #fff;
 }
 
 .skills-panel {
@@ -1403,6 +1481,112 @@ h2 {
   padding: 8px;
   border: 1px solid #0b5e75;
   color: #0b5e75 !important;
+}
+
+.person-modal {
+  width: min(760px, calc(100vw - 32px));
+}
+
+.person-summary,
+.person-section {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.person-summary > p,
+.person-section p {
+  margin: 0 0 8px;
+  line-height: 1.55;
+}
+
+.person-summary dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+  border-top: 1px solid var(--border-light);
+  border-left: 1px solid var(--border-light);
+}
+
+.person-summary dl > div {
+  padding: 7px;
+  border-right: 1px solid var(--border-light);
+  border-bottom: 1px solid var(--border-light);
+}
+
+.person-summary dt {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.person-summary dd {
+  margin: 2px 0 0;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.person-section h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.person-actions,
+.person-commission-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.person-actions button {
+  display: grid;
+  text-align: left;
+}
+
+.person-actions small,
+.person-commission-list small,
+.commission-return small {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.dialogue-reply {
+  margin-top: 8px !important;
+  padding: 8px;
+  border: 1px solid var(--border);
+}
+
+.person-commission-list article,
+.commission-return {
+  padding: 8px;
+  border: 1px solid var(--border-light);
+}
+
+.person-commission-list article {
+  display: grid;
+  gap: 6px;
+}
+
+.person-commission-list article p {
+  margin: 0;
+}
+
+.person-commission-list button {
+  justify-self: end;
+}
+
+.commission-return + .commission-return {
+  margin-top: 6px;
+}
+
+.commission-return span {
+  display: grid;
+}
+
+.person-section ul {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding-left: 18px;
+  font-size: 11px;
 }
 
 .shop-modal {
@@ -2134,6 +2318,16 @@ h2 {
     display: block;
     min-height: 53px;
     padding: 7px 8px;
+  }
+
+  .people-strip {
+    margin-bottom: 6px;
+  }
+
+  .person-summary dl,
+  .person-actions,
+  .person-commission-list {
+    grid-template-columns: 1fr;
   }
 
   .map-move-controls {
