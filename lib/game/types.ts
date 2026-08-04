@@ -488,6 +488,7 @@ export type PlayerSelf = {
   visionDepth: number;
   defeated: boolean;
   injuryUntil: string | null;
+  law: PlayerLawState;
 };
 
 export type OnlinePlayer = { id: string; name: string; title: string; currentLocation: string };
@@ -515,6 +516,25 @@ export type ShopState = ShopSummary & {
   closesMinute: number;
   tillWen: number;
   stock: ShopStockItem[];
+  serviceAvailable: boolean;
+  refusalReason: string | null;
+};
+
+export type PlayerLawState = {
+  wantedPoints: number;
+  statusLabel: string;
+  nextDecayAt: string | null;
+  shopRefused: boolean;
+  pursuitActive: boolean;
+  fineWen: number;
+  canSurrender: boolean;
+  recentIncidents: Array<{
+    id: string;
+    offense: "assault" | "defeat" | "robbery";
+    pointsDelta: number;
+    locationName: string;
+    createdAt: string;
+  }>;
 };
 
 export type NpcStanding = {

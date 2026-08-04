@@ -11,6 +11,6 @@
     "rootDir": ".",
     "sourceMap": true
   },
-  "include": ["server.ts", "scripts/npc-runner.ts", "lib/game/**/*.ts"],
+  "include": ["server.ts", "scripts/*.ts", "lib/game/**/*.ts"],
   "exclude": ["node_modules", ".next", "tests"]
 }

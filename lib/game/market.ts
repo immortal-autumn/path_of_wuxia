@@ -74,10 +74,6 @@ function deterministicBasisPoints(key: string) {
   return createHash("sha256").update(key).digest()[0] % 51 - 25;
 }
 
-function signedPositionAfter(quantity: number, side: MarketOrderSide, amount: number) {
-  return quantity + (side === "buy" ? amount : -amount);
-}
-
 export class MarketEngine {
   constructor(
     private readonly db: DatabaseSync,
@@ -104,6 +100,7 @@ export class MarketEngine {
     const account = this.db.prepare("SELECT clearing_debt_wen FROM market_accounts WHERE player_id=?").get(playerId) as { clearing_debt_wen: number };
     const cash = this.wallet(playerId);
     let debt = account.clearing_debt_wen;
+    const previousDebt = debt;
     let walletDelta = 0;
     if (deltaWen >= 0) {
       const debtPayment = Math.min(debt, deltaWen);
@@ -118,6 +115,16 @@ export class MarketEngine {
     const nextCash = cash + walletDelta;
     this.db.prepare("UPDATE player_wallets SET cash_wen=?,updated_at=? WHERE player_id=?").run(nextCash, at, playerId);
     this.db.prepare("UPDATE market_accounts SET clearing_debt_wen=?,updated_at=? WHERE player_id=?").run(debt, at, playerId);
+    if (debt !== previousDebt) {
+      this.db.prepare(`
+        INSERT INTO market_account_ledger(
+          id,player_id,kind,delta_debt_wen,debt_after_wen,reference_type,reference_id,created_at
+        ) VALUES (?,?,?,?,?,?,?,?)
+      `).run(
+        randomUUID(), playerId, debt > previousDebt ? "debt-created" : "debt-repaid",
+        debt - previousDebt, debt, referenceType, referenceId, at,
+      );
+    }
     if (walletDelta !== 0) {
       this.db.prepare(`
         INSERT INTO currency_ledger(
@@ -170,20 +177,30 @@ export class MarketEngine {
         underlying.spot_price_wen, at.toISOString(), at.toISOString(),
       );
       for (const horizon of HORIZONS) {
+        const activeFuture = this.db.prepare(`
+          SELECT 1 FROM market_contracts WHERE underlying_id=? AND kind='future' AND horizon_days=? AND status='active'
+        `).get(underlying.id, horizon);
         const expiryAt = marketExpiryAt(at, horizon);
         const expiryToken = expiryAt.slice(0, 10);
         const strike = Math.max(1, Math.round(underlying.spot_price_wen / 10) * 10);
-        insert.run(
-          `future-${underlying.id}-${horizon}-${expiryToken}`, underlying.id,
-          `${underlying.name}${horizon}日期货`, "future", expiryAt, horizon, null, CONTRACT_MULTIPLIER,
-          underlying.spot_price_wen, at.toISOString(), at.toISOString(),
-        );
-        for (const kind of ["call", "put"] as const) {
+        if (!activeFuture) {
           insert.run(
-            `${kind}-${underlying.id}-${horizon}-${expiryToken}-${strike}`, underlying.id,
-            `${underlying.name}${horizon}日${kind === "call" ? "看涨" : "看跌"}${strike}`, kind,
-            expiryAt, horizon, strike, CONTRACT_MULTIPLIER, 1, at.toISOString(), at.toISOString(),
+            `future-${underlying.id}-${horizon}-${expiryToken}`, underlying.id,
+            `${underlying.name}${horizon}日期货`, "future", expiryAt, horizon, null, CONTRACT_MULTIPLIER,
+            underlying.spot_price_wen, at.toISOString(), at.toISOString(),
           );
+        }
+        for (const kind of ["call", "put"] as const) {
+          const activeOption = this.db.prepare(`
+            SELECT 1 FROM market_contracts WHERE underlying_id=? AND kind=? AND horizon_days=? AND status='active'
+          `).get(underlying.id, kind, horizon);
+          if (!activeOption) {
+            insert.run(
+              `${kind}-${underlying.id}-${horizon}-${expiryToken}-${strike}`, underlying.id,
+              `${underlying.name}${horizon}日${kind === "call" ? "看涨" : "看跌"}${strike}`, kind,
+              expiryAt, horizon, strike, CONTRACT_MULTIPLIER, 1, at.toISOString(), at.toISOString(),
+            );
+          }
         }
       }
     }
@@ -268,13 +285,39 @@ export class MarketEngine {
     return { initial, maintenance };
   }
 
+  private openOrderReserve(playerId: string) {
+    const orders = this.db.prepare(`
+      SELECT order_row.side,order_row.limit_price_wen,order_row.remaining_quantity,
+        contract.kind,contract.multiplier,contract.mark_price_wen,underlying.spot_price_wen
+      FROM market_orders order_row JOIN market_contracts contract ON contract.id=order_row.contract_id
+      JOIN market_underlyings underlying ON underlying.id=contract.underlying_id
+      WHERE order_row.player_id=? AND order_row.status='open' AND order_row.remaining_quantity>0
+    `).all(playerId) as Array<{
+      side: MarketOrderSide; limit_price_wen: number; remaining_quantity: number;
+      kind: MarketContractKind; multiplier: number; mark_price_wen: number; spot_price_wen: number;
+    }>;
+    return orders.reduce((sum, order) => {
+      if (order.kind === "spot") {
+        return sum + (order.side === "buy" ? order.limit_price_wen * order.remaining_quantity : 0);
+      }
+      if ((order.kind === "call" || order.kind === "put") && order.side === "buy") {
+        return sum + order.limit_price_wen * order.multiplier * order.remaining_quantity;
+      }
+      if (order.kind === "future") {
+        return sum + Math.ceil(order.mark_price_wen * order.multiplier * order.remaining_quantity * 0.2);
+      }
+      return sum + Math.ceil(order.spot_price_wen * order.multiplier * order.remaining_quantity * 0.25);
+    }, 0);
+  }
+
   private updateRisk(playerId: string, at: string) {
     this.ensureAccount(playerId, at);
     const risk = this.risk(playerId);
+    const orderReserve = this.openOrderReserve(playerId);
     this.db.prepare(`
       UPDATE market_accounts SET reserved_margin_wen=?,maintenance_margin_wen=?,updated_at=? WHERE player_id=?
-    `).run(risk.initial, risk.maintenance, at, playerId);
-    return risk;
+    `).run(risk.initial + orderReserve, risk.maintenance, at, playerId);
+    return { initial: risk.initial + orderReserve, maintenance: risk.maintenance };
   }
 
   private markContracts(at: Date) {
@@ -479,12 +522,12 @@ export class MarketEngine {
     }
   }
 
-  private settleMarket() {
+  settle() {
     const at = this.now();
     this.ensureUnderlyings(at);
+    this.settleExpired(at);
     this.ensureContracts(at);
     this.markContracts(at);
-    this.settleExpired(at);
     this.guildQuotes(at);
     const activeContracts = this.db.prepare("SELECT id FROM market_contracts WHERE status='active'").all() as Array<{ id: string }>;
     for (const contract of activeContracts) this.matchContract(contract.id, at);
@@ -500,34 +543,37 @@ export class MarketEngine {
       WHERE player_id=? AND contract_id=? AND side=? AND status='open'
     `).get(playerId, contract.id, side) as { quantity: number }).quantity;
     const totalQuantity = quantity + openSameSide;
+    const alreadyReserved = this.risk(playerId).initial + this.openOrderReserve(playerId);
     if (contract.kind === "spot") {
-      if (side === "buy" && price * totalQuantity > wallet) throw new Error("现货买单所需钱贯不足。");
+      if (side === "buy" && alreadyReserved + price * quantity > wallet) throw new Error("现货买单所需钱贯不足。");
       if (side === "sell" && totalQuantity > position.quantity) throw new Error("现货卖单超过可用持仓。");
       return;
     }
-    if ((contract.kind === "call" || contract.kind === "put") && side === "buy" && price * contract.multiplier * totalQuantity > wallet) {
+    if ((contract.kind === "call" || contract.kind === "put") && side === "buy"
+      && alreadyReserved + price * contract.multiplier * quantity > wallet) {
       throw new Error("期权买单所需权利金不足。");
     }
-    const projected = signedPositionAfter(position.quantity, side, totalQuantity);
-    const currentRisk = this.risk(playerId).initial;
-    let currentContractRisk = 0;
-    let projectedContractRisk = 0;
+    let newOrderReserve = 0;
     if (contract.kind === "future") {
-      currentContractRisk = Math.ceil(Math.abs(position.quantity) * contract.multiplier * contract.mark_price_wen * 0.2);
-      projectedContractRisk = Math.ceil(Math.abs(projected) * contract.multiplier * contract.mark_price_wen * 0.2);
+      const projected = position.quantity + (side === "buy" ? quantity : -quantity);
+      const currentRisk = Math.ceil(Math.abs(position.quantity) * contract.multiplier * contract.mark_price_wen * 0.2);
+      const projectedRisk = Math.ceil(Math.abs(projected) * contract.multiplier * contract.mark_price_wen * 0.2);
+      newOrderReserve = Math.max(0, projectedRisk - currentRisk);
     } else if (contract.kind === "call" || contract.kind === "put") {
       const spot = (this.db.prepare("SELECT spot_price_wen FROM market_underlyings WHERE id=?").get(contract.underlying_id) as { spot_price_wen: number }).spot_price_wen;
-      currentContractRisk = position.quantity < 0 ? Math.ceil(Math.abs(position.quantity) * contract.multiplier * spot * 0.25) : 0;
-      projectedContractRisk = projected < 0 ? Math.ceil(Math.abs(projected) * contract.multiplier * spot * 0.25) : 0;
+      if (side === "sell") {
+        const projected = position.quantity - quantity;
+        const currentRisk = position.quantity < 0 ? Math.ceil(Math.abs(position.quantity) * contract.multiplier * spot * 0.25) : 0;
+        const projectedRisk = projected < 0 ? Math.ceil(Math.abs(projected) * contract.multiplier * spot * 0.25) : 0;
+        newOrderReserve = Math.max(0, projectedRisk - currentRisk);
+      }
     }
-    const premiumCredit = (contract.kind === "call" || contract.kind === "put") && side === "sell"
-      ? price * contract.multiplier * totalQuantity : 0;
-    if (wallet + premiumCredit < currentRisk - currentContractRisk + projectedContractRisk) throw new Error("订单所需初始保证金不足。");
+    if (wallet < alreadyReserved + newOrderReserve) throw new Error("订单所需初始保证金不足。");
   }
 
   snapshot(playerId: string): MarketSnapshot {
     this.ensureAccount(playerId, this.now().toISOString());
-    this.settleMarket();
+    this.settle();
     this.updateRisk(playerId, this.now().toISOString());
     const underlyings = this.db.prepare(`
       SELECT id,name,unit,spot_price_wen,previous_spot_price_wen FROM market_underlyings ORDER BY id
@@ -604,7 +650,10 @@ export class MarketEngine {
     quantity: number,
   ) {
     this.ensureAccount(playerId, this.now().toISOString());
-    this.settleMarket();
+    this.settle();
+    const account = this.db.prepare("SELECT clearing_debt_wen FROM market_accounts WHERE player_id=?")
+      .get(playerId) as { clearing_debt_wen: number };
+    if (account.clearing_debt_wen > 0) throw new Error("清算债务偿清前不能提交新订单。");
     const payloadHash = createHash("sha256").update(JSON.stringify({ contractId, side, limitPriceWen, quantity })).digest("hex");
     const existing = this.db.prepare("SELECT id,payload_hash FROM market_orders WHERE player_id=? AND request_id=?")
       .get(playerId, requestId) as { id: string; payload_hash: string } | undefined;
@@ -632,13 +681,27 @@ export class MarketEngine {
     };
   }
 
-  cancelOrder(playerId: string, orderId: string) {
-    this.settleMarket();
+  cancelOrder(playerId: string, requestId: string, orderId: string) {
+    this.settle();
+    const payloadHash = createHash("sha256").update(JSON.stringify({ orderId })).digest("hex");
+    const replay = this.db.prepare(`
+      SELECT order_id,payload_hash FROM market_order_cancellations WHERE player_id=? AND request_id=?
+    `).get(playerId, requestId) as { order_id: string; payload_hash: string } | undefined;
+    if (replay) {
+      if (replay.order_id !== orderId || replay.payload_hash !== payloadHash) {
+        throw new Error("同一请求编号不能取消不同的市场订单。");
+      }
+      return { market: this.snapshot(playerId), message: "这笔市场订单已经取消。" };
+    }
     const changed = this.db.prepare(`
       UPDATE market_orders SET status='cancelled',remaining_quantity=0,updated_at=?
       WHERE id=? AND player_id=? AND status='open'
     `).run(this.now().toISOString(), orderId, playerId);
     if (changed.changes !== 1) throw new Error("订单不存在或已经不能取消。");
+    this.db.prepare(`
+      INSERT INTO market_order_cancellations(id,player_id,request_id,order_id,payload_hash,created_at)
+      VALUES (?,?,?,?,?,?)
+    `).run(randomUUID(), playerId, requestId, orderId, payloadHash, this.now().toISOString());
     this.updateRisk(playerId, this.now().toISOString());
     return { market: this.snapshot(playerId), message: "市场订单已取消。" };
   }

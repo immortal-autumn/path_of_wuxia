@@ -1,6 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
-import { agentTokenHash, npcAgentToken } from "./npc-auth";
+import { agentTokenHash, npcAgentToken, npcTradeAgentToken } from "./npc-auth";
 import { deriveStats } from "./progression";
+import { canonicalJson, fallbackNpcTradeStrategy, npcTradeStrategyHash } from "./npc-trade";
 
 export const NPC_POPULATION = 240;
 
@@ -56,9 +57,21 @@ export function ensureNpcPopulation(db: DatabaseSync, now: string, count = NPC_P
       JSON.stringify(["维持生活需求", "探索附近地点", "提升技能"]),
       PROFESSIONS[index % PROFESSIONS.length], location, now, now, now,
     );
-    db.prepare("DELETE FROM agent_credentials WHERE player_id=? AND label='npc-runner'").run(playerId);
+    db.prepare("DELETE FROM agent_credentials WHERE player_id=? AND label IN ('npc-runner','npc-trade-runner')").run(playerId);
     db.prepare(`
-      INSERT INTO agent_credentials(token_hash,player_id,label,created_at) VALUES (?,?,'npc-runner',?)
+      INSERT INTO agent_credentials(token_hash,player_id,label,scope,created_at) VALUES (?,?,'npc-runner','gameplay',?)
     `).run(agentTokenHash(npcAgentToken(stableKey)), playerId, now);
+    db.prepare(`
+      INSERT INTO agent_credentials(token_hash,player_id,label,scope,created_at) VALUES (?,?,'npc-trade-runner','market-trade',?)
+    `).run(agentTokenHash(npcTradeAgentToken(stableKey)), playerId, now);
+    const tradeStrategy = fallbackNpcTradeStrategy(stableKey);
+    db.prepare(`
+      INSERT OR IGNORE INTO npc_trade_strategies(
+        id,player_id,version,schema_version,source,strategy_json,strategy_hash,active,created_at
+      ) VALUES (?, ?,1,1,'builtin',?,?,1,?)
+    `).run(
+      `npc-trade-strategy-${stableKey}-1`, playerId,
+      canonicalJson(tradeStrategy), npcTradeStrategyHash(tradeStrategy), now,
+    );
   }
 }

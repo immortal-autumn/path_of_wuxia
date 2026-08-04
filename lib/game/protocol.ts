@@ -184,6 +184,7 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("commission.accept"), requestId, personId: id, templateId: id }),
   z.object({ type: z.literal("commission.complete"), requestId, commissionId: id }),
   z.object({ type: z.literal("commission.abandon"), requestId, commissionId: id }),
+  z.object({ type: z.literal("law.surrender"), requestId }),
   z.object({ type: z.literal("craft.start"), requestId, recipeId: id }),
   z.object({
     type: z.literal("farm.start"), requestId, plotId: id,
@@ -221,6 +222,7 @@ export type ServerMessage =
   | { type: "inventory.updated"; inventory: InventoryState }
   | { type: "shop.snapshot"; requestId: string; shop: ShopState }
   | { type: "market.snapshot"; requestId: string; market: MarketSnapshot }
+  | { type: "market.updated" }
   | { type: "person.snapshot"; requestId: string; person: PersonDetail }
   | { type: "person.dialogue.result"; requestId: string; person: PersonDetail; reply: string }
   | { type: "commissions.updated"; requestId?: string; commissions: NpcCommission[] }

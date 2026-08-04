@@ -1,7 +1,9 @@
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import { DatabaseSync } from "node:sqlite";
 import WebSocket from "ws";
-import { npcAgentToken } from "../lib/game/npc-auth";
+import { npcAgentToken, npcTradeAgentToken } from "../lib/game/npc-auth";
+import { decideNpcTrade, type NpcTradeInput } from "../lib/game/npc-trade";
+import type { NpcTradeServerMessage } from "../lib/game/npc-trade-protocol";
 import type { ServerMessage } from "../lib/game/protocol";
 
 async function enterWorld(page: Page) {
@@ -239,6 +241,54 @@ test.describe("entries and session identity", () => {
     } finally {
       npc.socket.close();
     }
+  });
+
+  test("keeps a restricted trade agent private and out of online presence", async ({ page }) => {
+    await enterWorld(page);
+    await expect(page.getByLabel("世界状态")).toContainText("1 位侠客在线");
+    await new Promise<void>((resolve, reject) => {
+      const socket = new WebSocket("ws://127.0.0.1:3200/ws", {
+        headers: { authorization: `Bearer ${npcTradeAgentToken("npc-002")}` },
+      });
+      const timeout = setTimeout(() => {
+        socket.close();
+        reject(new Error("Restricted trade agent flow timed out"));
+      }, 10_000);
+      let rejectedMove = false;
+      let receivedPublicPayload = false;
+      socket.on("open", () => socket.send(JSON.stringify({ type: "move", requestId: "trade-move", locationId: "home-hall" })));
+      socket.on("message", (raw) => {
+        const value = JSON.parse(raw.toString()) as NpcTradeServerMessage
+          | { type: "snapshot" | "npc.directive" | "players.updated" };
+        if (value.type === "snapshot" || value.type === "npc.directive" || value.type === "players.updated") receivedPublicPayload = true;
+        if (value.type === "error" && !rejectedMove) {
+          rejectedMove = true;
+          socket.send(JSON.stringify({ type: "agent.trade.strategy.get", requestId: "strategy-get" }));
+          return;
+        }
+        if (value.type === "agent.trade.strategy") {
+          socket.send(JSON.stringify({ type: "agent.trade.context.create", requestId: "context", cycleKey: "playwright-cycle" }));
+          return;
+        }
+        if (value.type === "agent.trade.context") {
+          const output = decideNpcTrade(value.strategy, value.input as NpcTradeInput, value.rngSeed);
+          socket.send(JSON.stringify({
+            type: "agent.trade.decision.submit", requestId: "decision",
+            decisionId: value.decisionId, output,
+          }));
+          return;
+        }
+        if (value.type === "agent.trade.decision.result") {
+          expect(rejectedMove).toBe(true);
+          expect(receivedPublicPayload).toBe(false);
+          clearTimeout(timeout);
+          socket.close();
+          resolve();
+        }
+      });
+      socket.on("error", reject);
+    });
+    await expect(page.getByLabel("世界状态")).toContainText("1 位侠客在线");
   });
 });
 
@@ -499,6 +549,48 @@ test.describe("game map", () => {
     expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
     await page.locator(".detail-modal-backdrop").click({ position: { x: 4, y: 4 } });
     await expect(dialog).toBeHidden();
+  });
+
+  test("shows wanted retail refusal and clears law state by surrendering at Kaifeng prefecture", async ({ page }) => {
+    await enterWorld(page);
+    await updatePlayer(page, "UPDATE players SET current_location=(SELECT location_id FROM shops WHERE name='惠民药铺') WHERE id=?");
+    await updatePlayer(page, "UPDATE shops SET opens_minute=0,closes_minute=0 WHERE name='惠民药铺' AND ?<>''");
+    await updatePlayer(page, `
+      INSERT INTO player_law_state(player_id,wanted_points,decay_anchor_at,last_crime_at,updated_at)
+      VALUES (?,20,strftime('%Y-%m-%dT%H:%M:%fZ','now'),strftime('%Y-%m-%dT%H:%M:%fZ','now'),strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+      ON CONFLICT(player_id) DO UPDATE SET wanted_points=20,decay_anchor_at=excluded.decay_anchor_at,
+        last_crime_at=excluded.last_crime_at,updated_at=excluded.updated_at
+    `);
+    await page.reload();
+    await expect(page.locator(".connection-badge")).toContainText("江湖在线");
+    await expect(page.getByRole("button", { name: /开封法度 · 通缉 20/ })).toBeVisible();
+    await page.getByRole("button", { name: "查看惠民药铺" }).click();
+    const shop = page.getByRole("dialog", { name: "店铺详情：惠民药铺" });
+    await expect(shop.getByRole("status")).toContainText("拒绝");
+    await expect(shop.getByRole("button", { name: "确认购买" })).toBeDisabled();
+    await page.keyboard.press("Escape");
+    await expect(shop).toBeHidden();
+
+    await page.getByRole("button", { name: /开封法度 · 通缉 20/ }).click();
+    let law = page.getByRole("dialog", { name: "开封法度详情" });
+    await expect(law).toContainText("投案罚金2贯");
+    await page.keyboard.press("Escape");
+    await expect(law).toBeHidden();
+    await page.getByRole("button", { name: /开封法度 · 通缉 20/ }).click();
+    await expect(law).toBeVisible();
+    await page.locator(".detail-modal-backdrop").click({ position: { x: 2, y: 2 } });
+    await expect(law).toBeHidden();
+
+    await updatePlayer(page, "UPDATE players SET current_location='kaifeng-prefecture-main-hall' WHERE id=?");
+    await page.reload();
+    await expect(page.locator(".connection-badge")).toContainText("江湖在线");
+    await page.getByRole("button", { name: /开封法度 · 通缉 20/ }).click();
+    law = page.getByRole("dialog", { name: "开封法度详情" });
+    await law.getByRole("button", { name: "确认投案并缴罚 2贯" }).click();
+    await expect(page.locator(".notice")).toContainText("销去通缉");
+    await expect(law).toContainText("当前状态清白");
+    await expect(page.getByLabel("角色状态")).toContainText("18贯");
+    await law.getByRole("button", { name: "关闭" }).click();
   });
 
   test("opens the guild order book, trades spot and cancels a resting order", async ({ page }) => {

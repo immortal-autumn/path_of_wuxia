@@ -27,6 +27,17 @@ import { ensureStarterInventory } from "./item-catalog";
 import { agentTokenHash } from "./npc-auth";
 import { formatCashWen } from "./currency";
 import { MarketEngine } from "./market";
+import {
+  applyWantedOffense,
+  constablesPursueWantedLevel,
+  decayWantedLevel,
+  isKaifengJurisdiction,
+  shopRefusesForWantedLevel,
+  wantedFineWen,
+  wantedIncreaseFor,
+  wantedStatusLabel,
+  type WantedOffense,
+} from "./law";
 import type {
   ActionJob,
   ActionOutcome,
@@ -63,6 +74,7 @@ import type {
   PersonDetail,
   PrivateEvent,
   PlayerSelf,
+  PlayerLawState,
   PlayerNeeds,
   PlayerSkill,
   QinggongTarget,
@@ -303,6 +315,11 @@ export class GameService {
     if (!wallet) throw new Error("角色钱袋尚未建立。");
     const balance = wallet.cash_wen + deltaWen;
     if (!Number.isSafeInteger(balance) || balance < 0) throw new Error("钱贯不足。");
+    if (deltaWen < 0) {
+      const market = this.db.prepare("SELECT reserved_margin_wen FROM market_accounts WHERE player_id=?")
+        .get(playerId) as { reserved_margin_wen: number } | undefined;
+      if (balance < (market?.reserved_margin_wen ?? 0)) throw new Error("可用钱贯不足；部分钱贯正为市场订单或保证金预留。");
+    }
     this.db.prepare("UPDATE player_wallets SET cash_wen=?,updated_at=? WHERE player_id=?").run(balance, at, playerId);
     this.db.prepare(`
       INSERT INTO currency_ledger(
@@ -738,6 +755,9 @@ export class GameService {
     }
     const shop = this.shopForPlayer(playerId, shopId);
     if (!shopIsOpen(shop, this.now())) throw new Error("店铺当前已经打烊。");
+    if (this.getLawState(playerId).shopRefused) {
+      throw new Error("开封店家拒绝为通缉在案者买卖，请先前往开封府投案。");
+    }
     return shop;
   }
 
@@ -749,6 +769,9 @@ export class GameService {
 
   private assertMarketAccess(playerId: string) {
     const player = this.assertCanTakeGameAction(playerId);
+    if (this.db.prepare("SELECT 1 FROM action_jobs WHERE player_id=? AND status IN ('running','paused') LIMIT 1").get(playerId)) {
+      throw new Error("进行中的行动结束或取消后才能进入市易行会。");
+    }
     if (!this.marketAvailableAt(player.current_location)) throw new Error("当前位置没有可用的市易行会。");
     return player;
   }
@@ -776,10 +799,18 @@ export class GameService {
     });
   }
 
-  cancelMarketOrder(playerId: string, orderId: string) {
+  cancelMarketOrder(playerId: string, requestId: string, orderId: string) {
     return inTransaction(this.db, () => {
       this.assertMarketAccess(playerId);
-      return new MarketEngine(this.db, this.now).cancelOrder(playerId, orderId);
+      return new MarketEngine(this.db, this.now).cancelOrder(playerId, requestId, orderId);
+    });
+  }
+
+  settleMarket() {
+    return inTransaction(this.db, () => {
+      new MarketEngine(this.db, this.now).settle();
+      return (this.db.prepare("SELECT player_id FROM market_accounts ORDER BY player_id").all() as Array<{ player_id: string }>)
+        .map((row) => row.player_id);
     });
   }
 
@@ -795,6 +826,7 @@ export class GameService {
 
   inspectShop(playerId: string, shopId: string): ShopState {
     const shop = this.shopForPlayer(playerId, shopId);
+    const law = this.getLawState(playerId);
     const stock = this.db.prepare(`
       SELECT stock.item_definition_id,definition.name,definition.description,definition.category,
         stock.quantity,stock.buy_price_wen,stock.sell_price_wen
@@ -813,6 +845,8 @@ export class GameService {
       opensMinute: shop.opens_minute,
       closesMinute: shop.closes_minute,
       tillWen: shop.till_wen,
+      serviceAvailable: !law.shopRefused,
+      refusalReason: law.shopRefused ? "开封店家拒绝为通缉在案者买卖，请先前往开封府投案。" : null,
       stock: stock.map((item) => ({
         definitionId: item.item_definition_id,
         name: item.name,
@@ -911,6 +945,130 @@ export class GameService {
     });
   }
 
+  private settleLawState(playerId: string, at = this.now()) {
+    const timestamp = at.toISOString();
+    this.db.prepare(`
+      INSERT OR IGNORE INTO player_law_state(player_id,wanted_points,decay_anchor_at,updated_at)
+      VALUES (?,0,?,?)
+    `).run(playerId, timestamp, timestamp);
+    const row = this.db.prepare(`
+      SELECT wanted_points,decay_anchor_at,last_crime_at FROM player_law_state WHERE player_id=?
+    `).get(playerId) as { wanted_points: number; decay_anchor_at: string; last_crime_at: string | null };
+    const settled = decayWantedLevel(row.wanted_points, row.decay_anchor_at, at);
+    const anchor = settled.wantedLevel === 0 ? timestamp : settled.decayedThrough;
+    if (settled.wantedLevel !== row.wanted_points || anchor !== row.decay_anchor_at) {
+      this.db.prepare(`
+        UPDATE player_law_state SET wanted_points=?,decay_anchor_at=?,updated_at=? WHERE player_id=?
+      `).run(settled.wantedLevel, anchor, timestamp, playerId);
+    }
+    return { wantedPoints: settled.wantedLevel, decayAnchorAt: anchor, lastCrimeAt: row.last_crime_at };
+  }
+
+  getLawState(playerId: string): PlayerLawState {
+    const settled = this.settleLawState(playerId);
+    const player = this.db.prepare("SELECT hp,current_location FROM players WHERE id=?").get(playerId) as {
+      hp: number; current_location: string;
+    } | undefined;
+    if (!player) throw new Error("未找到这个角色。");
+    const busy = Boolean(this.db.prepare(`
+      SELECT 1 FROM action_jobs WHERE player_id=? AND status IN ('running','paused','queued') LIMIT 1
+    `).get(playerId)) || Boolean(this.db.prepare(`
+      SELECT 1 FROM combat_sessions WHERE status='active' AND (attacker_id=? OR defender_id=?) LIMIT 1
+    `).get(playerId, playerId));
+    const incidents = this.db.prepare(`
+      SELECT incident.id,incident.offense,incident.points_delta,incident.created_at,location.name
+      FROM law_incidents incident JOIN locations location ON location.id=incident.location_id
+      WHERE incident.actor_player_id=? ORDER BY incident.created_at DESC,incident.id DESC LIMIT 12
+    `).all(playerId) as Array<{
+      id: string; offense: "assault" | "defeat" | "robbery"; points_delta: number; created_at: string; name: string;
+    }>;
+    return {
+      wantedPoints: settled.wantedPoints,
+      statusLabel: wantedStatusLabel(settled.wantedPoints),
+      nextDecayAt: settled.wantedPoints > 0
+        ? new Date(new Date(settled.decayAnchorAt).getTime() + 60 * 60_000).toISOString()
+        : null,
+      shopRefused: shopRefusesForWantedLevel(settled.wantedPoints),
+      pursuitActive: constablesPursueWantedLevel(settled.wantedPoints),
+      fineWen: wantedFineWen(settled.wantedPoints),
+      canSurrender: settled.wantedPoints > 0 && player.current_location === "kaifeng-prefecture-main-hall"
+        && player.hp > 0 && !busy,
+      recentIncidents: incidents.map((incident) => ({
+        id: incident.id, offense: incident.offense, pointsDelta: incident.points_delta,
+        locationName: incident.name, createdAt: incident.created_at,
+      })),
+    };
+  }
+
+  private recordLawIncident(
+    actorPlayerId: string,
+    victimPlayerId: string | null,
+    offense: WantedOffense,
+    locationId: string,
+    referenceType: "combat" | "loot",
+    referenceId: string,
+    at: string,
+  ) {
+    const actor = this.db.prepare("SELECT controller_kind FROM players WHERE id=?").get(actorPlayerId) as {
+      controller_kind: string;
+    } | undefined;
+    const victim = victimPlayerId
+      ? this.db.prepare("SELECT controller_kind FROM players WHERE id=?").get(victimPlayerId) as { controller_kind: string } | undefined
+      : undefined;
+    const location = this.db.prepare("SELECT id,layer_id,region_id FROM locations WHERE id=?").get(locationId) as {
+      id: string; layer_id: string; region_id: string | null;
+    } | undefined;
+    if (!actor || actor.controller_kind !== "human" || !victim || victim.controller_kind !== "npc" || !location
+      || !isKaifengJurisdiction({ id: location.id, layerId: location.layer_id, regionId: location.region_id })) return false;
+    const current = this.settleLawState(actorPlayerId, new Date(at));
+    const delta = wantedIncreaseFor(offense);
+    const inserted = this.db.prepare(`
+      INSERT OR IGNORE INTO law_incidents(
+        id,actor_player_id,victim_player_id,offense,points_delta,location_id,reference_type,reference_id,created_at
+      ) VALUES (?,?,?,?,?,?,?,?,?)
+    `).run(randomUUID(), actorPlayerId, victimPlayerId, offense, delta, locationId, referenceType, referenceId, at);
+    if (inserted.changes === 0) return false;
+    const next = Math.min(9999, applyWantedOffense(current.wantedPoints, offense));
+    this.db.prepare(`
+      UPDATE player_law_state SET wanted_points=?,decay_anchor_at=?,last_crime_at=?,updated_at=? WHERE player_id=?
+    `).run(next, at, at, at, actorPlayerId);
+    this.db.prepare("INSERT INTO private_events(player_id,event_type,content,created_at) VALUES (?,'law',?,?)")
+      .run(actorPlayerId, `开封法度记案：${offense === "assault" ? "袭击城中居民" : offense === "defeat" ? "击败城中居民" : "夺取居民财物"}，通缉值 +${delta}。`, at);
+    return true;
+  }
+
+  surrenderToLaw(playerId: string, requestId: string) {
+    return inTransaction(this.db, () => {
+      const replay = this.db.prepare("SELECT id FROM law_settlements WHERE player_id=? AND request_id=?")
+        .get(playerId, requestId) as { id: string } | undefined;
+      if (replay) return { player: this.getPlayer(playerId), message: "这次投案已经办理完毕。" };
+      const player = this.assertCanTakeGameAction(playerId);
+      if (player.current_location !== "kaifeng-prefecture-main-hall") throw new Error("只能在开封府署正堂投案。");
+      if (this.db.prepare(`
+        SELECT 1 FROM action_jobs WHERE player_id=? AND status IN ('running','paused','queued') LIMIT 1
+      `).get(playerId)) throw new Error("先结束或取消当前行动再投案。");
+      const law = this.getLawState(playerId);
+      if (law.wantedPoints <= 0) throw new Error("当前并无通缉在身。");
+      const at = this.now().toISOString();
+      const settlementId = randomUUID();
+      this.changeCashWen(playerId, -law.fineWen, "开封府投案罚金", "law-settlement", settlementId, at);
+      this.db.prepare(`
+        INSERT INTO law_settlements(
+          id,player_id,request_id,wanted_points_cleared,fine_wen,location_id,created_at
+        ) VALUES (?,?,?,?,?,'kaifeng-prefecture-main-hall',?)
+      `).run(settlementId, playerId, requestId, law.wantedPoints, law.fineWen, at);
+      this.db.prepare(`
+        UPDATE player_law_state SET wanted_points=0,decay_anchor_at=?,updated_at=? WHERE player_id=?
+      `).run(at, at, playerId);
+      const content = `${player.name}在开封府投案，缴纳${formatCashWen(law.fineWen)}后销去通缉。`;
+      this.db.prepare("INSERT INTO private_events(player_id,event_type,content,created_at) VALUES (?,'law',?,?)")
+        .run(playerId, content, at);
+      this.db.prepare("INSERT INTO world_events(player_id,event_type,content,created_at) VALUES (?,'law',?,?)")
+        .run(playerId, content, at);
+      return { player: this.getPlayer(playerId), message: content };
+    });
+  }
+
   private playerSelect() {
     return `
       SELECT p.id,p.name,p.title,p.hp,wallet.cash_wen,p.current_location,
@@ -970,6 +1128,7 @@ export class GameService {
         : 3,
       defeated: row.hp <= 0,
       injuryUntil: row.injury_until,
+      law: this.getLawState(row.id),
     };
   }
 
@@ -1067,15 +1226,21 @@ export class GameService {
   }
 
   getPlayerByAgentToken(token: string | undefined) {
+    const identity = this.getAgentIdentityByToken(token);
+    if (!identity || identity.scope !== "gameplay") return null;
+    this.settleActionQueue(identity.player.id, true);
+    return this.settleCultivation(identity.player.id, true).player;
+  }
+
+  getAgentIdentityByToken(token: string | undefined) {
     if (!token) return null;
     const row = this.db.prepare(`
-      SELECT p.id FROM agent_credentials credential JOIN players p ON p.id=credential.player_id
+      SELECT p.id,credential.scope FROM agent_credentials credential JOIN players p ON p.id=credential.player_id
       WHERE credential.token_hash=? AND credential.revoked_at IS NULL
         AND (credential.expires_at IS NULL OR credential.expires_at>?) AND p.controller_kind='npc'
-    `).get(agentTokenHash(token), this.now().toISOString()) as { id: string } | undefined;
+    `).get(agentTokenHash(token), this.now().toISOString()) as { id: string; scope: "gameplay" | "market-trade" } | undefined;
     if (!row) return null;
-    this.settleActionQueue(row.id, true);
-    return this.settleCultivation(row.id, true).player;
+    return { player: this.getPlayer(row.id), scope: row.scope };
   }
 
   getPlayer(playerId: string) {
@@ -2721,7 +2886,9 @@ export class GameService {
 
   private validateTradeOffer(playerId: string, offer: StoredTradeOffer) {
     const player = this.getPlayerRow(playerId);
-    if (offer.cashWen > player.cash_wen) throw new Error("交易报价中的钱贯不足。");
+    const market = this.db.prepare("SELECT reserved_margin_wen FROM market_accounts WHERE player_id=?")
+      .get(playerId) as { reserved_margin_wen: number } | undefined;
+    if (offer.cashWen > player.cash_wen - (market?.reserved_margin_wen ?? 0)) throw new Error("交易报价中的可用钱贯不足。");
     if (offer.items.length > 16 || new Set(offer.items.map((item) => item.itemId)).size !== offer.items.length) {
       throw new Error("交易物品报价不合法。");
     }
@@ -2948,6 +3115,7 @@ export class GameService {
           attacker_misses,defender_misses,created_at,updated_at
         ) VALUES (?,?,?,?,'active',1,?,?,0,0,?,?)
       `).run(id, attacker.current_location, playerId, targetPlayerId, playerId, new Date(now.getTime() + 30_000).toISOString(), now.toISOString(), now.toISOString());
+      this.recordLawIncident(playerId, targetPlayerId, "assault", attacker.current_location, "combat", id, now.toISOString());
       const content = `${attacker.name}向${defender.name}发起战斗。`;
       const inserted = this.db.prepare("INSERT INTO world_events(player_id,event_type,content,created_at) VALUES (?,'combat',?,?)")
         .run(playerId, content, now.toISOString());
@@ -2995,6 +3163,29 @@ export class GameService {
     this.db.prepare(`
       UPDATE combat_sessions SET status='completed',acting_player_id=NULL,turn_deadline=NULL,winner_id=?,loser_id=?,ended_at=?,updated_at=? WHERE id=?
     `).run(winnerId, loserId, at, at, combat.id);
+    this.recordLawIncident(winnerId, loserId, "defeat", combat.location_id, "combat", combat.id, at);
+    if (this.db.prepare("SELECT 1 FROM npc_profiles WHERE player_id=?").get(loserId)) {
+      const dueAt = new Date(new Date(at).getTime() + 10 * 60_000);
+      const assignment = this.db.prepare(`
+        SELECT home_location_id,workplace_location_id FROM npc_assignments WHERE player_id=?
+      `).get(loserId) as { home_location_id: string; workplace_location_id: string } | undefined;
+      let destination = assignment?.home_location_id ?? "song-gate";
+      if (assignment) {
+        const minute = chinaMinuteOfDay(dueAt);
+        const schedule = this.db.prepare(`
+          SELECT target_kind FROM npc_schedule_entries
+          WHERE player_id=? AND start_minute<=? AND end_minute>?
+          ORDER BY start_minute DESC,id LIMIT 1
+        `).get(loserId, minute, minute) as { target_kind: string } | undefined;
+        if (schedule?.target_kind === "workplace") destination = assignment.workplace_location_id;
+      }
+      if (!this.db.prepare("SELECT 1 FROM locations WHERE id=? AND is_active=1").get(destination)) destination = "song-gate";
+      this.db.prepare(`
+        INSERT OR IGNORE INTO npc_respawn_jobs(
+          id,npc_player_id,combat_id,destination_location_id,due_at,status,created_at
+        ) VALUES (?,?,?,?,?,'scheduled',?)
+      `).run(randomUUID(), loserId, combat.id, destination, dueAt.toISOString(), at);
+    }
     const text = `${winner.name}击败${loser.name}；落败者的全部钱贯与未绑定物品掉落在当前地点。`;
     this.db.prepare("INSERT INTO world_events(player_id,event_type,content,created_at) VALUES (?,'defeat',?,?)").run(winnerId, text, at);
     for (const participant of [winnerId, loserId]) {
@@ -3124,6 +3315,9 @@ export class GameService {
   respawnPlayer(playerId: string) {
     return inTransaction(this.db, () => {
       const player = this.getPlayerRow(playerId);
+      if (this.db.prepare("SELECT 1 FROM npc_profiles WHERE player_id=?").get(playerId)) {
+        throw new Error("城中居民负伤后会在十分钟后按职住日程自行归来。");
+      }
       if (player.hp > 0) throw new Error("角色当前并未落败。");
       if (this.db.prepare("SELECT 1 FROM combat_sessions WHERE status='active' AND (attacker_id=? OR defender_id=?)").get(playerId, playerId)) {
         throw new Error("战斗尚未结算。");
@@ -3141,6 +3335,37 @@ export class GameService {
       this.db.prepare("INSERT INTO private_events(player_id,event_type,content,created_at) VALUES (?,'respawn','你带伤返回玄关复起。',?)")
         .run(playerId, at.toISOString());
       return { player: this.getPlayer(playerId), message: "已返回玄关复起，气血恢复一半。" };
+    });
+  }
+
+  settleDueNpcRespawns() {
+    return inTransaction(this.db, () => {
+      const now = this.now();
+      const timestamp = now.toISOString();
+      const jobs = this.db.prepare(`
+        SELECT id,npc_player_id,destination_location_id FROM npc_respawn_jobs
+        WHERE status='scheduled' AND due_at<=? ORDER BY due_at,id LIMIT 240
+      `).all(timestamp) as Array<{ id: string; npc_player_id: string; destination_location_id: string }>;
+      const affected: string[] = [];
+      for (const job of jobs) {
+        const row = this.getPlayerRow(job.npc_player_id);
+        if (row.hp > 0) {
+          this.db.prepare("UPDATE npc_respawn_jobs SET status='cancelled',completed_at=? WHERE id=?").run(timestamp, job.id);
+          continue;
+        }
+        const derived = this.mapPlayer({ ...row, hp: 1 }).derived;
+        this.db.prepare(`
+          UPDATE players SET hp=?,current_location=?,injury_until=NULL,updated_at=?,last_seen_at=? WHERE id=?
+        `).run(Math.max(1, Math.ceil(derived.maxHp / 2)), job.destination_location_id, timestamp, timestamp, job.npc_player_id);
+        this.db.prepare("UPDATE player_progression SET training_anchor_at=NULL,updated_at=? WHERE player_id=?")
+          .run(timestamp, job.npc_player_id);
+        this.db.prepare("UPDATE npc_respawn_jobs SET status='completed',completed_at=? WHERE id=?")
+          .run(timestamp, job.id);
+        this.db.prepare("INSERT INTO private_events(player_id,event_type,content,created_at) VALUES (?,'respawn','养伤十分钟后已按职住日程归来。',?)")
+          .run(job.npc_player_id, timestamp);
+        affected.push(job.npc_player_id);
+      }
+      return affected;
     });
   }
 
@@ -3164,8 +3389,8 @@ export class GameService {
   takeLoot(playerId: string, lootPileId: string) {
     return inTransaction(this.db, () => {
       const player = this.assertCanTakeGameAction(playerId);
-      const pile = this.db.prepare("SELECT location_id,cash_wen FROM loot_piles WHERE id=?").get(lootPileId) as {
-        location_id: string; cash_wen: number;
+      const pile = this.db.prepare("SELECT location_id,cash_wen,source_player_id FROM loot_piles WHERE id=?").get(lootPileId) as {
+        location_id: string; cash_wen: number; source_player_id: string | null;
       } | undefined;
       if (!pile || pile.location_id !== player.current_location) throw new Error("战利品不在当前位置或已经被取走。");
       const timestamp = this.now().toISOString();
@@ -3175,6 +3400,7 @@ export class GameService {
       this.db.prepare("DELETE FROM loot_piles WHERE id=?").run(lootPileId);
       this.db.prepare("INSERT INTO private_events(player_id,event_type,content,created_at) VALUES (?,'loot',?,?)")
         .run(playerId, `取得战利品与${formatCashWen(pile.cash_wen)}。`, timestamp);
+      this.recordLawIncident(playerId, pile.source_player_id, "robbery", pile.location_id, "loot", lootPileId, timestamp);
       return { player: this.getPlayer(playerId), inventory: this.getInventoryState(playerId), message: "战利品已收入行囊。" };
     });
   }

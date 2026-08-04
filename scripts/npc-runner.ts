@@ -112,6 +112,7 @@ class NpcActor {
     const directive = this.directive;
     if (!directive || directive.kind === "hold") return null;
     if (directive.kind === "move") return { type: "move", locationId: directive.locationId };
+    if (directive.kind === "combat") return { type: "combat.start", targetPlayerId: directive.targetPlayerId };
     const action = snapshot.actionState.available.find((candidate) => (
       candidate.id === directive.actionId && candidate.available
     ));

@@ -115,7 +115,11 @@ function StatBar({ label, value, max, tone }: { label: string; value: number; ma
   );
 }
 
-function WorldPanel({ world, recentEvents: events, open }: Pick<GameSnapshot, "world" | "recentEvents"> & { open: boolean }) {
+function WorldPanel({ world, recentEvents: events, law, open, onOpenLaw }: Pick<GameSnapshot, "world" | "recentEvents"> & {
+  law: GameSnapshot["self"]["law"];
+  open: boolean;
+  onOpenLaw: () => void;
+}) {
   return (
     <section className={`world-panel paper-panel mobile-drawer ${open ? "drawer-open" : ""}`} aria-label="世界状态">
       <div className="world-main">
@@ -129,7 +133,10 @@ function WorldPanel({ world, recentEvents: events, open }: Pick<GameSnapshot, "w
           <ChinaClock key={world.serverTime} serverTime={world.serverTime} />
           <span className="online-count"><i /> {world.onlineCount} 位侠客在线</span>
         </div>
-        <nav className="world-tools"><Link className="map-editor-link" href="/map-editor">地图设计</Link><Link className="map-editor-link" href="/action-editor">行动设计</Link></nav>
+        <nav className="world-tools">
+          <button className="map-editor-link law-status-button" type="button" onClick={onOpenLaw}>开封法度 · {law.statusLabel}{law.wantedPoints > 0 ? ` ${law.wantedPoints}` : ""}</button>
+          <Link className="map-editor-link" href="/map-editor">地图设计</Link><Link className="map-editor-link" href="/action-editor">行动设计</Link>
+        </nav>
       </div>
       <div className="world-news">
         <p className="announcement">{world.announcement}</p>
@@ -1392,6 +1399,7 @@ function ShopModal({
           <span>钱袋 {formatCashWen(cashWen)}</span>
           <span>店柜 {formatCashWen(shop.tillWen)}</span>
         </div>
+        {!shop.serviceAvailable && <p className="shop-refusal" role="status">{shop.refusalReason}</p>}
         <div className="shop-columns">
           <section aria-label="店铺货物">
             <h3>买入货物</h3>
@@ -1423,10 +1431,10 @@ function ShopModal({
         <footer className="shop-confirmation">
           <label>数量<input aria-label="店铺交易数量" type="number" min="1" value={quantity} onChange={(event) => setQuantity(event.target.value)} /></label>
           {selectedStock && (
-            <><span>合计 {formatCashWen(selectedStock.buyPriceWen * parsedQuantity)}</span><button disabled={pending || !shop.isOpen || parsedQuantity > selectedStock.quantity || selectedStock.buyPriceWen * parsedQuantity > cashWen} onClick={() => onBuy(selectedStock.definitionId, parsedQuantity)}>确认购买</button></>
+            <><span>合计 {formatCashWen(selectedStock.buyPriceWen * parsedQuantity)}</span><button disabled={pending || !shop.isOpen || !shop.serviceAvailable || parsedQuantity > selectedStock.quantity || selectedStock.buyPriceWen * parsedQuantity > cashWen} onClick={() => onBuy(selectedStock.definitionId, parsedQuantity)}>确认购买</button></>
           )}
           {selectedOwned && selectedSellStock && (
-            <><span>可得 {formatCashWen(selectedSellStock.sellPriceWen * parsedQuantity)}</span><button disabled={pending || !shop.isOpen || parsedQuantity > selectedOwned.quantity - selectedOwned.reservedQuantity || selectedSellStock.sellPriceWen * parsedQuantity > shop.tillWen} onClick={() => onSell(selectedOwned.id, parsedQuantity)}>确认出售</button></>
+            <><span>可得 {formatCashWen(selectedSellStock.sellPriceWen * parsedQuantity)}</span><button disabled={pending || !shop.isOpen || !shop.serviceAvailable || parsedQuantity > selectedOwned.quantity - selectedOwned.reservedQuantity || selectedSellStock.sellPriceWen * parsedQuantity > shop.tillWen} onClick={() => onSell(selectedOwned.id, parsedQuantity)}>确认出售</button></>
           )}
         </footer>
       </section>
@@ -1666,6 +1674,62 @@ function PersonDetailModal({
   );
 }
 
+function LawDetailModal({
+  law,
+  pending,
+  onSurrender,
+  onClose,
+}: {
+  law: GameSnapshot["self"]["law"];
+  pending: boolean;
+  onSurrender: () => void;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
+  const offenseLabel = { assault: "袭击居民", defeat: "击败居民", robbery: "夺取居民财物" } as const;
+  return createPortal(
+    <div className="detail-modal-backdrop" onMouseDown={(event) => {
+      if (event.target === event.currentTarget) onClose();
+    }}>
+      <section className="detail-modal law-modal" role="dialog" aria-modal="true" aria-label="开封法度详情">
+        <header><div><p className="eyebrow">东京城治安</p><h2>开封法度</h2></div><button type="button" onClick={onClose}>关闭</button></header>
+        <div className="detail-modal-body">
+          <dl>
+            <div><dt>当前状态</dt><dd>{law.statusLabel}</dd></div>
+            <div><dt>通缉值</dt><dd>{law.wantedPoints}</dd></div>
+            <div><dt>店铺门槛</dt><dd>20（{law.shopRefused ? "已拒绝买卖" : "尚可买卖"}）</dd></div>
+            <div><dt>巡检追缉</dt><dd>50（{law.pursuitActive ? "追缉中" : "未触发"}）</dd></div>
+            <div><dt>自然消减</dt><dd>{law.nextDecayAt ? `每小时 -1，下次 ${new Date(law.nextDecayAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}` : "无通缉"}</dd></div>
+            <div><dt>投案罚金</dt><dd>{formatCashWen(law.fineWen)}</dd></div>
+          </dl>
+          <p>在开封袭击居民 +20；击败居民 +50；拾取居民掉落 +50。三项分别记案并可累加。</p>
+          <section className="law-incidents" aria-label="近期法度记录">
+            <h3>近期记录</h3>
+            {law.recentIncidents.map((incident) => (
+              <article key={incident.id}><strong>{offenseLabel[incident.offense]} +{incident.pointsDelta}</strong><span>{incident.locationName}</span><time dateTime={incident.createdAt}>{new Date(incident.createdAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}</time></article>
+            ))}
+            {law.recentIncidents.length === 0 && <p>没有违法记录。</p>}
+          </section>
+          {law.wantedPoints > 0 && (
+            <div className="detail-modal-actions">
+              <button disabled={pending || !law.canSurrender} onClick={onSurrender}>
+                {law.canSurrender ? `确认投案并缴罚 ${formatCashWen(law.fineWen)}` : "须在开封府署正堂、空闲且未参战时投案"}
+              </button>
+            </div>
+          )}
+        </div>
+      </section>
+    </div>,
+    document.body,
+  );
+}
+
 function ChatPanel({
   messages,
   selfId,
@@ -1749,8 +1813,10 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
   const [visitedLayerId, setVisitedLayerId] = useState("");
   const [shopState, setShopState] = useState<ShopState | null>(null);
   const [marketState, setMarketState] = useState<MarketSnapshot | null>(null);
+  const marketStateRef = useRef<MarketSnapshot | null>(null);
   const [personDetail, setPersonDetail] = useState<PersonDetail | null>(null);
   const [personReply, setPersonReply] = useState<string | null>(null);
+  const [lawOpen, setLawOpen] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
   const pendingRequestRef = useRef<string | null>(null);
   const visitedMapRequestRef = useRef<string | null>(null);
@@ -1797,6 +1863,9 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
         }
         if (message.type === "shop.snapshot") setShopState(message.shop);
         if (message.type === "market.snapshot") setMarketState(message.market);
+        if (message.type === "market.updated" && marketStateRef.current) {
+          socket.send(JSON.stringify({ type: "market.snapshot", requestId: createClientId() }));
+        }
         if (message.type === "person.snapshot") {
           setPersonDetail(message.person);
           setPersonReply(null);
@@ -1895,6 +1964,10 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
   }, []);
 
   useEffect(() => {
+    marketStateRef.current = marketState;
+  }, [marketState]);
+
+  useEffect(() => {
     if (!notice) return;
     const timer = setTimeout(() => setNotice(null), 3600);
     return () => clearTimeout(timer);
@@ -1940,7 +2013,13 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
   return (
     <main className="game-shell">
       <div className="main-column">
-        <WorldPanel world={snapshot.world} recentEvents={snapshot.recentEvents} open={drawer === "world"} />
+        <WorldPanel
+          world={snapshot.world}
+          recentEvents={snapshot.recentEvents}
+          law={snapshot.self.law}
+          open={drawer === "world"}
+          onOpenLaw={() => setLawOpen(true)}
+        />
         <MapPanel
           locations={snapshot.locations}
           routes={snapshot.routes}
@@ -2088,6 +2167,15 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           onAccept={(templateId) => sendCommand({ type: "commission.accept", personId: personDetail.id, templateId }, "commission")}
           onComplete={(commissionId) => sendCommand({ type: "commission.complete", commissionId }, "commission")}
           onClose={() => { setPersonDetail(null); setPersonReply(null); }}
+        />
+      )}
+
+      {lawOpen && (
+        <LawDetailModal
+          law={snapshot.self.law}
+          pending={pending !== null || connection !== "online"}
+          onSurrender={() => sendCommand({ type: "law.surrender" }, "law")}
+          onClose={() => setLawOpen(false)}
         />
       )}
 

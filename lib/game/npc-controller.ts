@@ -7,6 +7,7 @@ export type NpcDecision =
   | { type: "skill.use"; skillId: string }
   | { type: "skill.stop"; skillId: string }
   | { type: "combat.choose"; combatId: string; choice: "attack" | "power" | "defend" | "flee" }
+  | { type: "combat.start"; targetPlayerId: string }
   | { type: "combat.respawn" }
   | { type: "loot.take"; lootPileId: string }
   | { type: "chat.send"; content: string };
@@ -26,6 +27,7 @@ function validDecision(value: unknown): value is NpcDecision {
   if (decision.type === "skill.use") return typeof decision.skillId === "string";
   if (decision.type === "skill.stop") return typeof decision.skillId === "string";
   if (decision.type === "combat.respawn") return true;
+  if (decision.type === "combat.start") return typeof decision.targetPlayerId === "string";
   if (decision.type === "loot.take") return typeof decision.lootPileId === "string";
   if (decision.type === "chat.send") return typeof decision.content === "string" && decision.content.length >= 1 && decision.content.length <= 120;
   return decision.type === "combat.choose" && typeof decision.combatId === "string"
@@ -36,7 +38,7 @@ export class UtilityNpcController implements NpcController {
   constructor(private readonly random: () => number = Math.random) {}
 
   async decide({ snapshot }: NpcControllerContext): Promise<NpcDecision | null> {
-    if (snapshot.self.defeated) return { type: "combat.respawn" };
+    if (snapshot.self.defeated) return null;
     if (snapshot.combat) {
       if (!snapshot.combat.selfTurn) return null;
       const healthRatio = snapshot.self.hp / Math.max(1, snapshot.self.maxHp);

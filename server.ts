@@ -2,7 +2,9 @@ import { createServer, type IncomingMessage } from "node:http";
 import next from "next";
 import WebSocket, { WebSocketServer } from "ws";
 import { closeGameDatabase, getGameDatabase } from "./lib/game/database";
-import { resolveNpcScheduleDirective } from "./lib/game/npc-schedule";
+import { resolveNpcAgentDirective } from "./lib/game/npc-schedule";
+import { npcTradeClientMessageSchema, type NpcTradeServerMessage } from "./lib/game/npc-trade-protocol";
+import { NpcTradeAgentService } from "./lib/game/npc-trade-service";
 import { clientMessageSchema, type ServerMessage } from "./lib/game/protocol";
 import { getGameService, SESSION_COOKIE } from "./lib/game/service";
 import { worldStatusKey } from "./lib/game/time";
@@ -14,7 +16,7 @@ const service = getGameService();
 
 type SocketContext = {
   playerId: string;
-  clientKind: "browser" | "npc-agent";
+  clientKind: "browser" | "npc-agent" | "npc-trade-agent";
   alive: boolean;
   visibleLocationIds: Set<string>;
 };
@@ -56,17 +58,24 @@ async function main() {
   const sockets = new Map<WebSocket, SocketContext>();
   const chatTimestamps = new Map<string, number>();
   const wss = new WebSocketServer({ noServer: true, maxPayload: 4096 });
+  const tradeService = new NpcTradeAgentService(getGameDatabase());
 
-  const onlinePlayerIds = () => [...new Set([...sockets.values()].map((context) => context.playerId))];
+  const onlinePlayerIds = () => [...new Set([...sockets.values()]
+    .filter((context) => context.clientKind !== "npc-trade-agent")
+    .map((context) => context.playerId))];
 
   const send = (socket: WebSocket, message: ServerMessage) => {
     if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
   };
 
+  const sendTrade = (socket: WebSocket, message: NpcTradeServerMessage) => {
+    if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+  };
+
   const broadcast = (message: ServerMessage) => {
     const payload = JSON.stringify(message);
-    for (const socket of sockets.keys()) {
-      if (socket.readyState === WebSocket.OPEN) socket.send(payload);
+    for (const [socket, context] of sockets) {
+      if (context.clientKind !== "npc-trade-agent" && socket.readyState === WebSocket.OPEN) socket.send(payload);
     }
   };
 
@@ -74,6 +83,7 @@ async function main() {
     const playerIds = onlinePlayerIds();
     const players = service.getOnlinePlayers(playerIds);
     for (const [socket, context] of sockets) {
+      if (context.clientKind === "npc-trade-agent") continue;
       send(socket, {
         type: "players.updated",
         players: players.filter((player) => context.visibleLocationIds.has(player.currentLocation)),
@@ -91,7 +101,9 @@ async function main() {
     if (context.clientKind === "npc-agent" && socket.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify({
         type: "npc.directive",
-        directive: resolveNpcScheduleDirective(getGameDatabase(), context.playerId, new Date(snapshot.world.serverTime)),
+        directive: resolveNpcAgentDirective(
+          getGameDatabase(), context.playerId, onlinePlayerIds(), new Date(snapshot.world.serverTime),
+        ),
       }));
     }
   };
@@ -106,8 +118,8 @@ async function main() {
   wss.on("connection", (socket, request) => {
     const token = readCookie(request, SESSION_COOKIE);
     const browserPlayer = service.getPlayerBySessionToken(token);
-    const npcAgentPlayer = browserPlayer ? null : service.getPlayerByAgentToken(readBearerToken(request));
-    const player = browserPlayer ?? npcAgentPlayer;
+    const agentIdentity = browserPlayer ? null : service.getAgentIdentityByToken(readBearerToken(request));
+    const player = browserPlayer ?? agentIdentity?.player;
     if (!player) {
       socket.close(4001, "会话无效");
       return;
@@ -115,14 +127,16 @@ async function main() {
 
     const context: SocketContext = {
       playerId: player.id,
-      clientKind: npcAgentPlayer ? "npc-agent" : "browser",
+      clientKind: browserPlayer ? "browser" : agentIdentity?.scope === "market-trade" ? "npc-trade-agent" : "npc-agent",
       alive: true,
       visibleLocationIds: new Set(),
     };
     sockets.set(socket, context);
-    service.touchPlayers([player.id]);
-    sendSnapshot(socket, context);
-    broadcastPresence();
+    if (context.clientKind !== "npc-trade-agent") {
+      service.touchPlayers([player.id]);
+      sendSnapshot(socket, context);
+      broadcastPresence();
+    }
 
     socket.on("pong", () => {
       const context = sockets.get(socket);
@@ -138,6 +152,48 @@ async function main() {
         raw = JSON.parse(rawMessage.toString());
       } catch {
         send(socket, { type: "error", message: "消息格式不正确。" });
+        return;
+      }
+
+      if (context.clientKind === "npc-trade-agent") {
+        const parsedTrade = npcTradeClientMessageSchema.safeParse(raw);
+        if (!parsedTrade.success) {
+          sendTrade(socket, { type: "error", message: "受限商贸凭证不能执行游戏、社交或编辑指令。" });
+          return;
+        }
+        const command = parsedTrade.data;
+        try {
+          if (command.type === "ping") {
+            sendTrade(socket, { type: "pong", requestId: command.requestId });
+            return;
+          }
+          if (command.type === "agent.trade.strategy.get" || command.type === "agent.trade.strategy.install") {
+            const result = command.type === "agent.trade.strategy.get"
+              ? tradeService.ensureStrategy(context.playerId)
+              : tradeService.installStrategy(context.playerId, command.strategy);
+            sendTrade(socket, {
+              type: "agent.trade.strategy", requestId: command.requestId,
+              strategy: result.strategy, strategyHash: result.strategyHash, version: result.version,
+            });
+            return;
+          }
+          if (command.type === "agent.trade.context.create") {
+            const result = tradeService.createContext(context.playerId, command.cycleKey);
+            sendTrade(socket, {
+              type: "agent.trade.context", requestId: command.requestId,
+              decisionId: result.decisionId, strategy: result.strategy, strategyHash: result.strategyHash,
+              input: result.input, rngSeed: result.rngSeed,
+            });
+            return;
+          }
+          const result = tradeService.submitDecision(context.playerId, command.decisionId, command.output);
+          sendTrade(socket, {
+            type: "agent.trade.decision.result", requestId: command.requestId,
+            decisionId: result.decisionId, status: result.status, message: result.message,
+          });
+        } catch (error) {
+          sendTrade(socket, { type: "error", requestId: command.requestId, message: errorMessage(error) });
+        }
         return;
       }
 
@@ -464,7 +520,7 @@ async function main() {
             ? service.placeMarketOrder(
               context.playerId, command.requestId, command.contractId, command.side, command.limitPriceWen, command.quantity,
             )
-            : service.cancelMarketOrder(context.playerId, command.orderId);
+            : service.cancelMarketOrder(context.playerId, command.requestId, command.orderId);
           send(socket, { type: "market.snapshot", requestId: command.requestId, market: result.market });
           send(socket, { type: "self.updated", player: service.getPlayer(context.playerId) });
           send(socket, { type: "ack", requestId: command.requestId, message: result.message });
@@ -561,6 +617,13 @@ async function main() {
           return;
         }
 
+        if (command.type === "law.surrender") {
+          const result = service.surrenderToLaw(context.playerId, command.requestId);
+          send(socket, { type: "self.updated", player: result.player });
+          send(socket, { type: "ack", requestId: command.requestId, message: result.message });
+          return;
+        }
+
         if (command.type !== "move" && command.type !== "act") throw new Error("无法识别这条指令。");
         const mutation = command.type === "move"
           ? service.move(context.playerId, command.locationId)
@@ -583,7 +646,7 @@ async function main() {
 
     socket.on("close", () => {
       sockets.delete(socket);
-      broadcastPresence();
+      if (context.clientKind !== "npc-trade-agent") broadcastPresence();
     });
 
     socket.on("error", () => {
@@ -605,6 +668,7 @@ async function main() {
 
   await app.prepare();
   httpServer.on("request", (request, response) => handle(request, response));
+  service.settleMarket();
 
   const heartbeat = setInterval(() => {
     const playersToTouch: string[] = [];
@@ -614,7 +678,7 @@ async function main() {
         continue;
       }
       context.alive = false;
-      playersToTouch.push(context.playerId);
+      if (context.clientKind !== "npc-trade-agent") playersToTouch.push(context.playerId);
       socket.ping();
     }
     for (const playerId of new Set(playersToTouch)) {
@@ -645,7 +709,15 @@ async function main() {
     }
   }, 60_000);
 
+  const marketClock = setInterval(() => {
+    const affected = service.settleMarket();
+    tradeService.recoverReadyDecisions();
+    if (affected.length > 0) refreshPlayers(affected);
+    broadcast({ type: "market.updated" });
+  }, 60_000);
+
   const actionClock = setInterval(() => {
+    for (const playerId of new Set(onlinePlayerIds())) service.getLawState(playerId);
     for (const playerId of new Set(onlinePlayerIds())) {
       if (service.settleDueActions(playerId) <= 0) continue;
       for (const [socket, context] of sockets) {
@@ -655,6 +727,11 @@ async function main() {
     }
     const combatPlayers = service.settleDueCombats();
     if (combatPlayers.length > 0) refreshPlayers(combatPlayers);
+    const respawnedNpcs = service.settleDueNpcRespawns();
+    if (respawnedNpcs.length > 0) {
+      refreshPlayers(respawnedNpcs);
+      broadcastPresence();
+    }
   }, 1_000);
 
   httpServer.listen(port, hostname, () => {
@@ -667,6 +744,7 @@ async function main() {
     shuttingDown = true;
     clearInterval(heartbeat);
     clearInterval(worldClock);
+    clearInterval(marketClock);
     clearInterval(actionClock);
     for (const socket of sockets.keys()) socket.close(1001, "服务器正在关闭");
     wss.close();

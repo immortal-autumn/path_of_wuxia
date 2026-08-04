@@ -458,7 +458,7 @@ describe("GameService", () => {
     market = service.getMarketSnapshot(first.id);
     expect(market.positions.find((position) => position.contractId === future.id)?.quantity).toBe(1);
     expect(market.orders.find((order) => order.contractId === future.id)?.remainingQuantity).toBe(1);
-    service.cancelMarketOrder(first.id, market.orders.find((order) => order.contractId === future.id)!.id);
+    service.cancelMarketOrder(first.id, "cancel-market-future", market.orders.find((order) => order.contractId === future.id)!.id);
     expect(service.getMarketSnapshot(first.id).orders.some((order) => order.contractId === future.id)).toBe(false);
 
     market = service.getMarketSnapshot(first.id);

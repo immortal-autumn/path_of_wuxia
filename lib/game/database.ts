@@ -7,7 +7,7 @@ import { seedNpcCity } from "./npc-catalog";
 
 export type GameDatabase = DatabaseSync;
 
-export const MAP_SCHEMA_VERSION = 12;
+export const MAP_SCHEMA_VERSION = 13;
 
 export function openGameDatabase(databasePath = process.env.DATABASE_PATH ?? resolve("data/wuxia.db")) {
   if (databasePath !== ":memory:") mkdirSync(dirname(databasePath), { recursive: true });
@@ -417,7 +417,8 @@ function migrate(db: GameDatabase) {
     );
     CREATE TABLE IF NOT EXISTS agent_credentials(
       token_hash TEXT PRIMARY KEY,player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
-      label TEXT NOT NULL,created_at TEXT NOT NULL,expires_at TEXT,revoked_at TEXT
+      label TEXT NOT NULL,scope TEXT NOT NULL DEFAULT 'gameplay' CHECK(scope IN ('gameplay','market-trade')),
+      created_at TEXT NOT NULL,expires_at TEXT,revoked_at TEXT
     );
     CREATE TABLE IF NOT EXISTS npc_assignments(
       player_id TEXT PRIMARY KEY REFERENCES npc_profiles(player_id) ON DELETE CASCADE,
@@ -492,6 +493,58 @@ function migrate(db: GameDatabase) {
       relationship_kind TEXT NOT NULL,public_note TEXT NOT NULL,seed_revision INTEGER NOT NULL,
       PRIMARY KEY(npc_a_id,npc_b_id,relationship_kind),CHECK(npc_a_id<npc_b_id)
     );
+    CREATE TABLE IF NOT EXISTS market_order_cancellations(
+      id TEXT PRIMARY KEY,player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+      request_id TEXT NOT NULL,order_id TEXT NOT NULL REFERENCES market_orders(id),payload_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL,UNIQUE(player_id,request_id)
+    );
+    CREATE TABLE IF NOT EXISTS market_account_ledger(
+      id TEXT PRIMARY KEY,player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL,delta_debt_wen INTEGER NOT NULL,debt_after_wen INTEGER NOT NULL CHECK(debt_after_wen>=0),
+      reference_type TEXT NOT NULL,reference_id TEXT NOT NULL,created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS npc_trade_strategies(
+      id TEXT PRIMARY KEY,player_id TEXT NOT NULL REFERENCES npc_profiles(player_id) ON DELETE CASCADE,
+      version INTEGER NOT NULL CHECK(version>0),schema_version INTEGER NOT NULL DEFAULT 1,
+      source TEXT NOT NULL CHECK(source IN ('builtin','http')),strategy_json TEXT NOT NULL,
+      strategy_hash TEXT NOT NULL,active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+      created_at TEXT NOT NULL,retired_at TEXT,UNIQUE(player_id,version)
+    );
+    CREATE TABLE IF NOT EXISTS npc_trade_decisions(
+      id TEXT PRIMARY KEY,player_id TEXT NOT NULL REFERENCES npc_profiles(player_id) ON DELETE CASCADE,
+      sequence INTEGER NOT NULL CHECK(sequence>0),cycle_key TEXT NOT NULL,
+      strategy_id TEXT NOT NULL REFERENCES npc_trade_strategies(id),strategy_hash TEXT NOT NULL,
+      input_snapshot_json TEXT NOT NULL,input_snapshot_hash TEXT NOT NULL,rng_seed TEXT NOT NULL,
+      output_json TEXT,output_hash TEXT,request_id TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL CHECK(status IN ('pending','ready','executed','skipped','rejected')),
+      error_text TEXT,created_at TEXT NOT NULL,decided_at TEXT,executed_at TEXT,
+      UNIQUE(player_id,sequence),UNIQUE(player_id,cycle_key)
+    );
+    CREATE TABLE IF NOT EXISTS player_law_state(
+      player_id TEXT PRIMARY KEY REFERENCES players(id) ON DELETE CASCADE,
+      wanted_points INTEGER NOT NULL DEFAULT 0 CHECK(wanted_points BETWEEN 0 AND 9999),
+      decay_anchor_at TEXT NOT NULL,last_crime_at TEXT,updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS law_incidents(
+      id TEXT PRIMARY KEY,actor_player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+      victim_player_id TEXT REFERENCES players(id) ON DELETE SET NULL,
+      offense TEXT NOT NULL CHECK(offense IN ('assault','defeat','robbery')),
+      points_delta INTEGER NOT NULL CHECK(points_delta>0),location_id TEXT NOT NULL REFERENCES locations(id),
+      reference_type TEXT NOT NULL CHECK(reference_type IN ('combat','loot')),reference_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,UNIQUE(actor_player_id,offense,reference_type,reference_id)
+    );
+    CREATE TABLE IF NOT EXISTS law_settlements(
+      id TEXT PRIMARY KEY,player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+      request_id TEXT NOT NULL,wanted_points_cleared INTEGER NOT NULL CHECK(wanted_points_cleared>0),
+      fine_wen INTEGER NOT NULL CHECK(fine_wen>0),location_id TEXT NOT NULL REFERENCES locations(id),
+      created_at TEXT NOT NULL,UNIQUE(player_id,request_id)
+    );
+    CREATE TABLE IF NOT EXISTS npc_respawn_jobs(
+      id TEXT PRIMARY KEY,npc_player_id TEXT NOT NULL REFERENCES npc_profiles(player_id) ON DELETE CASCADE,
+      combat_id TEXT NOT NULL REFERENCES combat_sessions(id),destination_location_id TEXT NOT NULL REFERENCES locations(id),
+      due_at TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('scheduled','completed','cancelled')),
+      created_at TEXT NOT NULL,completed_at TEXT,UNIQUE(npc_player_id,combat_id)
+    );
   `);
 
   const previousVersion = (db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number | null } | undefined)?.version ?? 0;
@@ -534,6 +587,7 @@ function migrate(db: GameDatabase) {
   addColumn(db, "npc_schedule_entries", "weekday_mask INTEGER NOT NULL DEFAULT 127");
   addColumn(db, "npc_dialogue_topics", "minimum_standing INTEGER NOT NULL DEFAULT -100");
   addColumn(db, "npc_commission_templates", "repeat_cooldown_seconds INTEGER NOT NULL DEFAULT 86400");
+  addColumn(db, "agent_credentials", "scope TEXT NOT NULL DEFAULT 'gameplay'");
 
   if (previousVersion < 2) db.exec("UPDATE routes SET is_active=0; UPDATE locations SET is_active=0;");
   if (previousVersion < 3) {
@@ -739,6 +793,12 @@ function migrate(db: GameDatabase) {
     CREATE INDEX IF NOT EXISTS idx_npc_dialogue_history ON npc_dialogue_history(player_id,npc_id,created_at);
     CREATE INDEX IF NOT EXISTS idx_npc_standing_events ON npc_standing_events(player_id,npc_id,created_at);
     CREATE INDEX IF NOT EXISTS idx_player_commissions ON player_commissions(player_id,status,due_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_credentials_scope ON agent_credentials(player_id,scope,label);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_npc_trade_strategy_active ON npc_trade_strategies(player_id) WHERE active=1;
+    CREATE INDEX IF NOT EXISTS idx_npc_trade_decision_status ON npc_trade_decisions(status,created_at,id);
+    CREATE INDEX IF NOT EXISTS idx_market_account_ledger_player ON market_account_ledger(player_id,created_at,id);
+    CREATE INDEX IF NOT EXISTS idx_law_incidents_actor ON law_incidents(actor_player_id,created_at DESC,id);
+    CREATE INDEX IF NOT EXISTS idx_npc_respawn_due ON npc_respawn_jobs(status,due_at,npc_player_id);
   `);
   db.prepare("INSERT OR REPLACE INTO schema_migrations(version,applied_at) VALUES (?,?)").run(MAP_SCHEMA_VERSION, now);
 }

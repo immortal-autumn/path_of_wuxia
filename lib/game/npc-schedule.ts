@@ -7,6 +7,7 @@ export type NpcScheduleDirective = {
 } & (
   | { kind: "move"; locationId: string }
   | { kind: "action"; actionId: string }
+  | { kind: "combat"; targetPlayerId: string }
   | { kind: "hold"; reason: "no-schedule" | "invalid-target" | "unreachable" | "at-target" }
 );
 
@@ -200,4 +201,45 @@ export function resolveNpcScheduleDirective(db: DatabaseSync, playerId: string, 
   return actionId
     ? { ...common, kind: "action", actionId }
     : { ...common, kind: "hold", reason: "at-target" };
+}
+
+export function resolveNpcAgentDirective(
+  db: DatabaseSync,
+  playerId: string,
+  onlinePlayerIds: string[],
+  at = new Date(),
+): NpcScheduleDirective {
+  const assignment = db.prepare("SELECT cohort FROM npc_assignments WHERE player_id=?")
+    .get(playerId) as { cohort: string } | undefined;
+  if (assignment?.cohort !== "constable" || onlinePlayerIds.length === 0) {
+    return resolveNpcScheduleDirective(db, playerId, at);
+  }
+  const npc = db.prepare("SELECT current_location FROM players WHERE id=? AND hp>0").get(playerId) as {
+    current_location: string;
+  } | undefined;
+  if (!npc) return resolveNpcScheduleDirective(db, playerId, at);
+  const placeholders = onlinePlayerIds.map(() => "?").join(",");
+  const targets = db.prepare(`
+    SELECT player.id,player.current_location,law.wanted_points
+    FROM players player JOIN player_law_state law ON law.player_id=player.id
+    JOIN locations location ON location.id=player.current_location AND location.is_active=1
+    WHERE player.id IN (${placeholders}) AND player.controller_kind='human' AND player.hp>0
+      AND law.wanted_points>=50 AND (location.region_id='song' OR location.layer_id LIKE 'kaifeng-%')
+    ORDER BY CASE WHEN player.current_location=? THEN 0 ELSE 1 END,law.wanted_points DESC,player.id
+  `).all(...onlinePlayerIds, npc.current_location) as Array<{
+    id: string; current_location: string; wanted_points: number;
+  }>;
+  for (const target of targets) {
+    const common = {
+      scheduleEntryId: null,
+      activity: "追缉通缉者",
+      targetLocationId: target.current_location,
+    };
+    if (target.current_location === npc.current_location) {
+      return { ...common, kind: "combat", targetPlayerId: target.id };
+    }
+    const locationId = nextLegalNpcScheduleHop(db, npc.current_location, target.current_location);
+    if (locationId) return { ...common, kind: "move", locationId };
+  }
+  return resolveNpcScheduleDirective(db, playerId, at);
 }
