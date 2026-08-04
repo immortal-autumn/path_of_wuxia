@@ -113,12 +113,25 @@ export function applyWorldSeed(db: DatabaseSync): WorldSeedReport {
     ON CONFLICT(location_id,direction) DO UPDATE SET route_id=excluded.route_id,target_location=excluded.target_location
   `);
   const desiredRouteIds = new Set(seed.routes.map((route) => route.id));
-  const previousSeedRoutes = db.prepare("SELECT rowid,id FROM routes WHERE seed_revision>0 AND seed_revision<?").all(WORLD_SEED_REVISION) as Array<{ rowid: number; id: string | null }>;
+  const desiredRoutesById = new Map(seed.routes.map((route) => [route.id, route]));
+  const previousSeedRoutes = db.prepare(`
+    SELECT rowid,id,from_location,to_location FROM routes
+    WHERE seed_revision>0 AND seed_revision<?
+  `).all(WORLD_SEED_REVISION) as Array<{ rowid: number; id: string | null; from_location: string; to_location: string }>;
   const clearSlots = db.prepare("DELETE FROM location_direction_slots WHERE route_id=?");
   const deactivateRoute = db.prepare("UPDATE routes SET is_active=0 WHERE rowid=?");
+  const deleteReplacedRoute = db.prepare("DELETE FROM routes WHERE rowid=?");
   for (const route of previousSeedRoutes) {
     if (route.id) clearSlots.run(route.id);
-    if (!route.id || !desiredRouteIds.has(route.id)) deactivateRoute.run(route.rowid);
+    const desiredRoute = route.id ? desiredRoutesById.get(route.id) : undefined;
+    if (desiredRoute && (desiredRoute.fromLocation !== route.from_location || desiredRoute.toLocation !== route.to_location)) {
+      // Route IDs are globally unique even for inactive rows. A seed upgrade
+      // that keeps an ID but changes one endpoint must replace the obsolete
+      // row before inserting the new primary-key pair.
+      deleteReplacedRoute.run(route.rowid);
+    } else if (!route.id || !desiredRouteIds.has(route.id)) {
+      deactivateRoute.run(route.rowid);
+    }
   }
   for (const route of seed.routes) {
     routeInsert.run(

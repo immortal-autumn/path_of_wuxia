@@ -2,8 +2,8 @@ import { directionBetween, OPPOSITE_DIRECTION } from "./map";
 import { PALWORLD_MARKER_COORDINATES } from "./palworld-coordinates";
 import type { Direction, RouteType, TransitionKind } from "./types";
 
-export const WORLD_SEED_REVISION = 6;
-export const WORLD_SEED_RETRIEVED_AT = "2026-08-03";
+export const WORLD_SEED_REVISION = 8;
+export const WORLD_SEED_RETRIEVED_AT = "2026-08-04";
 
 export type WorldSeedSource = {
   id: string;
@@ -75,31 +75,129 @@ export type WorldSeedData = {
   baseLocationSources: Array<{ locationId: string; sourceId: string; sourceKey: string }>;
 };
 
-const SONG_CIRCUITS = [
-  ["jingji", "京畿路", ["开封府"], [-14, 0]],
-  ["jingdong-east", "京东东路", ["青州", "密州", "沂州", "登州", "莱州", "潍州", "淄州"], [-4, -8]],
-  ["jingdong-west", "京东西路", ["应天府", "兖州", "徐州", "曹州", "郓州", "济州", "单州", "濮州"], [-16, -8]],
-  ["jingxi-south", "京西南路", ["襄州", "邓州", "随州", "金州", "房州", "均州", "郢州", "唐州", "光化军"], [-28, 12]],
-  ["jingxi-north", "京西北路", ["河南府", "颍昌府", "郑州", "滑州", "孟州", "蔡州", "陈州", "颍州", "汝州", "信阳军"], [-27, 0]],
-  ["hebei-east", "河北东路", ["大名府", "开德府", "河间府", "沧州", "冀州", "博州", "棣州", "莫州", "雄州", "霸州", "德州", "滨州", "恩州", "清州", "信安军", "保定军"], [-10, -24]],
-  ["hebei-west", "河北西路", ["真定府", "中山府", "信德府", "庆源府", "相州", "浚州", "怀州", "卫州", "磁州", "深州", "祁州", "保州", "邢州", "赵州"], [-24, -24]],
-  ["hedong", "河东路", ["太原府", "隆德府", "平阳府", "府州", "绛州", "泽州", "代州", "忻州", "汾州", "辽州", "宪州", "岚州", "石州", "隰州", "慈州", "麟州", "火山军", "宁化军", "岢岚军", "保德军"], [-40, -24]],
-  ["yongxing", "永兴军路", ["京兆府", "河中府", "延安府", "庆阳府", "同州", "华州", "耀州", "陕州", "邠州", "宁州", "坊州", "鄜州", "丹州", "环州", "银州", "醴州", "保安军", "定边军", "绥德军", "清平军"], [-52, -10]],
-  ["qinfeng", "秦凤路", ["凤翔府", "秦州", "陇州", "泾州", "渭州", "原州", "熙州", "河州", "岷州", "兰州", "阶州", "成州", "西宁州", "镇戎军", "通远军"], [-68, -10]],
-  ["huainan-east", "淮南东路", ["扬州", "亳州", "宿州", "楚州", "海州", "泰州", "泗州", "滁州", "真州", "通州"], [-10, 15]],
-  ["huainan-west", "淮南西路", ["寿春府", "庐州", "舒州", "蕲州", "和州", "濠州", "光州", "黄州", "六安军", "无为军", "安庆军", "广德军", "镇巢军", "怀远军"], [-22, 15]],
-  ["liangzhe", "两浙路", ["杭州", "越州", "湖州", "婺州", "明州", "温州", "台州", "处州", "衢州", "睦州", "秀州", "常州", "苏州", "润州"], [-5, 28]],
-  ["jiangnan-east", "江南东路", ["江宁府", "宣州", "徽州", "池州", "饶州", "信州", "太平州", "南康军", "广德军东境", "铅山场"], [-17, 29]],
-  ["jiangnan-west", "江南西路", ["洪州", "虔州", "吉州", "袁州", "抚州", "筠州", "兴国军", "临江军", "南安军", "建昌军"], [-30, 30]],
-  ["jinghu-north", "荆湖北路", ["江陵府", "鄂州", "复州", "澧州", "峡州", "归州", "岳州", "辰州", "沅州", "荆门军"], [-36, 21]],
-  ["jinghu-south", "荆湖南路", ["潭州", "衡州", "道州", "永州", "郴州", "邵州", "全州", "桂阳监"], [-37, 36]],
-  ["fujian", "福建路", ["福州", "建州", "泉州", "南剑州", "漳州", "汀州", "邵武军", "兴化军"], [-7, 42]],
-  ["chengdu", "成都府路", ["成都府", "眉州", "蜀州", "彭州", "绵州", "汉州", "嘉州", "邛州", "简州", "黎州", "雅州", "茂州"], [-61, 22]],
-  ["zizhou", "梓州路", ["潼川府", "遂州", "果州", "资州", "普州", "昌州", "叙州", "泸州", "合州", "荣州", "渠州", "长宁军"], [-51, 28]],
-  ["lizhou", "利州路", ["兴元府", "利州", "洋州", "阆州", "剑州", "巴州", "文州", "龙州", "蓬州", "政州"], [-55, 8]],
-  ["kuizhou", "夔州路", ["夔州", "黔州", "施州", "忠州", "万州", "开州", "达州", "涪州", "渝州", "珍州", "南平军", "云安军"], [-43, 28]],
-  ["guangnan-east", "广南东路", ["广州", "韶州", "循州", "潮州", "连州", "梅州", "南雄州", "英州", "贺州", "封州", "端州", "新州", "康州", "惠州"], [-18, 51]],
-  ["guangnan-west", "广南西路", ["桂州", "容州", "邕州", "融州", "象州", "昭州", "梧州", "藤州", "龚州", "浔州", "柳州", "贵州", "宾州", "横州", "化州", "高州", "雷州", "钦州", "廉州", "琼州"], [-34, 53]],
+const KAIFENG_STREETS = [
+  ["north-wall", "东京城·外城北垣牙道", "horizontal", -35, -65, -5, "外城北垣内侧植有榆柳的防城牙道。"],
+  ["wuzhang-river", "东京城·五丈河沿岸", "horizontal", -28, -65, -5, "五丈河运入京东粮斛，两岸仓场与桥市相接。"],
+  ["old-fengqiu", "东京城·旧封丘门大街", "horizontal", -21, -65, -5, "由旧封丘门横贯旧城北部的街道。"],
+  ["palace-cross", "东京城·东西华门街", "horizontal", -7, -65, -5, "横贯大内东西华门与省府宫宇的街道。"],
+  ["bian-river", "东京城·汴河沿岸", "horizontal", 7, -65, -5, "汴河穿城而过，沿岸仓栈、桥市与客店密集。"],
+  ["zhuque", "东京城·朱雀门外大街", "horizontal", 21, -65, -5, "州桥向南经朱雀门延伸的繁华街市。"],
+  ["cai-river", "东京城·蔡河沿岸", "horizontal", 28, -65, -5, "蔡河绕经东京南部，桥亭与民居沿岸展开。"],
+  ["south-wall", "东京城·外城南垣牙道", "horizontal", 35, -65, -5, "外城南垣内侧连接各门与防城库的牙道。"],
+  ["west-wall", "东京城·西城门大街", "vertical", -65, -35, 35, "沿外城西壁连接固子、万胜、西水与新郑诸门。"],
+  ["liangmen", "东京城·梁门大街", "vertical", -55, -35, 35, "从卫州门经梁门通向州西瓦子与南城的街道。"],
+  ["junyi", "东京城·浚仪桥大街", "vertical", -45, -35, 35, "由浚仪桥连接省府、开封府与城南坊巷。"],
+  ["imperial", "东京城·御街", "vertical", -35, -35, 35, "自宣德楼向南越州桥、朱雀门直抵南薰门的御路。"],
+  ["maxing", "东京城·马行街", "vertical", -25, -35, 35, "旧封丘门至城中商肆、医铺与马市最稠密的街道。"],
+  ["panlou", "东京城·潘楼街", "vertical", -15, -35, 35, "连接东角楼、界身巷、土市子与诸瓦子的通衢。"],
+  ["east-water", "东京城·东水门街", "vertical", -5, -35, 35, "沿东城诸门与汴河水门展开的仓栈街道。"],
+] as const;
+
+const KAIFENG_LANDMARKS = [
+  ["gate-weizhou", "卫州门", -55, -35, "东京外城北壁西侧城门。", "卷一/东都外城/卫州门"],
+  ["gate-suanzao", "新酸枣门", -45, -35, "东京外城北壁城门。", "卷一/东都外城/新酸枣门"],
+  ["gate-fengqiu", "封丘门", -35, -35, "北郊御路所经的四正门之一。", "卷一/东都外城/封丘门"],
+  ["gate-chenqiao", "陈桥门", -25, -35, "辽使入京驿路所经的北城门。", "卷一/东都外城/陈桥门"],
+  ["gate-northeast-water", "东北水门", -5, -28, "五丈河由此穿入东京外城。", "卷一/东都外城/东北水门"],
+  ["gate-northwest-water", "西北水门", -65, -28, "金水河由此进入东京外城。", "卷一/东都外城/西北水门"],
+  ["gate-guzi", "固子门", -65, -21, "东京外城西壁北段城门，正名金耀门。", "卷一/东都外城/固子门"],
+  ["gate-wansheng", "万胜门", -65, -7, "东京外城西壁城门。", "卷一/东都外城/万胜门"],
+  ["gate-west-water", "西水门", -65, 7, "汴河上流水门，正名利泽门。", "卷一/东都外城/西水门"],
+  ["gate-xinzheng", "新郑门", -65, 21, "西南御路所经的四正门之一。", "卷一/东都外城/新郑门"],
+  ["gate-newcao", "新曹门", -5, -21, "东京外城东壁北段城门。", "卷一/东都外城/新曹门"],
+  ["gate-newsong", "新宋门", -5, -7, "东城御路所经的四正门之一。", "卷一/东都外城/新宋门"],
+  ["gate-east-water", "东水门", -5, 7, "汴河下流水门，两岸均有行人通道。", "卷一/东都外城/东水门"],
+  ["gate-east-chenzhou", "陈州门", -5, 21, "东京外城东南侧城门。", "卷一/东都外城/陈州门"],
+  ["gate-dailou", "戴楼门", -55, 35, "东京外城西南城门，旁有蔡河水门。", "卷一/东都外城/戴楼门"],
+  ["gate-nanxun", "南薰门", -35, 35, "御街正南所对的四正门之一。", "卷一/东都外城/南薰门"],
+  ["gate-southeast-chenzhou", "陈州门南关", -15, 35, "蔡河东南出城处附近的南关。", "卷一/东都外城/陈州门"],
+  ["gate-southwest-water", "西南蔡河水门", -65, 28, "蔡河由东京西南穿入外城。", "卷一/东都外城/蔡河水门"],
+  ["gate-southeast-water", "东南蔡河水门", -5, 28, "蔡河由东京东南穿出外城。", "卷一/东都外城/蔡河水门"],
+  ["bridge-wuzhang-small", "小横桥", -55, -28, "五丈河入京后的第一座桥。", "卷一/河道/小横桥"],
+  ["bridge-guangbei", "广备桥", -45, -28, "五丈河上的仓运桥梁。", "卷一/河道/广备桥"],
+  ["bridge-caishi", "蔡市桥", -35, -28, "五丈河桥市之一。", "卷一/河道/蔡市桥"],
+  ["bridge-qinghui", "青晖桥", -25, -28, "五丈河上的青晖桥。", "卷一/河道/青晖桥"],
+  ["bridge-ranyuan", "染院桥", -15, -28, "五丈河东段的染院桥。", "卷一/河道/染院桥"],
+  ["palace-west-hua", "大内·西华门", -43, -21, "大内西侧宫门。", "卷一/大内/西华门"],
+  ["palace-right-jiasu", "大内·右嘉肃门", -41, -21, "文德殿西侧内门。", "卷一/大内/右嘉肃门"],
+  ["palace-chongzheng", "大内·崇政殿", -39, -21, "大内后殿之一。", "卷一/大内/崇政殿"],
+  ["palace-wende", "大内·文德殿", -37, -21, "东京常朝所御之殿。", "卷一/大内/文德殿"],
+  ["palace-daqing", "大内·大庆殿", -35, -21, "正朔朝会与大礼斋宿所用正殿。", "卷一/大内/大庆殿"],
+  ["palace-zichen", "大内·紫宸殿", -33, -21, "正朔受朝所用宫殿。", "卷一/大内/紫宸殿"],
+  ["palace-xuanyou", "大内·宣祐门", -31, -21, "连接后殿区域的内门。", "卷一/大内/宣祐门"],
+  ["palace-left-jiasu", "大内·左嘉肃门", -29, -21, "文德殿东侧内门。", "卷一/大内/左嘉肃门"],
+  ["palace-east-hua", "大内·东华门", -27, -21, "宫城东门，门外市井尤盛。", "卷一/大内/东华门"],
+  ["office-jingling-west", "景灵西宫", -47, -7, "御街西侧的宫观。", "卷二/宣德楼前省府宫宇/景灵西宫"],
+  ["office-kaifeng", "开封府", -45, -7, "治理东京城郭与京畿事务的府署。", "卷三/大内西右掖门外街巷/开封府"],
+  ["office-yushitai", "御史台", -43, -7, "尚书省南侧的御史台署。", "卷三/大内西右掖门外街巷/御史台"],
+  ["office-shangshu", "尚书省", -41, -7, "宣德楼前西侧省署。", "卷二/宣德楼前省府宫宇/尚书省"],
+  ["office-taichang", "太常寺", -39, -7, "大晟府以南的礼乐官署。", "卷二/宣德楼前省府宫宇/太常寺"],
+  ["gate-right-ye", "大内·右掖门", -37, -7, "宣德楼西侧入宫门。", "卷一/大内/右掖门"],
+  ["gate-xuande", "大内·宣德门", -35, -7, "大内正门宣德楼，御街由此向南。", "卷一/大内/宣德楼"],
+  ["gate-left-ye", "大内·左掖门", -33, -7, "宣德楼东侧入宫门。", "卷一/大内/左掖门"],
+  ["office-zhongshu", "中书省", -31, -7, "大内东廊省署。", "卷一/大内/中书省"],
+  ["office-shumi", "枢密院", -29, -7, "大内东廊军政官署。", "卷一/大内/枢密院"],
+  ["office-mingtang", "明堂", -27, -7, "左掖门内的明堂区域。", "卷一/大内/明堂"],
+  ["office-jingling-east", "景灵东宫", -23, -7, "御街东侧宫观。", "卷二/宣德楼前省府宫宇/景灵东宫"],
+  ["old-gate-liang", "旧城·梁门", -55, -14, "旧京城西壁北段城门。", "卷一/旧京城/梁门"],
+  ["old-gate-jinshui", "旧城·金水门", -45, -14, "旧京城北壁西侧城门。", "卷一/旧京城/金水门"],
+  ["old-gate-fengqiu", "旧城·旧封丘门", -35, -14, "旧京城北壁主要城门。", "卷一/旧京城/旧封丘门"],
+  ["old-gate-jinglong", "旧城·景龙门", -25, -14, "大内城角宝箓宫前的旧城门。", "卷一/旧京城/景龙门"],
+  ["old-gate-cao", "旧城·旧曹门", -5, -14, "旧京城东壁北段城门。", "卷一/旧京城/旧曹门"],
+  ["old-gate-song", "旧城·旧宋门", -5, 0, "旧京城东壁汴河北岸城门。", "卷一/旧京城/旧宋门"],
+  ["old-gate-zheng", "旧城·旧郑门", -65, 14, "旧京城西壁南段城门。", "卷一/旧京城/旧郑门"],
+  ["old-gate-new", "旧城·新门", -55, 14, "旧京城南壁西侧城门。", "卷一/旧京城/新门"],
+  ["old-gate-zhuque", "旧城·朱雀门", -35, 14, "御街穿越旧京城南壁的正门。", "卷一/旧京城/朱雀门"],
+  ["old-gate-baokang", "旧城·保康门", -15, 14, "旧京城南壁东侧城门。", "卷一/旧京城/保康门"],
+  ["bridge-heng-west", "横桥", -61, 7, "西水门外汴河桥。", "卷一/河道/横桥"],
+  ["bridge-west-water", "西水门便桥", -57, 7, "西水门内外交通桥。", "卷一/河道/西水门便桥"],
+  ["bridge-west-float", "西浮桥", -55, 7, "汴河西段木石桥。", "卷一/河道/西浮桥"],
+  ["bridge-jinliang", "金梁桥", -49, 7, "汴河西段金梁桥。", "卷一/河道/金梁桥"],
+  ["bridge-taishifu", "太师府桥", -45, 7, "蔡太师宅前的汴河桥。", "卷一/河道/太师府桥"],
+  ["bridge-xingguo", "兴国寺桥", -41, 7, "太平兴国寺附近的汴河桥。", "卷一/河道/兴国寺桥"],
+  ["bridge-junyi", "浚仪桥", -37, 7, "御街西侧汴河要桥。", "卷一/河道/浚仪桥"],
+  ["bridge-zhou", "州桥", -35, 7, "正名天汉桥，汴河与御街交汇的东京地标。", "卷一/河道/州桥"],
+  ["bridge-xiangguo", "相国寺桥", -31, 7, "大相国寺附近的汴河平桥。", "卷一/河道/相国寺桥"],
+  ["bridge-upper-earth", "上土桥", -25, 7, "汴河东段土桥。", "卷一/河道/上土桥"],
+  ["bridge-lower-earth", "下土桥", -23, 7, "汴河东段土桥。", "卷一/河道/下土桥"],
+  ["bridge-bian", "便桥", -19, 7, "东水门内的汴河便桥。", "卷一/河道/便桥"],
+  ["bridge-shuncheng", "顺成仓桥", -15, 7, "顺成仓附近的汴河桥。", "卷一/河道/顺成仓桥"],
+  ["bridge-rainbow", "虹桥", -9, 7, "东水门外无柱木构飞桥。", "卷一/河道/虹桥"],
+  ["market-zhou-night", "州桥夜市", -39, 21, "州桥向南直至龙津桥的通宵食市。", "卷二/州桥夜市"],
+  ["academy-taixue", "太学", -37, 21, "朱雀门外御街东侧的太学。", "卷二/朱雀门外街巷/太学"],
+  ["academy-guozijian", "国子监", -35, 21, "太学相邻的中央学府。", "卷二/朱雀门外街巷/国子监"],
+  ["academy-wuxue", "武学", -33, 21, "龙津桥南的武学。", "卷二/朱雀门外街巷/武学"],
+  ["office-exam", "贡院", -31, 21, "南城横街附近的贡院。", "卷二/朱雀门外街巷/贡院"],
+  ["temple-wuyue", "五岳观", -29, 21, "南薰门内街西的大型宫观。", "卷二/朱雀门外街巷/五岳观"],
+  ["market-qingfeng", "清风楼", -47, 21, "大巷口以西的著名酒楼。", "卷二/朱雀门外街巷/清风楼"],
+  ["market-quyuan", "曲院街", -43, 21, "朱雀门街西的酒楼与馆舍街。", "卷二/朱雀门外街巷/曲院街"],
+  ["market-newgate-wazi", "新门瓦子", -41, 21, "朱雀门外西侧瓦子。", "卷二/朱雀门外街巷/新门瓦子"],
+  ["bridge-cai-guan", "观桥", -59, 28, "五岳观后门附近的蔡河桥。", "卷一/河道/观桥"],
+  ["bridge-cai-xuantai", "宣泰桥", -55, 28, "蔡河西段桥梁。", "卷一/河道/宣泰桥"],
+  ["bridge-cai-yunqi", "云骑桥", -51, 28, "蔡河南段桥梁。", "卷一/河道/云骑桥"],
+  ["bridge-cai-heng", "横桥子", -45, 28, "蔡河上的横桥子。", "卷一/河道/横桥子"],
+  ["bridge-cai-high", "高桥", -43, 28, "蔡河上的高桥。", "卷一/河道/高桥"],
+  ["bridge-cai-baokang", "西保康门桥", -39, 28, "西保康门附近的蔡河桥。", "卷一/河道/西保康门桥"],
+  ["bridge-longjin", "龙津桥", -35, 28, "蔡河与御街相交的主要桥梁。", "卷一/河道/龙津桥"],
+  ["bridge-cai-new", "新桥", -31, 28, "蔡河中段的新桥。", "卷一/河道/新桥"],
+  ["bridge-cai-taiping", "太平桥", -25, 28, "蔡河中段桥梁。", "卷一/河道/太平桥"],
+  ["bridge-cai-wheat", "籴麦桥", -23, 28, "蔡河附近粮市所用桥梁。", "卷一/河道/籴麦桥"],
+  ["bridge-cai-first", "第一座桥", -19, 28, "蔡河东段桥梁。", "卷一/河道/第一座桥"],
+  ["bridge-yinan", "宜男桥", -15, 28, "蔡河出城前的桥梁。", "卷一/河道/宜男桥"],
+  ["bridge-four-li", "四里桥", -9, 28, "戴楼门外蔡河桥。", "卷一/河道/四里桥"],
+  ["garden-jinming", "金明池", -65, 0, "东京西郊皇家水上园林与水军教阅之所。", "北宋东京城/金明池"],
+  ["garden-qionglin", "琼林苑", -55, 0, "金明池附近的皇家园苑。", "北宋东京城/琼林苑"],
+  ["garden-genyue", "艮岳", -5, -16, "政和年间营建于东京东北的皇家园林。", "北宋东京城遗址/艮岳"],
+  ["temple-kaibao", "开宝寺", -25, -16, "旧封丘门外斜街的大寺。", "卷三/上清宫/开宝寺"],
+  ["temple-xiangguo", "大相国寺", -15, 3, "每月开放万姓交易的东京名寺。", "卷三/相国寺内万姓交易"],
+  ["market-patlou", "潘楼酒店", -15, -3, "潘楼街北的著名酒楼。", "卷二/东角楼街巷/潘楼酒店"],
+  ["market-tushizi", "土市子", -15, 1, "潘楼东街的十字市，又称竹竿市。", "卷二/潘楼东街巷/土市子"],
+  ["market-sang-wazi", "桑家瓦子", -15, 11, "潘楼街南的大型瓦子。", "卷二/东角楼街巷/桑家瓦子"],
+  ["market-middle-wazi", "中瓦", -15, 15, "拥有多座勾栏的市民娱乐场。", "卷二/东角楼街巷/中瓦"],
+  ["market-inner-wazi", "里瓦", -15, 19, "潘楼街一带的大型瓦子。", "卷二/东角楼街巷/里瓦"],
+  ["market-maxing-medicine", "马行街医铺", -25, -11, "旧封丘门南北密集的医官药铺。", "卷三/马行街北诸医铺"],
+  ["market-boundary-lane", "界身巷", -25, 1, "金银彩帛集中交易的街巷。", "卷二/东角楼街巷/界身巷"],
+  ["market-sweet-lane", "甜水巷", -25, 11, "南食店、客店与馆舍聚集的坊巷。", "卷三/寺东门街巷/甜水巷"],
 ] as const;
 
 const PAL_FAST_TRAVEL = [
@@ -129,19 +227,6 @@ const PAL_CATEGORIES = [
   ["memos", "帕洛斯手记", "漂流者与高塔首领留下的39份手记。"],
 ] as const;
 
-function compactSerpentine(index: number, count: number, centerX: number, centerY: number) {
-  const width = Math.ceil(Math.sqrt(count));
-  const height = Math.ceil(count / width);
-  const row = Math.floor(index / width);
-  const column = index % width;
-  const startX = centerX - Math.floor(width / 2);
-  const startY = centerY - Math.floor(height / 2);
-  return {
-    gridX: row % 2 === 0 ? startX + column : startX + (width - 1 - column),
-    gridY: startY + row,
-  };
-}
-
 function coordinateToken(value: number) {
   return value < 0 ? `m${Math.abs(value)}` : `p${value}`;
 }
@@ -158,19 +243,19 @@ export function buildWorldSeed(): WorldSeedData {
     },
     {
       id: "source-song-wikipedia",
-      title: "维基百科：宋朝行政区划",
-      url: "https://zh.wikipedia.org/w/index.php?title=宋朝行政区划&oldid=39684822",
-      contentVersion: "revid-39684822@2016-04-11T06:09:51Z",
+      title: "维基百科：北宋东京城遗址",
+      url: "https://zh.wikipedia.org/wiki/北宋东京城遗址",
+      contentVersion: "pageid-1637237@2026-08-04",
       retrievedAt: WORLD_SEED_RETRIEVED_AT,
-      notes: "用于约1110年北宋路、府、州、军名录；游戏内驿市节点为便于行走的抽象。",
+      notes: "用于东京开封府三重城郭、宫城、艮岳与金明池等历史结构；坐标为适配八方向行走的相对复原。",
     },
     {
       id: "source-song-map",
-      title: "Wikimedia Commons：北宋行政区划（1123年）（简）",
-      url: "https://commons.wikimedia.org/w/index.php?curid=18369695",
-      contentVersion: "commons-curid-18369695@2012-02-13",
+      title: "维基文库：《东京梦华录》卷一至三",
+      url: "https://zh.wikisource.org/wiki/東京夢華錄",
+      contentVersion: "lastrevid-2503718@2026-05-21",
       retrievedAt: WORLD_SEED_RETRIEVED_AT,
-      notes: "CC BY 3.0，作者玖巧仔；用于二十四路及州府的相对地理布局，不作为现代精确经纬度。",
+      notes: "公有领域史料；用于外城、旧城、大内、御街、四河、桥梁、街巷、市场、寺观与官署名称及相对关系。",
     },
     {
       id: "source-palworld-map",
@@ -183,7 +268,7 @@ export function buildWorldSeed(): WorldSeedData {
   ];
 
   const layers: WorldSeedLayer[] = [
-    { id: "world-root", name: "八方世界", description: "楼门路、大宋与帕洛斯相连的连续大地图。", parentLayerId: null },
+    { id: "world-root", name: "八方世界", description: "楼门路、北宋东京开封府与帕洛斯相连的连续大地图。", parentLayerId: null },
     { id: "home-ground", name: "嬴长嫚与楼夜秋之家", description: "庭院、起居、卧室、书房与修炼空间相连的单层住宅。", parentLayerId: "world-root" },
   ];
   const regions: WorldSeedRegion[] = [
@@ -195,7 +280,7 @@ export function buildWorldSeed(): WorldSeedData {
   const actions: WorldSeedAction[] = [
     { id: "observe-entrance", locationId: "home-entrance", name: "整理衣装", description: "在玄关整理衣装，准备出门。", silverDelta: 0, hpDelta: 0, resultTemplate: "{name}在玄关整理好衣装。" },
     { id: "observe-road", locationId: "loumen-road", name: "观察街道", description: "看看楼门路上来往的人群。", silverDelta: 0, hpDelta: 0, resultTemplate: "{name}站在楼门路上观察四周。" },
-    { id: "observe-song", locationId: "song-gate", name: "眺望大宋", description: "从入口眺望大宋方向。", silverDelta: 0, hpDelta: 0, resultTemplate: "{name}在入口处眺望大宋。" },
+    { id: "observe-song", locationId: "song-gate", name: "眺望东京", description: "从入口眺望北宋东京开封府。", silverDelta: 0, hpDelta: 0, resultTemplate: "{name}在入口处眺望东京城。" },
     { id: "observe-palos", locationId: "palos-gate", name: "眺望帕洛斯", description: "从入口眺望帕洛斯方向。", silverDelta: 0, hpDelta: 0, resultTemplate: "{name}在入口处眺望帕洛斯。" },
   ];
   const baseLocationSources: WorldSeedData["baseLocationSources"] = [];
@@ -308,10 +393,10 @@ export function buildWorldSeed(): WorldSeedData {
   };
   addLocation({ id: "home-entrance", layerId: "home-ground", name: "玄关", description: "嬴长嫚与楼夜秋之家的内外分界。", regionId: "home", gridX: 0, gridY: 0, sourceId: "source-home-design", sourceKey: "home/ground/entrance" });
   addLocation({ id: "home-exterior", layerId: "world-root", name: "嬴长嫚与楼夜秋之家·入口", description: "从楼门路进入住宅的门前。", regionId: "world-home", gridX: 3, gridY: 1, sourceId: "source-home-design", sourceKey: "outside/home-entrance" });
-  addLocation({ id: "loumen-road-west", layerId: "world-root", name: "楼门路", description: "楼门路西段，沿街向西接入大宋官道。", regionId: null, gridX: 2, gridY: 2, sourceId: "source-home-design", sourceKey: "outside/loumen-road/west" });
+  addLocation({ id: "loumen-road-west", layerId: "world-root", name: "楼门路", description: "楼门路西段，沿街向西接入北宋东京开封府。", regionId: null, gridX: 2, gridY: 2, sourceId: "source-home-design", sourceKey: "outside/loumen-road/west" });
   addLocation({ id: "loumen-road", layerId: "world-root", name: "楼门路", description: "住宅门前的楼门路中段。", regionId: null, gridX: 3, gridY: 2, sourceId: "source-home-design", sourceKey: "outside/loumen-road/center" });
   addLocation({ id: "loumen-road-east", layerId: "world-root", name: "楼门路", description: "楼门路东段，沿街向东接入帕洛斯海岸。", regionId: null, gridX: 4, gridY: 2, sourceId: "source-home-design", sourceKey: "outside/loumen-road/east" });
-  addLocation({ id: "song-gate", layerId: "world-root", name: "大宋入口", description: "由楼门路进入大宋连续舆图的入口。", regionId: "song", gridX: 1, gridY: 2, sourceId: "source-song-wikipedia", sourceKey: "song/gate" });
+  addLocation({ id: "song-gate", layerId: "world-root", name: "东京开封府入口", description: "由楼门路进入北宋东京开封府城市路网。", regionId: "song", gridX: 1, gridY: 2, sourceId: "source-song-wikipedia", sourceKey: "东京城/入口" });
   addLocation({ id: "palos-gate", layerId: "world-root", name: "帕洛斯入口", description: "由楼门路进入帕洛斯连续群岛地图的入口。", regionId: "palos", gridX: 5, gridY: 2, sourceId: "source-palworld-map", sourceKey: "palos/gate" });
 
   addTransition("route-home-door-v4", "home-entrance", "home-exterior", "door");
@@ -364,57 +449,72 @@ export function buildWorldSeed(): WorldSeedData {
   });
 
   addLocation({
-    id: "song-overview-entry", layerId: "world-root", name: "大宋东关官道", description: "由楼门路进入北宋二十四路地理舆图的东关。",
-    regionId: "song", gridX: 0, gridY: 2, sourceId: "source-song-wikipedia", sourceKey: "song/overview",
+    id: "song-overview-entry", layerId: "world-root", name: "东京东关驿道", description: "由楼门路抵达东京开封府东关的驿道。",
+    regionId: "song", gridX: 0, gridY: 2, sourceId: "source-song-wikipedia", sourceKey: "东京城/东关驿道",
   });
   addNormal("route-world-song-v3", "song-gate", "song-overview-entry");
-  const songNetworkPoints = ["song-overview-entry"];
-  SONG_CIRCUITS.forEach(([circuitSlug, circuitName, prefectures, anchor]) => {
-    const hubId = `song-hub-${circuitSlug}`;
-    const entryId = `song-entry-${circuitSlug}`;
-    const circuitLocationCount = 2 + prefectures.length * 2;
-    const circuitIds: string[] = [];
-    const addCircuitLocation = (location: Omit<WorldSeedLocation, "layerId" | "regionId" | "sourceId">) => {
-      addLocation({ ...location, layerId: "world-root", regionId: "song", sourceId: "source-song-wikipedia" });
-      const previousId = circuitIds.at(-1);
-      circuitIds.push(location.id);
-      if (previousId) addNormal(`route-song-${circuitSlug}-atlas-${circuitIds.length - 1}-v5`, previousId, location.id);
-    };
-    addCircuitLocation({
-      id: hubId, name: `${circuitName}官道`, description: `${circuitName}在北宋地理舆图上的官道入口。`,
-      ...compactSerpentine(0, circuitLocationCount, anchor[0], anchor[1]), sourceKey: `route/${circuitName}`,
+
+  for (const [slug, name, gridX, gridY, description, sourceKey] of KAIFENG_LANDMARKS) {
+    addLocation({
+      id: `song-landmark-${slug}`, layerId: "world-root", name: `东京城·${name}`, description,
+      regionId: "song", gridX, gridY, sourceId: "source-song-wikipedia", sourceKey,
     });
-    addCircuitLocation({
-      id: entryId, name: `${circuitName}官道`, description: `${circuitName}官道内段，串联所属府、州、军。`,
-      ...compactSerpentine(1, circuitLocationCount, anchor[0], anchor[1]), sourceKey: `route/${circuitName}/entry`,
+  }
+
+  const ensureKaifengStreetCell = (
+    streetId: string,
+    streetName: string,
+    description: string,
+    gridX: number,
+    gridY: number,
+  ) => {
+    const existing = locationIdsByCell.get(cellKey("world-root", gridX, gridY));
+    if (existing) return existing;
+    const id = `song-street-${streetId}-${coordinateToken(gridX)}-${coordinateToken(gridY)}`;
+    addLocation({
+      id, layerId: "world-root", name: streetName, description, regionId: "song", gridX, gridY,
+      sourceId: "source-song-map", sourceKey: `东京梦华录/街路/${streetId}/${gridX}/${gridY}`,
     });
-    songNetworkPoints.push(hubId);
-    prefectures.forEach((prefecture, prefectureIndex) => {
-      const cityId = `song-${circuitSlug}-${prefectureIndex + 1}-seat`;
-      const marketId = `song-${circuitSlug}-${prefectureIndex + 1}-post`;
-      const cityIndex = 2 + prefectureIndex * 2;
-      addCircuitLocation({
-        id: cityId, name: `${circuitName}·${prefecture}治所`, description: `${prefecture}的行政治所。`,
-        ...compactSerpentine(cityIndex, circuitLocationCount, anchor[0], anchor[1]), sourceKey: `${circuitName}/${prefecture}`,
-      });
-      addCircuitLocation({
-        id: marketId, name: `${circuitName}·${prefecture}驿市`, description: `连接${prefecture}治所与邻近州府的驿路市集。`,
-        ...compactSerpentine(cityIndex + 1, circuitLocationCount, anchor[0], anchor[1]), sourceKey: `${circuitName}/${prefecture}/game-post`,
-      });
-    });
-  });
-  addGeographicRoadNetwork({
-    pointIds: songNetworkPoints,
-    roadPrefix: "song-atlas-road",
-    roadName: "大宋官道",
-    description: "依北宋行政舆图连接二十四路的跨路官道。",
-    regionId: "song",
-    sourceId: "source-song-map",
-    sourceKeyPrefix: "atlas-road",
-  });
+    return id;
+  };
+
+  for (const [streetId, streetName, axis, fixed, start, end, description] of KAIFENG_STREETS) {
+    let previousId: string | null = null;
+    let previousX = 0;
+    let previousY = 0;
+    for (let value = start; value <= end; value += 1) {
+      const gridX = axis === "horizontal" ? value : fixed;
+      const gridY = axis === "horizontal" ? fixed : value;
+      const currentId = ensureKaifengStreetCell(streetId, streetName, description, gridX, gridY);
+      if (previousId) {
+        addNormal(
+          `route-kaifeng-${streetId}-${coordinateToken(previousX)}-${coordinateToken(previousY)}-${coordinateToken(gridX)}-${coordinateToken(gridY)}`,
+          previousId,
+          currentId,
+        );
+      }
+      previousId = currentId;
+      previousX = gridX;
+      previousY = gridY;
+    }
+  }
+
+  let previousEntryId = "song-overview-entry";
+  for (let gridX = -1; gridX >= -5; gridX -= 1) {
+    const currentId = ensureKaifengStreetCell(
+      "east-entry",
+      "东京城·东关驿道",
+      "从东关驿亭通往东水门街的入城道路。",
+      gridX,
+      2,
+    );
+    addNormal(`route-kaifeng-east-entry-${Math.abs(gridX)}`, previousEntryId, currentId);
+    previousEntryId = currentId;
+  }
+
   for (const location of locations) {
     if (location.regionId === "song" && location.sourceId === "source-song-wikipedia") {
-      baseLocationSources.push({ locationId: location.id, sourceId: "source-song-map", sourceKey: "atlas-1123-layout" });
+      baseLocationSources.push({ locationId: location.id, sourceId: "source-song-map", sourceKey: "东京梦华录/城市关系" });
     }
   }
 
@@ -470,7 +570,7 @@ export function buildWorldSeed(): WorldSeedData {
     const maxY = Math.max(...members.map((location) => location.gridY)) * 160 + 80;
     regions.push({ id, layerId: "world-root", name, description, x: minX, y: minY, width: maxX - minX, height: maxY - minY });
   };
-  addRegionBounds("song", "大宋", "依1123年北宋行政舆图展开的二十四路地理大区域。");
+  addRegionBounds("song", "大宋·东京开封府", "依《东京梦华录》与北宋东京城遗址资料复原的城门、宫城、御街、河桥与坊市路网。");
   addRegionBounds("palos", "帕洛斯", "依公开地图标记坐标展开的帕洛斯群岛大区域。");
 
   return { sources, layers, regions, locations, routes, actions, baseLocationSources };

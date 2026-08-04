@@ -169,9 +169,16 @@ const HOME_FACILITIES: Record<string, string[]> = {
 
 function facilitiesFor(location: CatalogLocation) {
   const result = new Set(["surroundings", ...(HOME_FACILITIES[location.id] ?? [])]);
-  if (location.name.includes("官道") || location.name === "楼门路" || location.name.includes("道路") || location.name.includes("航路")) result.add("road");
+  if (
+    location.name.includes("官道") || location.name === "楼门路" || location.name.includes("道路")
+    || location.name.includes("航路") || (location.regionId === "song" && ["街", "沿岸", "牙道", "驿道", "桥", "门"].some((part) => location.name.includes(part)))
+  ) result.add("road");
   if (location.name.includes("治所")) result.add("settlement");
-  if (location.name.includes("驿市")) result.add("market");
+  if (location.regionId === "song") result.add("settlement");
+  if (
+    location.name.includes("驿市")
+    || (location.regionId === "song" && ["市", "瓦子", "行", "酒店", "相国寺", "甜水巷", "清风楼"].some((part) => location.name.includes(part)))
+  ) result.add("market");
   if (location.regionId === "palos") result.add("wilderness");
   if (location.id.includes("dungeon")) result.add("dungeon");
   if (location.id.includes("tower")) result.add("tower");

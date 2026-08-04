@@ -65,8 +65,8 @@ export function validateWorldMap(db: DatabaseSync): MapValidationReport {
     if (!layerIds.has(layerId)) errors.push(`标准地图层 ${layerId} 不存在或未启用。`);
   }
   const publicLocationsOutsideOverworld = db.prepare(`
-    SELECT l.id,l.layer_id FROM locations l JOIN location_sources s ON s.location_id=l.id
-    WHERE l.is_active=1 AND s.source_id IN ('source-song-wikipedia','source-palworld-map') AND l.layer_id<>'world-root'
+    SELECT l.id,l.layer_id FROM locations l
+    WHERE l.is_active=1 AND l.region_id IN ('song','palos') AND l.layer_id<>'world-root'
     ORDER BY l.id
   `).all() as Array<{ id: string; layer_id: string }>;
   if (publicLocationsOutsideOverworld.length > 0) {
@@ -172,13 +172,13 @@ export function validateWorldMap(db: DatabaseSync): MapValidationReport {
     locations: allLocations.length,
     routes: routes.length,
     sourcedLocations: scalar("SELECT COUNT(DISTINCT s.location_id) AS count FROM location_sources s JOIN locations l ON l.id=s.location_id AND l.is_active=1"),
-    songLocations: scalar("SELECT COUNT(DISTINCT s.location_id) AS count FROM location_sources s JOIN locations l ON l.id=s.location_id AND l.is_active=1 WHERE s.source_id='source-song-wikipedia'"),
+    songLocations: scalar("SELECT COUNT(*) AS count FROM locations WHERE is_active=1 AND region_id='song'"),
     palosLocations: scalar("SELECT COUNT(DISTINCT s.location_id) AS count FROM location_sources s JOIN locations l ON l.id=s.location_id AND l.is_active=1 WHERE s.source_id='source-palworld-map'"),
     homeLocations: scalar("SELECT COUNT(DISTINCT s.location_id) AS count FROM location_sources s JOIN locations l ON l.id=s.location_id AND l.is_active=1 WHERE s.source_id='source-home-design'"),
     overworldLocations: scalar("SELECT COUNT(*) AS count FROM locations WHERE is_active=1 AND layer_id='world-root'"),
     reachableLocations: reachable.size,
   };
-  if (counts.songLocations < 250) errors.push(`北宋来源地点只有 ${counts.songLocations} 个，至少需要250个。`);
+  if (counts.songLocations < 500) errors.push(`东京开封府地点只有 ${counts.songLocations} 个，至少需要500个。`);
   if (counts.palosLocations < 250) errors.push(`帕洛斯来源地点只有 ${counts.palosLocations} 个，至少需要250个。`);
   if (counts.locations < 500) errors.push(`地图地点总数只有 ${counts.locations} 个，至少需要500个。`);
   const geographicBounds = db.prepare(`
@@ -189,13 +189,49 @@ export function validateWorldMap(db: DatabaseSync): MapValidationReport {
   const songBounds = boundsByRegion.get("song");
   const palosBounds = boundsByRegion.get("palos");
   if (!songBounds || songBounds.max_x - songBounds.min_x < 60 || songBounds.max_y - songBounds.min_y < 70) {
-    errors.push("大宋地图没有按历史舆图展开为足够宽高的地理布局。");
+    errors.push("东京开封府没有展开为足够宽高的历史城市布局。");
   }
   if (!palosBounds || palosBounds.max_x - palosBounds.min_x < 55 || palosBounds.max_y - palosBounds.min_y < 55) {
     errors.push("帕洛斯地图没有按公开坐标展开为足够宽高的群岛布局。");
   }
-  if (scalar("SELECT COUNT(*) AS count FROM locations WHERE is_active=1 AND name='大宋官道'") < 100) {
-    errors.push("大宋地理布局缺少连接二十四路的官道路网。");
+  if (scalar("SELECT COUNT(*) AS count FROM locations WHERE is_active=1 AND region_id='song' AND name LIKE '东京城·%'") < 900) {
+    errors.push("东京开封府缺少足够完整的城门、街路、河桥与坊市节点。");
+  }
+  const requiredKaifengLocations = [
+    "song-landmark-gate-nanxun",
+    "song-landmark-old-gate-zhuque",
+    "song-landmark-bridge-zhou",
+    "song-landmark-gate-xuande",
+    "song-landmark-temple-xiangguo",
+    "song-landmark-garden-jinming",
+    "song-landmark-garden-genyue",
+  ];
+  for (const id of requiredKaifengLocations) {
+    if (!db.prepare("SELECT 1 FROM locations WHERE id=? AND is_active=1 AND region_id='song'").get(id)) {
+      errors.push(`东京开封府关键历史地点 ${id} 不存在。`);
+    }
+  }
+  const kaifengRouteStats = db.prepare(`
+    SELECT COUNT(DISTINCT location_id) AS vertices FROM (
+      SELECT r.id,f.id AS location_id FROM routes r
+      JOIN locations f ON f.id=r.from_location AND f.is_active=1 AND f.region_id='song'
+      JOIN locations t ON t.id=r.to_location AND t.is_active=1 AND t.region_id='song'
+      WHERE r.is_active=1 AND r.route_type='normal'
+      UNION ALL
+      SELECT r.id,t.id AS location_id FROM routes r
+      JOIN locations f ON f.id=r.from_location AND f.is_active=1 AND f.region_id='song'
+      JOIN locations t ON t.id=r.to_location AND t.is_active=1 AND t.region_id='song'
+      WHERE r.is_active=1 AND r.route_type='normal'
+    )
+  `).get() as { vertices: number };
+  const kaifengEdgeCount = scalar(`
+    SELECT COUNT(*) AS count FROM routes r
+    JOIN locations f ON f.id=r.from_location AND f.is_active=1 AND f.region_id='song'
+    JOIN locations t ON t.id=r.to_location AND t.is_active=1 AND t.region_id='song'
+    WHERE r.is_active=1 AND r.route_type='normal'
+  `);
+  if (kaifengEdgeCount - kaifengRouteStats.vertices + 1 < 20) {
+    errors.push("东京开封府道路缺少城郭街区应有的环路结构。");
   }
   if (scalar("SELECT COUNT(*) AS count FROM locations WHERE is_active=1 AND name='帕洛斯道路'") < 100) {
     errors.push("帕洛斯地理布局缺少连接公开地标的道路网。");

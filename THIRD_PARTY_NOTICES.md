@@ -1,11 +1,26 @@
 # Third-party map data notices
 
-## 北宋行政区划（1123年）（简）
+## 北宋东京城遗址
+
+- Source: <https://zh.wikipedia.org/wiki/北宋东京城遗址>
+- Page ID / retrieval: 1637237 / 2026-08-04
+- License: [Creative Commons Attribution-ShareAlike 4.0](https://creativecommons.org/licenses/by-sa/4.0/)
+- Use in this project: the three nested city areas, imperial-city buildings, Genyue and the broader historical context of Northern Song Tokyo. Grid coordinates are a relative game adaptation.
+
+## 《东京梦华录》
+
+- Author: 孟元老 (Southern Song dynasty)
+- Source: <https://zh.wikisource.org/wiki/東京夢華錄>
+- Source revision / retrieval: lastrevid 2503718 / 2026-08-04
+- License: Public domain
+- Use in this project: names and relative relationships for outer/old/imperial city gates, Imperial Street, Bian/Wuzhang/Cai/Gold Water waterways, bridges, government offices, markets, entertainment quarters, temples and gardens. Repeated street and riverbank cells are game abstractions for adjacent eight-direction movement.
+
+## Legacy revision-6 Northern Song atlas
 
 - Author: 玖巧仔
 - Source: <https://commons.wikimedia.org/w/index.php?curid=18369695>
 - License: [Creative Commons Attribution 3.0](https://creativecommons.org/licenses/by/3.0/)
-- Use in this project: relative placement of the Northern Song circuits and prefectures. The game grid and connecting road nodes are adaptations for eight-direction movement.
+- Use in this project: revision 6 used its relative Northern Song circuit placement. Revision 7 replaces those active nodes with Tokyo Kaifeng; upgraded databases retain old circuit rows only as inactive history.
 
 ## fa0311/palworld-map
 

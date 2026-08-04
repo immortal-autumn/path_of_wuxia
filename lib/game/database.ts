@@ -522,11 +522,38 @@ function seed(db: GameDatabase) {
     const now = new Date().toISOString();
     db.prepare(`
       INSERT INTO world_state(id,era,seed,announcement,updated_at)
-      VALUES (1,'北宋大观四年与帕洛斯世界','path-of-wuxia-world-v5','单层住宅之外是一张连续地理大地图：楼门路向西接入北宋二十四路舆图，向东接入帕洛斯群岛坐标图。',?)
+      VALUES (1,'北宋东京开封府与帕洛斯世界','path-of-wuxia-world-v8','单层住宅之外是一张连续大地图：楼门路向西进入北宋东京开封府的城门、御街、河桥与坊市路网，向东接入帕洛斯群岛坐标图。',?)
       ON CONFLICT(id) DO UPDATE SET era=excluded.era,seed=excluded.seed,announcement=excluded.announcement,updated_at=excluded.updated_at
     `).run(now);
 
     applyWorldSeed(db);
+    db.prepare(`
+      DELETE FROM item_reservations WHERE job_id IN (
+        SELECT j.id FROM action_jobs j JOIN players p ON p.id=j.player_id
+        JOIN locations l ON l.id=p.current_location
+        WHERE l.is_active=0 AND l.region_id='song' AND l.seed_revision>0
+          AND j.status IN ('running','queued','paused')
+      )
+    `).run();
+    db.prepare(`
+      UPDATE action_jobs SET status='cancelled',result_text='东京开封府地图重建，旧地点行动已取消。',updated_at=?
+      WHERE player_id IN (
+        SELECT p.id FROM players p JOIN locations l ON l.id=p.current_location
+        WHERE l.is_active=0 AND l.region_id='song' AND l.seed_revision>0
+      ) AND status IN ('running','queued','paused')
+    `).run(now);
+    db.prepare(`
+      UPDATE npc_profiles SET home_location_id='song-gate',updated_at=?
+      WHERE home_location_id IN (
+        SELECT id FROM locations WHERE is_active=0 AND region_id='song' AND seed_revision>0
+      )
+    `).run(now);
+    db.prepare(`
+      UPDATE players SET current_location='song-gate',updated_at=?
+      WHERE current_location IN (
+        SELECT id FROM locations WHERE is_active=0 AND region_id='song' AND seed_revision>0
+      )
+    `).run(now);
     ensureNpcPopulation(db, now);
 
     db.prepare(`

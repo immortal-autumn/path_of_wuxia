@@ -50,6 +50,29 @@ async function moveToId(page: Page, locationId: string, locationName: string) {
   await expect(page.getByRole("status")).toContainText(`已抵达${locationName}`);
 }
 
+async function moveThroughIds(page: Page, locationIds: string[]) {
+  for (const locationId of locationIds) {
+    const destination = page.locator(`[data-location-id="${locationId}"]`);
+    await expect(destination).toHaveClass(/reachable/);
+    await expect(destination).toHaveAttribute("aria-disabled", "false");
+    await destination.click();
+    await expect(destination).toHaveClass(/current/);
+  }
+}
+
+function kaifengBianRiverLocationId(gridX: number) {
+  const landmarks: Record<number, string> = {
+    [-35]: "song-landmark-bridge-zhou",
+    [-31]: "song-landmark-bridge-xiangguo",
+    [-25]: "song-landmark-bridge-upper-earth",
+    [-23]: "song-landmark-bridge-lower-earth",
+    [-19]: "song-landmark-bridge-bian",
+    [-15]: "song-landmark-bridge-shuncheng",
+    [-9]: "song-landmark-bridge-rainbow",
+  };
+  return landmarks[gridX] ?? `song-street-bian-river-m${Math.abs(gridX)}-p7`;
+}
+
 async function transitionTo(page: Page, destinationName: string) {
   await page.getByRole("button", { name: new RegExp(`前往.*${destinationName}|进入.*${destinationName}|传送至.*${destinationName}`) }).click();
   await expect(page.getByRole("status")).toContainText(`已抵达${destinationName}`);
@@ -360,22 +383,43 @@ test.describe("game map", () => {
     await expect(page.getByRole("status")).toContainText("行动已取消");
   });
 
-  test("executes seed actions and crosses the continuous Song and Palos overworld", async ({ page }) => {
+  test("walks the historical Tokyo Kaifeng street, river, bridge, and palace axes", async ({ page }) => {
     await enterWorld(page);
     await performAction(page, "整理衣装");
     await enterOverworld(page);
     await performAction(page, "观察街道");
     await moveToId(page, "loumen-road-west", "楼门路");
-    await moveTo(page, "大宋入口");
-    await performAction(page, "眺望大宋");
-    await moveTo(page, "大宋东关官道");
-    await moveToId(page, "song-atlas-road-m1-p1", "大宋官道");
+    await moveTo(page, "东京开封府入口");
+    await performAction(page, "眺望东京");
+    await moveTo(page, "东京东关驿道");
+    await moveThroughIds(page, [
+      "song-street-east-entry-m1-p2",
+      "song-street-east-entry-m2-p2",
+      "song-street-east-entry-m3-p2",
+      "song-street-east-entry-m4-p2",
+      "song-street-east-water-m5-p2",
+      "song-street-east-water-m5-p3",
+      "song-street-east-water-m5-p4",
+      "song-street-east-water-m5-p5",
+      "song-street-east-water-m5-p6",
+      "song-landmark-gate-east-water",
+      ...Array.from({ length: 30 }, (_, index) => kaifengBianRiverLocationId(-6 - index)),
+      ...Array.from({ length: 13 }, (_, index) => {
+        const gridY = 6 - index;
+        const token = gridY < 0 ? `m${Math.abs(gridY)}` : `p${gridY}`;
+        return `song-street-imperial-m35-${token}`;
+      }),
+      "song-landmark-gate-xuande",
+    ]);
+    await expect(page.locator(".map-node.current")).toContainText("宣德门");
+    await expect(page.getByLabel("地图信息")).toContainText("大宋·东京开封府");
+    await expect(page.getByLabel("下一步可前往地点")).toContainText("御街");
     await expect(page.getByRole("heading", { name: "八方世界 · 局部地图" })).toBeVisible();
+  });
 
-    await moveTo(page, "大宋东关官道");
-    await moveTo(page, "大宋入口");
-    await moveToId(page, "loumen-road-west", "楼门路");
-    await moveToId(page, "loumen-road", "楼门路");
+  test("crosses the continuous Palos overworld from Loumen Road", async ({ page }) => {
+    await enterWorld(page);
+    await enterOverworld(page);
     await moveToId(page, "loumen-road-east", "楼门路");
     await moveTo(page, "帕洛斯入口");
     await performAction(page, "眺望帕洛斯");
