@@ -75,6 +75,7 @@ describe("GameService", () => {
       songLocations: 935,
       palosLocations: 510,
       buildingLocations: 41,
+      fastTravelLocations: 89,
       overworldLocations: 1449,
     });
     expect(validation.counts.songLocations).toBeGreaterThanOrEqual(250);
@@ -97,7 +98,10 @@ describe("GameService", () => {
     expect(service.getTransitions("song-landmark-office-kaifeng")[0]).toMatchObject({ destinationName: "开封府署·府署正门内", transitionKind: "door" });
     expect(service.getTransitions("song-landmark-temple-xiangguo")[0]).toMatchObject({ destinationName: "大相国寺·山门内", transitionKind: "gate" });
     expect(db.prepare("SELECT facility_type FROM location_facilities WHERE location_id='song-landmark-bridge-zhou' AND is_active=1 ORDER BY facility_type").all())
-      .toEqual([{ facility_type: "road" }, { facility_type: "settlement" }, { facility_type: "surroundings" }]);
+      .toEqual([
+        { facility_type: "fast-travel" }, { facility_type: "road" },
+        { facility_type: "settlement" }, { facility_type: "surroundings" },
+      ]);
     expect(db.prepare("SELECT facility_type FROM location_facilities WHERE location_id='song-landmark-market-zhou-night' AND is_active=1 ORDER BY facility_type").all())
       .toEqual([{ facility_type: "market" }, { facility_type: "road" }, { facility_type: "settlement" }, { facility_type: "surroundings" }]);
     expect(db.prepare("SELECT facility_type FROM location_facilities WHERE location_id='kaifeng-panlou-kitchen' AND is_active=1 ORDER BY facility_type").all())
@@ -785,6 +789,33 @@ describe("GameService", () => {
     expect(db.prepare("SELECT COUNT(*) AS count FROM player_visited_locations WHERE player_id=?").get(explorer.id)).toEqual({ count: 3 });
 
     expect(service.getVisitedMap(newcomer.id).locations.map((location) => location.id)).toEqual(["home-entrance"]);
+  });
+
+  it("fast travels only to personally visited hubs while idle", () => {
+    const player = service.createSession().player;
+    expect(service.getVisitedMap(player.id).fastTravelDestinationIds).toEqual(["home-entrance"]);
+    expect(() => service.fastTravel(player.id, "song-gate")).toThrow("只能快速前往亲自到达过的地点");
+
+    service.move(player.id, "home-exterior");
+    service.move(player.id, "loumen-road");
+    service.move(player.id, "loumen-road-west");
+    service.move(player.id, "song-gate");
+    expect(service.getVisitedMap(player.id).fastTravelDestinationIds).toEqual(["home-entrance", "song-gate"]);
+
+    const returned = service.fastTravel(player.id, "home-entrance");
+    expect(returned).toMatchObject({
+      self: { currentLocation: "home-entrance" },
+      event: { eventType: "fast-travel" },
+      message: "快速旅行完成：已抵达玄关",
+    });
+    expect(db.prepare("SELECT kind,from_location,to_location FROM action_logs WHERE player_id=? AND kind='fast-travel'").get(player.id))
+      .toEqual({ kind: "fast-travel", from_location: "song-gate", to_location: "home-entrance" });
+
+    service.move(player.id, "home-hall");
+    service.fastTravel(player.id, "home-entrance");
+    expect(() => service.fastTravel(player.id, "home-hall")).toThrow("不是已解锁的快速旅行枢纽");
+    service.startAction(player.id, "action-observe");
+    expect(() => service.fastTravel(player.id, "song-gate")).toThrow("当前行动尚未完成");
   });
 
   it("keeps the global online count while scoping position payloads to three steps", () => {

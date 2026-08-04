@@ -175,6 +175,7 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("chat.send"), requestId, content: z.string().min(1).max(240) }),
   z.object({ type: z.literal("ping"), requestId }),
   z.object({ type: z.literal("map.visited"), requestId }),
+  z.object({ type: z.literal("travel.fast"), requestId, destinationId: id }),
   z.object({
     type: z.literal("map.viewport.subscribe"), requestId, layerId: id,
     centerChunkX: z.number().int(), centerChunkY: z.number().int(), radius: z.number().int().min(1).max(3), zoom: z.number().min(0.1).max(4),

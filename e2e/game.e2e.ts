@@ -279,11 +279,17 @@ test.describe("game map", () => {
     await dialog.getByLabel("选择足迹地图").selectOption("home-ground");
     await expect(dialog.locator(".visited-map-location")).toHaveCount(2);
     await expect(dialog.locator(".visited-map-route")).toHaveCount(1);
+    await expect(dialog.locator('[data-location-id="home-entrance"]')).toHaveAttribute("data-fast-travel", "true");
+    await expect(dialog.locator('[data-location-id="home-hall"]')).toHaveAttribute("data-fast-travel", "false");
     await dialog.locator('[data-location-id="home-hall"]').click();
     await expect(dialog.getByLabel("足迹地图信息")).toContainText("嬴长嫚与楼夜秋之家·门厅");
     await expect(dialog.getByLabel("足迹地图信息")).toContainText("(0, 1)");
-    await dialog.getByRole("button", { name: "关闭足迹地图" }).click();
+    await expect(dialog.getByLabel("快速旅行目的地").locator("option")).toHaveCount(2);
+    await dialog.getByLabel("快速旅行目的地").selectOption("home-entrance");
+    await dialog.getByRole("button", { name: "快速前往" }).click();
     await expect(dialog).toBeHidden();
+    await expect(page.getByRole("status")).toContainText("快速旅行完成：已抵达玄关");
+    await expect(page.locator('[data-location-id="home-entrance"]')).toHaveClass(/current/);
   });
 
   test("runs and reorders the real-time action queue while showing living needs", async ({ page }) => {
@@ -498,7 +504,10 @@ test.describe("map editor", () => {
       node.scrollWidth <= node.clientWidth && node.scrollHeight <= node.clientHeight
     )))).toBe(true);
     await expect(page.getByLabel("画布信息")).toContainText("当前地图八方世界");
-    await expect(page.getByLabel("当前地图").locator("option")).toHaveCount(2);
+    await expect(page.getByLabel("当前地图").locator("option")).toHaveCount(7);
+    await expect(page.getByLabel("当前地图")).toContainText("大内宫城·一层平面");
+    await expect(page.getByLabel("当前地图")).toContainText("开封府署·一层平面");
+    await expect(page.getByLabel("当前地图")).toContainText("大相国寺·一层平面");
     await expect(page.locator(".editor-location-name").filter({ hasText: "住宅入口" })).toHaveCount(1);
     await expect(page.locator(".editor-location-name").filter({ hasText: "楼门路" })).toHaveCount(3);
     expect(await page.locator(".editor-location-name").allTextContents()).not.toContain("嬴长嫚与楼夜秋之家·入口");

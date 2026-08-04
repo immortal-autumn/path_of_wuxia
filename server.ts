@@ -295,6 +295,15 @@ async function main() {
           return;
         }
 
+        if (command.type === "travel.fast") {
+          const result = service.fastTravel(context.playerId, command.destinationId);
+          broadcast({ type: "world.event", event: result.event });
+          sendSnapshot(socket, context);
+          broadcastPresence();
+          send(socket, { type: "ack", requestId: command.requestId, message: result.message });
+          return;
+        }
+
         if (command.type === "skill.use") {
           const result = service.useActiveSkill(context.playerId, command.skillId);
           if (result.event) broadcast({ type: "world.event", event: result.event });

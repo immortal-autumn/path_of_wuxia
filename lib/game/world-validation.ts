@@ -17,6 +17,7 @@ export type MapValidationReport = {
     palosLocations: number;
     homeLocations: number;
     buildingLocations: number;
+    fastTravelLocations: number;
     overworldLocations: number;
     reachableLocations: number;
   };
@@ -177,6 +178,7 @@ export function validateWorldMap(db: DatabaseSync): MapValidationReport {
     palosLocations: scalar("SELECT COUNT(DISTINCT s.location_id) AS count FROM location_sources s JOIN locations l ON l.id=s.location_id AND l.is_active=1 WHERE s.source_id='source-palworld-map'"),
     homeLocations: scalar("SELECT COUNT(DISTINCT s.location_id) AS count FROM location_sources s JOIN locations l ON l.id=s.location_id AND l.is_active=1 WHERE s.source_id='source-home-design'"),
     buildingLocations: scalar("SELECT COUNT(*) AS count FROM locations WHERE is_active=1 AND layer_id LIKE 'kaifeng-%-ground'"),
+    fastTravelLocations: scalar("SELECT COUNT(*) AS count FROM location_facilities WHERE is_active=1 AND facility_type='fast-travel'"),
     overworldLocations: scalar("SELECT COUNT(*) AS count FROM locations WHERE is_active=1 AND layer_id='world-root'"),
     reachableLocations: reachable.size,
   };
@@ -184,6 +186,7 @@ export function validateWorldMap(db: DatabaseSync): MapValidationReport {
   if (counts.palosLocations < 250) errors.push(`帕洛斯来源地点只有 ${counts.palosLocations} 个，至少需要250个。`);
   if (counts.locations < 500) errors.push(`地图地点总数只有 ${counts.locations} 个，至少需要500个。`);
   if (counts.buildingLocations < 41) errors.push(`东京开封府五座可进入建筑只有 ${counts.buildingLocations} 个室内地点，应至少有41个。`);
+  if (counts.fastTravelLocations < 70) errors.push(`世界只有 ${counts.fastTravelLocations} 个快速旅行枢纽，应至少有70个。`);
   const geographicBounds = db.prepare(`
     SELECT region_id,MIN(grid_x) AS min_x,MAX(grid_x) AS max_x,MIN(grid_y) AS min_y,MAX(grid_y) AS max_y
     FROM locations WHERE is_active=1 AND region_id IN ('song','palos') GROUP BY region_id
@@ -224,6 +227,14 @@ export function validateWorldMap(db: DatabaseSync): MapValidationReport {
   for (const id of requiredBuildingRoutes) {
     if (!db.prepare("SELECT 1 FROM routes WHERE id=? AND is_active=1 AND route_type='transition'").get(id)) {
       errors.push(`东京开封府建筑入口 ${id} 不存在。`);
+    }
+  }
+  for (const id of ["home-entrance", "song-landmark-bridge-zhou", "palos-fasttravel-1001"]) {
+    if (!db.prepare(`
+      SELECT 1 FROM location_facilities
+      WHERE location_id=? AND facility_type='fast-travel' AND is_active=1
+    `).get(id)) {
+      errors.push(`关键快速旅行枢纽 ${id} 未启用。`);
     }
   }
   const kaifengRouteStats = db.prepare(`

@@ -490,14 +490,18 @@ function VisitedMapDialog({
   loading,
   layerId,
   currentLocationId,
+  pending,
   onLayerChange,
+  onFastTravel,
   onClose,
 }: {
   map: VisitedMap | null;
   loading: boolean;
   layerId: string;
   currentLocationId: string;
+  pending: boolean;
   onLayerChange: (layerId: string) => void;
+  onFastTravel: (locationId: string) => void;
   onClose: () => void;
 }) {
   const [inspectedLocationId, setInspectedLocationId] = useState<string | null>(null);
@@ -506,12 +510,25 @@ function VisitedMapDialog({
     [layerId, map],
   );
   const locationMap = useMemo(() => new Map(locations.map((location) => [location.id, location])), [locations]);
+  const fastTravelDestinationIds = useMemo(
+    () => new Set(map?.fastTravelDestinationIds ?? []),
+    [map],
+  );
+  const fastTravelLocations = useMemo(
+    () => locations
+      .filter((location) => fastTravelDestinationIds.has(location.id))
+      .sort((left, right) => left.name.localeCompare(right.name, "zh-CN")),
+    [fastTravelDestinationIds, locations],
+  );
   const routes = useMemo(
     () => map?.routes.filter((route) => locationMap.has(route.fromLocation) && locationMap.has(route.toLocation)) ?? [],
     [locationMap, map],
   );
   const layer = map?.layers.find((item) => item.id === layerId) ?? null;
   const inspectedLocation = inspectedLocationId ? locationMap.get(inspectedLocationId) ?? null : null;
+  const selectedFastTravelLocation = inspectedLocation && fastTravelDestinationIds.has(inspectedLocation.id)
+    ? inspectedLocation
+    : null;
   const viewBox = useMemo(() => {
     if (locations.length === 0) return "-260 -160 520 320";
     const minX = Math.min(...locations.map((location) => location.x)) - 90;
@@ -559,6 +576,27 @@ function VisitedMapDialog({
                   {map.layers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
                 </select>
               </label>
+              <label>快速旅行
+                <select
+                  aria-label="快速旅行目的地"
+                  value={selectedFastTravelLocation?.id ?? ""}
+                  onChange={(event) => setInspectedLocationId(event.target.value || null)}
+                  disabled={fastTravelLocations.length === 0 || pending}
+                >
+                  <option value="">选择已解锁枢纽</option>
+                  {fastTravelLocations.map((location) => (
+                    <option key={location.id} value={location.id}>{location.name}</option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                className="visited-fast-travel-button"
+                disabled={!selectedFastTravelLocation || selectedFastTravelLocation.id === currentLocationId || pending}
+                onClick={() => selectedFastTravelLocation && onFastTravel(selectedFastTravelLocation.id)}
+              >
+                {selectedFastTravelLocation?.id === currentLocationId ? "当前位置" : "快速前往"}
+              </button>
               <span>全部足迹 <strong>{map.locations.length}</strong> 处</span>
               <span>本图 <strong>{locations.length}</strong> 处</span>
               <span className="visited-map-inspection">
@@ -577,15 +615,17 @@ function VisitedMapDialog({
                 })}
                 {locations.map((location) => {
                   const current = location.id === currentLocationId;
+                  const fastTravel = fastTravelDestinationIds.has(location.id);
                   return (
                     <g
                       key={location.id}
-                      className={`visited-map-location ${current ? "current" : ""}`}
+                      className={`visited-map-location ${fastTravel ? "fast-travel" : ""} ${current ? "current" : ""}`}
                       data-location-id={location.id}
+                      data-fast-travel={fastTravel ? "true" : "false"}
                       transform={`translate(${location.x} ${location.y})`}
                       role="button"
                       tabIndex={0}
-                      aria-label={`${location.name}，网格 (${location.gridX}, ${location.gridY})${current ? "，当前位置" : ""}`}
+                      aria-label={`${location.name}，网格 (${location.gridX}, ${location.gridY})${fastTravel ? "，已解锁快速旅行" : ""}${current ? "，当前位置" : ""}`}
                       onClick={() => setInspectedLocationId(location.id)}
                       onFocus={() => setInspectedLocationId(location.id)}
                       onKeyDown={(event) => {
@@ -1584,7 +1624,11 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           loading={visitedMapLoading}
           layerId={visitedLayerId}
           currentLocationId={snapshot.self.currentLocation}
+          pending={pending !== null || connection !== "online" || snapshot.combat !== null || snapshot.self.defeated}
           onLayerChange={setVisitedLayerId}
+          onFastTravel={(destinationId) => {
+            if (sendCommand({ type: "travel.fast", destinationId }, "fast-travel")) setVisitedMapOpen(false);
+          }}
           onClose={() => setVisitedMapOpen(false)}
         />
       )}

@@ -175,8 +175,26 @@ const KAIFENG_INTERIOR_FACILITIES: Record<string, string[]> = {
   "kaifeng-panlou-ground": ["settlement", "market", "social"],
 };
 
+function isFastTravelHub(location: CatalogLocation) {
+  return [
+    "home-entrance",
+    "song-gate",
+    "song-overview-entry",
+    "song-landmark-bridge-zhou",
+    "song-landmark-office-kaifeng",
+    "song-landmark-temple-xiangguo",
+    "song-landmark-academy-guozijian",
+    "song-landmark-market-patlou",
+    "palos-gate",
+    "palos-overview-entry",
+  ].includes(location.id)
+    || location.id.startsWith("song-landmark-gate-")
+    || location.id.startsWith("palos-fasttravel-");
+}
+
 function facilitiesFor(location: CatalogLocation) {
   const result = new Set(["surroundings", ...(HOME_FACILITIES[location.id] ?? [])]);
+  if (isFastTravelHub(location)) result.add("fast-travel");
   const interiorPrefix = Object.keys(KAIFENG_INTERIOR_FACILITIES).find((prefix) => location.id.startsWith(prefix.replace("-ground", "-")));
   if (interiorPrefix) {
     for (const facility of KAIFENG_INTERIOR_FACILITIES[interiorPrefix]) result.add(facility);

@@ -80,6 +80,7 @@ export type VisitedMap = {
   layers: MapLayer[];
   locations: Location[];
   routes: MapRoute[];
+  fastTravelDestinationIds: string[];
 };
 
 export type MapLock = { scopeKey: string; sessionId: string; playerId: string; playerName: string; leaseExpiresAt: string };

@@ -972,10 +972,19 @@ export class GameService {
         )
       ORDER BY route.id
     `).all(playerId, playerId) as RouteRow[]).map(mapRoute);
+    const fastTravelDestinationIds = (this.db.prepare(`
+      SELECT location.id FROM locations location
+      JOIN player_visited_locations visited ON visited.location_id=location.id AND visited.player_id=?
+      JOIN location_facilities facility ON facility.location_id=location.id
+        AND facility.facility_type='fast-travel' AND facility.is_active=1
+      WHERE location.is_active=1
+      ORDER BY location.layer_id,location.name,location.id
+    `).all(playerId) as Array<{ id: string }>).map((row) => row.id);
     return {
       layers: this.getLayers().filter((layer) => visitedLayerIds.has(layer.id)),
       locations,
       routes,
+      fastTravelDestinationIds,
     };
   }
 
@@ -2990,6 +2999,43 @@ export class GameService {
       const result = this.db.prepare("INSERT INTO world_events(player_id,event_type,content,created_at) VALUES (?,'move',?,?)").run(playerId, content, at);
       const event = this.db.prepare("SELECT id,player_id,event_type,content,created_at FROM world_events WHERE id=?").get(result.lastInsertRowid) as EventRow;
       return { self: this.getPlayer(playerId), event: mapEvent(event), message: `已抵达${destination.name}` };
+    });
+  }
+
+  fastTravel(playerId: string, destinationId: string): GameMutation {
+    return inTransaction(this.db, () => {
+      this.assertCanTakeGameAction(playerId);
+      this.settleActionQueueInternal(playerId, this.now());
+      if (this.db.prepare("SELECT 1 FROM action_jobs WHERE player_id=? AND status IN ('running','paused')").get(playerId)) {
+        throw new Error("当前行动尚未完成，请先等待或取消行动。");
+      }
+      this.settleCultivationInternal(playerId, this.now(), false);
+      const player = this.getPlayer(playerId);
+      if (destinationId === player.currentLocation) throw new Error("你已经在这里了。");
+      const destination = this.getLocation(destinationId);
+      if (!this.db.prepare("SELECT 1 FROM player_visited_locations WHERE player_id=? AND location_id=?").get(playerId, destinationId)) {
+        throw new Error("只能快速前往亲自到达过的地点。");
+      }
+      if (!this.db.prepare(`
+        SELECT 1 FROM location_facilities
+        WHERE location_id=? AND facility_type='fast-travel' AND is_active=1
+      `).get(destinationId)) {
+        throw new Error("这个地点不是已解锁的快速旅行枢纽。");
+      }
+      const at = this.now().toISOString();
+      const content = `${player.name}循驿路快速前往${destination.region} - ${destination.name}。`;
+      this.db.prepare("UPDATE players SET current_location=?,updated_at=?,last_seen_at=? WHERE id=?").run(destinationId, at, at, playerId);
+      this.db.prepare("UPDATE player_progression SET training_anchor_at=?,updated_at=? WHERE player_id=?")
+        .run(destination.trainingMultiplier > 0 ? at : null, at, playerId);
+      this.db.prepare(`
+        UPDATE player_visited_locations SET last_visited_at=? WHERE player_id=? AND location_id=?
+      `).run(at, playerId, destinationId);
+      this.db.prepare("INSERT INTO action_logs(player_id,kind,from_location,to_location,result_text,created_at) VALUES (?,'fast-travel',?,?,?,?)")
+        .run(playerId, player.currentLocation, destinationId, content, at);
+      const result = this.db.prepare("INSERT INTO world_events(player_id,event_type,content,created_at) VALUES (?,'fast-travel',?,?)")
+        .run(playerId, content, at);
+      const event = this.db.prepare("SELECT id,player_id,event_type,content,created_at FROM world_events WHERE id=?").get(result.lastInsertRowid) as EventRow;
+      return { self: this.getPlayer(playerId), event: mapEvent(event), message: `快速旅行完成：已抵达${destination.name}` };
     });
   }
 
