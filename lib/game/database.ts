@@ -7,7 +7,7 @@ import { seedNpcCity } from "./npc-catalog";
 
 export type GameDatabase = DatabaseSync;
 
-export const MAP_SCHEMA_VERSION = 13;
+export const MAP_SCHEMA_VERSION = 14;
 
 export function openGameDatabase(databasePath = process.env.DATABASE_PATH ?? resolve("data/wuxia.db")) {
   if (databasePath !== ":memory:") mkdirSync(dirname(databasePath), { recursive: true });
@@ -745,6 +745,17 @@ function migrate(db: GameDatabase) {
       ) SELECT 'currency-migration-'||player_id,player_id,cash_wen,cash_wen,
         '旧银两按一银两等于一贯迁入','migration','schema-10',? FROM player_wallets
     `).run(now);
+  }
+  if (previousVersion >= 10 && previousVersion < 14) {
+    const templates = db.prepare("SELECT id,costs_json,outcomes_json FROM action_templates").all() as Array<{
+      id: string; costs_json: string; outcomes_json: string;
+    }>;
+    const updateTemplate = db.prepare("UPDATE action_templates SET costs_json=?,outcomes_json=? WHERE id=?");
+    for (const template of templates) {
+      updateTemplate.run(
+        migrateCurrencyOutcome(template.costs_json), migrateCurrencyOutcome(template.outcomes_json), template.id,
+      );
+    }
   }
 
   db.exec(`

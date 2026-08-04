@@ -926,6 +926,40 @@ describe("GameService", () => {
     }
   });
 
+  it("repairs legacy silver outcomes added to a schema-v13 action catalog", () => {
+    const directory = mkdtempSync(join(tmpdir(), "wuxia-action-currency-repair-"));
+    const databasePath = join(directory, "game.db");
+    try {
+      const before = openGameDatabase(databasePath);
+      before.prepare(`
+        INSERT INTO action_templates(
+          id,name,description,category,target_kind,duration_seconds,requirements_json,check_json,costs_json,
+          outcomes_json,result_template,adult,visibility,cooldown_seconds,version,is_active,seed_revision,created_at,updated_at
+        ) VALUES ('schema-13-silver-action','旧库采买','模拟已升级数据库中遗留的银两字段。','life','self',0,'{}','{}',
+          '{"silverDelta":-2}','{"success":{"silverDelta":3},"failure":{}}','{name}完成旧库采买。',
+          0,'private',0,1,1,0,?,?)
+      `).run(clock.toISOString(), clock.toISOString());
+      before.prepare("DELETE FROM schema_migrations").run();
+      before.prepare("INSERT INTO schema_migrations(version,applied_at) VALUES (13,?)").run(clock.toISOString());
+      before.close();
+
+      let upgraded = openGameDatabase(databasePath);
+      let rule = new GameService(upgraded, () => new Date(clock), () => roll)
+        .getActionRuleSnapshot().actions.find((action) => action.id === "schema-13-silver-action");
+      expect(rule).toMatchObject({ costs: { cashWenDelta: -2_000 }, success: { cashWenDelta: 3_000 } });
+      expect(upgraded.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: 14 });
+      upgraded.close();
+
+      upgraded = openGameDatabase(databasePath);
+      rule = new GameService(upgraded, () => new Date(clock), () => roll)
+        .getActionRuleSnapshot().actions.find((action) => action.id === "schema-13-silver-action");
+      expect(rule).toMatchObject({ costs: { cashWenDelta: -2_000 }, success: { cashWenDelta: 3_000 } });
+      upgraded.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("preserves active locations and routes while upgrading older schema metadata", () => {
     const directory = mkdtempSync(join(tmpdir(), "wuxia-v5-migration-"));
     const databasePath = join(directory, "game.db");
