@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import type { ClientMessage, ServerMessage } from "@/lib/game/protocol";
 import type {
   ActionJob,
@@ -1832,6 +1833,7 @@ function ChatPanel({
 }
 
 export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSnapshot }) {
+  const router = useRouter();
   const [snapshot, setSnapshot] = useState(initialSnapshot);
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [drawer, setDrawer] = useState<Drawer>(null);
@@ -1975,7 +1977,7 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
         setPending(null);
         setVisitedMapLoading(false);
         if (event.code === 4001) {
-          window.location.assign("/api/session?returnTo=/");
+          router.push("/api/session?returnTo=/");
           return;
         }
         attempts += 1;
@@ -1991,7 +1993,7 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
       if (reconnectTimer) clearTimeout(reconnectTimer);
       socketRef.current?.close();
     };
-  }, []);
+  }, [router]);
 
   useEffect(() => {
     marketStateRef.current = marketState;
