@@ -8,6 +8,7 @@ export default async function MapEditorPage() {
   const service = getGameService();
   const player = service.getPlayerBySessionToken(cookieStore.get(SESSION_COOKIE)?.value);
   if (!player) redirect("/api/session?returnTo=/map-editor");
+  if (!service.canEditWorld(player.id)) redirect("/?notice=editor-forbidden");
 
   return (
     <MapEditorShell

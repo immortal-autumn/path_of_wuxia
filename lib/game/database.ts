@@ -7,7 +7,7 @@ import { seedNpcCity } from "./npc-catalog";
 
 export type GameDatabase = DatabaseSync;
 
-export const MAP_SCHEMA_VERSION = 14;
+export const MAP_SCHEMA_VERSION = 16;
 
 export function openGameDatabase(databasePath = process.env.DATABASE_PATH ?? resolve("data/wuxia.db")) {
   if (databasePath !== ":memory:") mkdirSync(dirname(databasePath), { recursive: true });
@@ -18,6 +18,14 @@ export function openGameDatabase(databasePath = process.env.DATABASE_PATH ?? res
   db.exec("PRAGMA synchronous = NORMAL");
   migrate(db);
   seed(db);
+  return db;
+}
+
+export function openReadOnlyGameDatabase(databasePath = process.env.DATABASE_PATH ?? resolve("data/wuxia.db")) {
+  const db = new DatabaseSync(databasePath, { readOnly: true });
+  db.exec("PRAGMA foreign_keys = ON");
+  db.exec("PRAGMA busy_timeout = 5000");
+  db.exec("PRAGMA query_only = ON");
   return db;
 }
 
@@ -104,7 +112,8 @@ function migrate(db: GameDatabase) {
       stamina INTEGER NOT NULL DEFAULT 80, max_stamina INTEGER NOT NULL DEFAULT 80,
       cultivation INTEGER NOT NULL DEFAULT 0, silver INTEGER NOT NULL DEFAULT 20,
       current_location TEXT NOT NULL REFERENCES locations(id), created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL, last_seen_at TEXT NOT NULL
+      updated_at TEXT NOT NULL, last_seen_at TEXT NOT NULL,
+      editor_role TEXT NOT NULL DEFAULT 'player' CHECK(editor_role IN ('player','editor','admin'))
     );
     CREATE TABLE IF NOT EXISTS player_wallets(
       player_id TEXT PRIMARY KEY REFERENCES players(id) ON DELETE CASCADE,
@@ -150,6 +159,11 @@ function migrate(db: GameDatabase) {
     CREATE TABLE IF NOT EXISTS sessions(
       token_hash TEXT PRIMARY KEY, player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
       created_at TEXT NOT NULL, expires_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS external_identities(
+      provider TEXT NOT NULL,subject TEXT NOT NULL,player_id TEXT NOT NULL UNIQUE REFERENCES players(id) ON DELETE CASCADE,
+      editor_role TEXT NOT NULL DEFAULT 'player' CHECK(editor_role IN ('player','editor','admin')),
+      created_at TEXT NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(provider,subject)
     );
     CREATE TABLE IF NOT EXISTS player_visited_locations(
       player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
@@ -213,7 +227,8 @@ function migrate(db: GameDatabase) {
       action_template_id TEXT NOT NULL REFERENCES action_templates(id),binding_id TEXT REFERENCES location_action_bindings(id),
       target_player_id TEXT REFERENCES players(id) ON DELETE SET NULL,target_location_id TEXT REFERENCES locations(id),
       status TEXT NOT NULL,queue_position INTEGER NOT NULL DEFAULT 0,started_at TEXT,completes_at TEXT,
-      duration_seconds INTEGER NOT NULL DEFAULT 0 CHECK(duration_seconds>=0),
+      duration_seconds INTEGER NOT NULL DEFAULT 0 CHECK(duration_seconds>=0),rule_version INTEGER NOT NULL DEFAULT 1,
+      rule_snapshot_json TEXT NOT NULL DEFAULT '{}',
       reserved_json TEXT NOT NULL DEFAULT '{}',context_json TEXT NOT NULL DEFAULT '{}',result_text TEXT,
       created_at TEXT NOT NULL,updated_at TEXT NOT NULL
     );
@@ -573,6 +588,7 @@ function migrate(db: GameDatabase) {
   addColumn(db, "routes", "is_active INTEGER NOT NULL DEFAULT 1");
   addColumn(db, "routes", "seed_revision INTEGER NOT NULL DEFAULT 0");
   addColumn(db, "players", "controller_kind TEXT NOT NULL DEFAULT 'human'");
+  addColumn(db, "players", "editor_role TEXT NOT NULL DEFAULT 'player'");
   addColumn(db, "players", "adult_status TEXT NOT NULL DEFAULT 'unknown'");
   addColumn(db, "players", "adult_content_enabled INTEGER NOT NULL DEFAULT 0");
   addColumn(db, "players", "injury_until TEXT");
@@ -581,6 +597,8 @@ function migrate(db: GameDatabase) {
   addColumn(db, "action_logs", "action_template_id TEXT REFERENCES action_templates(id)");
   addColumn(db, "action_logs", "action_job_id TEXT REFERENCES action_jobs(id)");
   addColumn(db, "action_jobs", "duration_seconds INTEGER NOT NULL DEFAULT 0");
+  addColumn(db, "action_jobs", "rule_version INTEGER NOT NULL DEFAULT 1");
+  addColumn(db, "action_jobs", "rule_snapshot_json TEXT NOT NULL DEFAULT '{}'");
   addColumn(db, "skill_definitions", "skill_kind TEXT NOT NULL DEFAULT 'passive'");
   addColumn(db, "action_definitions", "cash_wen_delta INTEGER NOT NULL DEFAULT 0");
   addColumn(db, "loot_piles", "cash_wen INTEGER NOT NULL DEFAULT 0");
@@ -756,6 +774,12 @@ function migrate(db: GameDatabase) {
         migrateCurrencyOutcome(template.costs_json), migrateCurrencyOutcome(template.outcomes_json), template.id,
       );
     }
+  }
+
+  if (previousVersion < 15) {
+    // Existing jobs keep their historical template lookup as a compatibility
+    // fallback; newly accepted jobs always persist an immutable rule snapshot.
+    db.prepare("UPDATE action_jobs SET rule_version=1 WHERE rule_version IS NULL OR rule_version<1").run();
   }
 
   db.exec(`

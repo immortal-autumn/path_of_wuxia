@@ -275,11 +275,71 @@ describe("GameService", () => {
       ...custom, id: "unsafe-adult-action", adult: true, targetKind: "player", visibility: "public",
       requirements: { sameLocation: true, targetOnline: true },
     })).toThrow("只对双方参与者可见");
+    expect(() => service.createActionRule({
+      ...custom, id: "missing-item-action", success: { items: [{ definitionId: "missing-item", quantity: 1 }] },
+    })).toThrow("物品定义 missing-item 不存在");
+    expect(() => service.createActionRule({
+      ...custom, id: "positive-cost-action", costs: { cashWenDelta: 1 },
+    })).toThrow("行动成本只能消耗");
     const binding = service.getActionRuleLocationState("home-entrance").bindings.find((item) => item.actionId === custom.id)!;
     service.deleteActionRuleBinding(binding.id);
     expect(service.getActionRuleLocationState("home-entrance").bindings.some((item) => item.actionId === custom.id)).toBe(false);
     service.deleteActionRule(custom.id);
     expect(service.getActionRuleSnapshot().actions.some((action) => action.id === custom.id)).toBe(false);
+  });
+
+  it("enforces action facilities, item costs, cash costs and ordinary cooldowns", () => {
+    const custom = {
+      id: "costed-demo-action", name: "付费整理", description: "需要厨房和一份稻米。", category: "life" as const,
+      targetKind: "self" as const, durationSeconds: 60,
+      requirements: { facilityType: "kitchen", minimumFacilityQuality: 1, itemCosts: [{ definitionId: "rice", quantity: 1 }] },
+      check: {}, costs: { cashWenDelta: -100, hpDelta: -1 }, success: {}, failure: {},
+      resultTemplate: "{name}完成了付费整理。", adult: false, visibility: "private" as const, cooldownSeconds: 300,
+    };
+    service.createActionRule(custom);
+    service.upsertActionRuleBinding("home-entrance", custom.id, null, 0);
+    service.upsertActionRuleBinding("home-kitchen", custom.id, null, 0);
+    const player = service.createSession().player;
+    const rice = db.prepare("SELECT id FROM item_definitions WHERE id='rice'").get();
+    expect(rice).toEqual({ id: "rice" });
+    db.prepare(`
+      INSERT INTO item_instances(id,definition_id,owner_player_id,quantity,quality,durability,affixes_json,bound,created_at,updated_at)
+      VALUES ('test-rice','rice',?,1,1,0,'[]',0,?,?)
+    `).run(player.id, clock.toISOString(), clock.toISOString());
+    expect(service.getActionState(player.id).available.find((action) => action.id === custom.id))
+      .toMatchObject({ available: false, unavailableReason: expect.stringContaining("kitchen") });
+    db.prepare("UPDATE players SET current_location='home-kitchen' WHERE id=?").run(player.id);
+    const beforeCash = service.getPlayer(player.id).cashWen;
+    const started = service.startAction(player.id, custom.id);
+    expect(started.message).toContain("已经开始");
+    expect(service.getPlayer(player.id).cashWen).toBe(beforeCash - 100);
+    expect(db.prepare("SELECT quantity FROM item_reservations WHERE job_id=(SELECT id FROM action_jobs WHERE player_id=? AND status='running')").get(player.id))
+      .toEqual({ quantity: 1 });
+    expect(() => service.startAction(player.id, custom.id)).toThrow("冷却");
+    clock = new Date(clock.getTime() + 61_000);
+    service.settleActionQueue(player.id);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM item_instances WHERE id='test-rice'").get()).toEqual({ count: 0 });
+  });
+
+  it("settles a running action from its accepted rule snapshot", () => {
+    const custom = {
+      id: "snapshot-demo-action", name: "快照行动", description: "测试规则快照。", category: "life" as const,
+      targetKind: "self" as const, durationSeconds: 60, requirements: {}, check: {}, costs: {},
+      success: { cashWenDelta: 111 }, failure: {}, resultTemplate: "{name}执行快照行动。",
+      adult: false, visibility: "private" as const, cooldownSeconds: 0,
+    };
+    service.createActionRule(custom);
+    service.upsertActionRuleBinding("home-entrance", custom.id, null, 0);
+    const player = service.createSession().player;
+    service.startAction(player.id, custom.id);
+    const rule = service.getActionRuleSnapshot().actions.find((action) => action.id === custom.id)!;
+    service.updateActionRule(custom.id, rule.version, { ...custom, success: { cashWenDelta: 9_999 }, resultTemplate: "{name}被篡改。" });
+    clock = new Date(clock.getTime() + 61_000);
+    service.settleActionQueue(player.id);
+    expect(service.getPlayer(player.id).cashWen).toBe(20_111);
+    expect(db.prepare("SELECT result_text FROM action_jobs WHERE player_id=? ORDER BY created_at DESC LIMIT 1").get(player.id)).toEqual(
+      expect.objectContaining({ result_text: expect.stringContaining("执行快照行动") }),
+    );
   });
 
   it("runs one real-time action with eight reorderable queued actions and settles by server time", () => {
@@ -674,9 +734,18 @@ describe("GameService", () => {
     expect(() => service.startAction(first.id, "action-private-intimacy")).toThrow("这里无法进行这项行动");
 
     service.requestInteraction(first.id, second.id, "intimate", "action-private-intimacy");
+    const secondRequest = service.getSocialState(second.id).incomingRequests[0];
+    service.respondInteraction(second.id, secondRequest.id, true, [first.id, second.id]);
     service.updateAdultProfile(second.id, "minor", true);
     expect(service.getSocialState(second.id).adultProfile).toEqual({ status: "minor", contentEnabled: false });
     expect(service.getSocialState(first.id).outgoingRequests).toHaveLength(0);
+    expect(db.prepare(`
+      SELECT status,result_text FROM action_jobs WHERE player_id=? ORDER BY created_at DESC,id DESC LIMIT 1
+    `).get(first.id)).toEqual({ status: "cancelled", result_text: "成人资格或同意已撤销，行动已取消。" });
+    clock = new Date(clock.getTime() + 900_000);
+    service.settleActionQueue(first.id);
+    expect(service.getPrivateEvents(first.id).filter((event) => event.content.includes("私密互动"))).toHaveLength(1);
+    expect(service.getPrivateEvents(second.id).filter((event) => event.content.includes("私密互动"))).toHaveLength(1);
   });
 
   it("creates mutual formal relationships and enforces direct-interaction blocks", () => {
@@ -947,7 +1016,7 @@ describe("GameService", () => {
       let rule = new GameService(upgraded, () => new Date(clock), () => roll)
         .getActionRuleSnapshot().actions.find((action) => action.id === "schema-13-silver-action");
       expect(rule).toMatchObject({ costs: { cashWenDelta: -2_000 }, success: { cashWenDelta: 3_000 } });
-      expect(upgraded.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: 14 });
+      expect(upgraded.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: 16 });
       upgraded.close();
 
       upgraded = openGameDatabase(databasePath);
@@ -1072,6 +1141,17 @@ describe("GameService", () => {
       locations: [{ id: "home-entrance" }],
       routes: [],
     });
+  });
+
+  it("binds external OIDC subjects to one player and persists editor roles", () => {
+    const first = service.createExternalSession("oidc", "subject-42", "editor");
+    expect(service.canEditWorld(first.player.id)).toBe(true);
+    const second = service.createExternalSession("oidc", "subject-42", "player");
+    expect(second.player.id).toBe(first.player.id);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM players WHERE id=?").get(first.player.id)).toEqual({ count: 1 });
+    expect(db.prepare("SELECT editor_role FROM external_identities WHERE provider='oidc' AND subject='subject-42'").get())
+      .toEqual({ editor_role: "player" });
+    expect(service.canEditWorld(first.player.id)).toBe(process.env.NODE_ENV !== "production");
   });
 
   it("stores an isolated visited map for each player and includes only discovered connections", () => {

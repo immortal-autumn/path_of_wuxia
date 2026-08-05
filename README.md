@@ -117,7 +117,7 @@ npm run npc:trade:replay -- --decision=<决策ID>
 
 ## 地图设计工具
 
-访问 <http://localhost:3000/map-editor>，或在游戏世界状态栏点击“地图设计”。当前测试阶段允许所有有效玩家编辑共享地图。
+访问 <http://localhost:3000/map-editor>，或在游戏世界状态栏点击“地图设计”。开发模式默认开放编辑便于本地演示；生产模式仅允许数据库角色为 `editor`/`admin`、列入 `EDITOR_PLAYER_IDS`，或显式启用 `EDITOR_ALLOW_ALL=true` 的角色修改共享地图。
 
 - 地点拖放后自动吸附到最近的空网格。
 - 普通路线只允许上、下、左、右、左上、左下、右上、右下八个相邻方向，并且每个方向最多一条。
@@ -129,7 +129,7 @@ npm run npc:trade:replay -- --decision=<决策ID>
 
 ## 行动规则设计工具
 
-访问 <http://localhost:3000/action-editor>，或在游戏世界状态栏点击“行动设计”。当前测试阶段与地图编辑器相同，所有有效玩家都有完整规则编辑权限。
+访问 <http://localhost:3000/action-editor>，或在游戏世界状态栏点击“行动设计”。生产环境的规则读取仍可供游戏使用，但创建、修改、停用与地点绑定只允许授权编辑者执行。
 
 - 可以创建、修改、版本检查和软停用行动模板，分别配置行动耗时、技能效果持续秒数、冷却、分类、目标、可见性和结果文本；技能持续时间会安全写入成功结果，无需手改 JSON。
 - 需求、检定、成本、成功结果和失败结果使用经过 Zod 白名单校验的 JSON 对象；不能写入或执行任意 JavaScript/SQL。
@@ -147,6 +147,11 @@ PORT=3000
 GAME_HOST=127.0.0.1
 NPC_RUNNER_SECRET=replace-with-a-private-secret
 NPC_TRADE_RUNNER_SECRET=replace-with-another-private-secret
+PUBLIC_ORIGIN=https://wuxia.example.com
+# 反向代理完成 OIDC 后，仅由可信代理注入以下身份头
+OIDC_PROXY_SECRET=proxy-shared-secret
+# 可选本地/受控部署编辑授权
+EDITOR_PLAYER_IDS=player-id-1,player-id-2
 # 可选：NPC_TRADE_STRATEGY_URL=https://internal.example/strategy
 ```
 
@@ -163,7 +168,8 @@ npm run db:backup -- /srv/backups/wuxia-$(date +%F).db
 ```bash
 npm ci
 npm run build
-NODE_ENV=production DATABASE_PATH=/srv/wuxia/data/wuxia.db PORT=3000 GAME_HOST=127.0.0.1 npm start
+NODE_ENV=production DATABASE_PATH=/srv/wuxia/data/wuxia.db PORT=3000 GAME_HOST=127.0.0.1 \
+  PUBLIC_ORIGIN=https://wuxia.example.com NPC_RUNNER_SECRET=replace-me NPC_TRADE_RUNNER_SECRET=replace-me-too npm start
 ```
 
 建议使用 systemd、Docker 或其他进程管理器托管单个应用进程，并在前方放置 nginx。最小 nginx 配置如下：

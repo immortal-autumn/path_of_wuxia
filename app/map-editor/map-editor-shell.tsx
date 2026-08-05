@@ -574,7 +574,7 @@ export default function MapEditorShell({
       <header className="editor-header">
         <div>
           <h1>地图设计工具</h1>
-          <p>连续大地图使用八方向道路 · 仅室内或特殊空间使用入口连接 · 所有改动自动保存</p>
+          <p>授权编辑者 · 连续大地图使用八方向道路 · 仅室内或特殊空间使用入口连接 · 所有改动自动保存</p>
         </div>
         <div className="editor-header-actions">
           <span>{player.name} · {connected ? "已连接" : "连接中"}</span>

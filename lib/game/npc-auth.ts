@@ -1,16 +1,29 @@
-import { createHash, createHmac } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 
-const DEFAULT_NPC_RUNNER_SECRET = "path-of-wuxia-local-npc-runner";
-const DEFAULT_NPC_TRADE_RUNNER_SECRET = "path-of-wuxia-local-npc-trade-runner";
+const developmentSecrets = new Map<string, string>();
+
+function secretFor(name: "NPC_RUNNER_SECRET" | "NPC_TRADE_RUNNER_SECRET") {
+  const configured = process.env[name]?.trim();
+  if (configured) return configured;
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(`${name} 必须在生产环境启动前配置。`);
+  }
+  let secret = developmentSecrets.get(name);
+  if (!secret) {
+    secret = randomBytes(32).toString("base64url");
+    developmentSecrets.set(name, secret);
+  }
+  return secret;
+}
 
 export function npcAgentToken(stableKey: string) {
-  const secret = process.env.NPC_RUNNER_SECRET ?? DEFAULT_NPC_RUNNER_SECRET;
+  const secret = secretFor("NPC_RUNNER_SECRET");
   const signature = createHmac("sha256", secret).update(stableKey).digest("base64url");
   return `npc_${stableKey}_${signature}`;
 }
 
 export function npcTradeAgentToken(stableKey: string) {
-  const secret = process.env.NPC_TRADE_RUNNER_SECRET ?? DEFAULT_NPC_TRADE_RUNNER_SECRET;
+  const secret = secretFor("NPC_TRADE_RUNNER_SECRET");
   const signature = createHmac("sha256", secret).update(stableKey).digest("base64url");
   return `npc_trade_${stableKey}_${signature}`;
 }

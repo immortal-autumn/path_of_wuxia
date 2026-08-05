@@ -554,7 +554,8 @@ function VisitedMapDialog({
   const selectedFastTravelLocation = inspectedLocation && fastTravelDestinationIds.has(inspectedLocation.id)
     ? inspectedLocation
     : null;
-  const viewBox = useMemo(() => {
+  const [zoom, setZoom] = useState(1);
+  const baseViewBox = useMemo(() => {
     if (locations.length === 0) return "-260 -160 520 320";
     const minX = Math.min(...locations.map((location) => location.x)) - 90;
     const minY = Math.min(...locations.map((location) => location.y)) - 90;
@@ -566,6 +567,12 @@ function VisitedMapDialog({
     const centerY = (minY + maxY) / 2;
     return `${centerX - width / 2} ${centerY - height / 2} ${width} ${height}`;
   }, [locations]);
+  const viewBox = useMemo(() => {
+    const [x, y, width, height] = baseViewBox.split(" ").map(Number);
+    const nextWidth = width / zoom;
+    const nextHeight = height / zoom;
+    return `${x + (width - nextWidth) / 2} ${y + (height - nextHeight) / 2} ${nextWidth} ${nextHeight}`;
+  }, [baseViewBox, zoom]);
 
   useEffect(() => {
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
@@ -622,6 +629,11 @@ function VisitedMapDialog({
               >
                 {selectedFastTravelLocation?.id === currentLocationId ? "当前位置" : "快速前往"}
               </button>
+              <span className="visited-map-zoom" aria-label="地图缩放">
+                <button type="button" onClick={() => setZoom((value) => Math.min(6, Number((value + 0.5).toFixed(1))))} aria-label="放大地图">放大</button>
+                <button type="button" onClick={() => setZoom((value) => Math.max(0.5, Number((value - 0.5).toFixed(1))))} aria-label="缩小地图">缩小</button>
+                <button type="button" onClick={() => setZoom(1)} aria-label="适应全图">全图</button>
+              </span>
               <span>全部足迹 <strong>{map.locations.length}</strong> 处</span>
               <span>本图 <strong>{locations.length}</strong> 处</span>
               <span className="visited-map-inspection">
@@ -985,6 +997,8 @@ function CharacterPanel({
   const [adultEnabled, setAdultEnabled] = useState(social.adultProfile.contentEnabled);
   const [tradeDrafts, setTradeDrafts] = useState<Record<string, { cashWen: string; itemId: string; quantity: string }>>({});
   const [detail, setDetail] = useState<{ kind: "skill" | "item"; id: string } | null>(null);
+  const detailModalRef = useRef<HTMLElement | null>(null);
+  const detailRestoreFocusRef = useRef<HTMLElement | null>(null);
   const allocated = Object.values(draft).reduce((sum, value) => sum + value, 0);
   const progress = Math.min(100, (self.cultivation.progress / Math.max(1, self.cultivation.nextLevelCost)) * 100);
   const tradableItems = inventory.items.filter((item) => !item.bound && !item.equippedSlot && item.quantity > item.reservedQuantity);
@@ -995,11 +1009,27 @@ function CharacterPanel({
 
   useEffect(() => {
     if (!detail) return;
+    detailRestoreFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const focusable = () => detailModalRef.current?.querySelectorAll<HTMLElement>(
+      "button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])",
+    ) ?? [];
+    const first = focusable()[0];
+    first?.focus();
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key === "Escape") setDetail(null);
+      if (event.key === "Tab") {
+        const nodes = [...focusable()];
+        if (nodes.length === 0) return;
+        const index = nodes.indexOf(document.activeElement as HTMLElement);
+        if (event.shiftKey && (index <= 0 || index < 0)) { event.preventDefault(); nodes[nodes.length - 1].focus(); }
+        else if (!event.shiftKey && (index === nodes.length - 1 || index < 0)) { event.preventDefault(); nodes[0].focus(); }
+      }
     };
     window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("keydown", closeOnEscape);
+      detailRestoreFocusRef.current?.focus();
+    };
   }, [detail]);
 
   const openDetailOnKey = (event: KeyboardEvent<HTMLElement>, kind: "skill" | "item", id: string) => {
@@ -1277,7 +1307,7 @@ function CharacterPanel({
       <div className="detail-modal-backdrop" onMouseDown={(event) => {
         if (event.target === event.currentTarget) setDetail(null);
       }}>
-        <section className="detail-modal" role="dialog" aria-modal="true" aria-label={detailSkill ? `技能详情：${detailSkill.name}` : `物品详情：${detailItem?.name ?? "未知"}`}>
+        <section ref={detailModalRef} tabIndex={-1} className="detail-modal" role="dialog" aria-modal="true" aria-label={detailSkill ? `技能详情：${detailSkill.name}` : `物品详情：${detailItem?.name ?? "未知"}`}>
           <header><div><p className="eyebrow">完整资料</p><h2>{detailSkill?.name ?? detailItem?.name ?? "详情"}</h2></div><button type="button" onClick={() => setDetail(null)}>关闭</button></header>
           {detailSkill && (
             <div className="detail-modal-body">

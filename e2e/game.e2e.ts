@@ -114,6 +114,11 @@ async function updatePlayer(page: Page, sql: string, ...params: Array<string | n
 
 test.describe("entries and session identity", () => {
   test("bootstraps an HttpOnly session and exposes all application entries", async ({ page, context }) => {
+    const health = await page.request.get("/api/health");
+    expect(health.status()).toBe(200);
+    expect(await health.json()).toEqual({ status: "ok", database: "ready" });
+    const unsafeRedirect = await page.request.get("/api/session?returnTo=/%5Cevil.example", { maxRedirects: 0 });
+    expect(unsafeRedirect.headers().location).toBe("http://127.0.0.1:3200/");
     await enterWorld(page);
     const cookie = (await context.cookies()).find((item) => item.name === "wuxia_session");
     expect(cookie).toMatchObject({ httpOnly: true, sameSite: "Lax" });
@@ -128,6 +133,13 @@ test.describe("entries and session identity", () => {
     await page.getByRole("link", { name: "行动设计" }).click();
     await expect(page).toHaveURL(/\/action-editor$/);
     await expect(page.getByRole("heading", { name: "行动规则设计工具" })).toBeVisible();
+    await page.setViewportSize({ width: 390, height: 844 });
+    const editorScrollTop = await page.locator(".rule-editor-shell").evaluate((element) => {
+      element.scrollTo(0, element.scrollHeight);
+      return element.scrollTop;
+    });
+    expect(editorScrollTop).toBeGreaterThan(0);
+    await page.setViewportSize({ width: 1280, height: 844 });
     await page.getByRole("link", { name: "返回游戏" }).click();
     await expect(page.locator(".character-heading h2")).toHaveText(name);
   });
@@ -143,6 +155,8 @@ test.describe("entries and session identity", () => {
       }, 8_000);
       let cancelSent = false;
       let directiveSeen = false;
+      let editorProbeSent = false;
+      let editorRejected = false;
       socket.on("message", (raw) => {
         const message = JSON.parse(raw.toString()) as ServerMessage | { type: "npc.directive"; directive: { kind: string } };
         if (message.type === "npc.directive") {
@@ -150,9 +164,15 @@ test.describe("entries and session identity", () => {
           expect(["move", "action", "hold"]).toContain(message.directive.kind);
           return;
         }
-        if (message.type === "snapshot") {
+        if (message.type === "snapshot" && !editorProbeSent) {
           expect(message.snapshot.self.id).toBe("npc-001");
           expect(message.snapshot.self).not.toHaveProperty("controllerKind");
+          editorProbeSent = true;
+          socket.send(JSON.stringify({ type: "rules.action.delete", requestId: "npc-editor-probe", actionId: "action-observe" }));
+        }
+        if (message.type === "error" && message.requestId === "npc-editor-probe") {
+          editorRejected = true;
+          expect(message.message).toContain("NPC gameplay 凭证不能执行");
           socket.send(JSON.stringify({ type: "action.start", requestId: "npc-action-start", actionId: "action-observe" }));
         }
         if (message.type === "action.updated" && message.actionState.current && !cancelSent) {
@@ -161,11 +181,12 @@ test.describe("entries and session identity", () => {
         }
         if (message.type === "ack" && message.requestId === "npc-action-cancel") {
           expect(directiveSeen).toBe(true);
+          expect(editorRejected).toBe(true);
           clearTimeout(timeout);
           socket.close();
           resolve();
         }
-        if (message.type === "error") {
+        if (message.type === "error" && message.requestId !== "npc-editor-probe") {
           clearTimeout(timeout);
           socket.close();
           reject(new Error(message.message));
@@ -389,6 +410,11 @@ test.describe("game map", () => {
     await expect(dialog.locator(".visited-map-route")).toHaveCount(0);
     await expect(dialog).toContainText("全部足迹 1 处");
     await expect(dialog).not.toContainText("门厅");
+    const fittedViewBox = await dialog.locator("svg").getAttribute("viewBox");
+    await dialog.getByRole("button", { name: "放大地图" }).click();
+    await expect(dialog.locator("svg")).not.toHaveAttribute("viewBox", fittedViewBox ?? "");
+    await dialog.getByRole("button", { name: "适应全图" }).click();
+    await expect(dialog.locator("svg")).toHaveAttribute("viewBox", fittedViewBox ?? "");
     await dialog.getByRole("button", { name: "关闭足迹地图" }).click();
 
     await moveTo(page, "嬴长嫚与楼夜秋之家·门厅");
@@ -461,6 +487,7 @@ test.describe("game map", () => {
     const eagleSkill = skills.getByRole("button", { name: "查看技能详情：鹰眼" });
     await eagleSkill.click();
     let detail = page.getByRole("dialog", { name: "技能详情：鹰眼" });
+    await expect(detail.getByRole("button", { name: "关闭" })).toBeFocused();
     await expect(detail).toContainText("效果持续30分钟");
     await expect(detail).toContainText("冷却可以发动");
     await detail.getByRole("button", { name: "确认发动开启鹰眼" }).click();

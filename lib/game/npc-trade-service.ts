@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import { inTransaction } from "./database";
 import { MarketEngine } from "./market";
 import {
   canonicalJson,
@@ -97,20 +98,35 @@ export class NpcTradeAgentService {
     `).get(playerId, cycleKey) as { id: string } | undefined;
     if (replay) return this.readContext(playerId, replay.id);
     const strategy = this.ensureStrategy(playerId);
-    const market = new MarketEngine(this.db, this.now).snapshot(playerId);
+    const engine = new MarketEngine(this.db, this.now);
+    const hasMarket = this.db.prepare("SELECT 1 FROM market_contracts WHERE status='active' LIMIT 1").get();
+    if (!hasMarket) engine.settle();
+    const market = engine.snapshot(playerId, false);
+    const strategyUnderlyings = new Set(strategy.strategy.underlyings);
+    const strategyContractIds = new Set(market.contracts
+      .filter((contract) => contract.kind === "spot" && strategyUnderlyings.has(contract.underlyingId))
+      .map((contract) => contract.id));
     const cash = (this.db.prepare("SELECT cash_wen FROM player_wallets WHERE player_id=?").get(playerId) as { cash_wen: number }).cash_wen;
+    const reservedSells = new Map<string, number>();
+    for (const order of market.orders) {
+      if (order.side === "sell") reservedSells.set(order.contractId, (reservedSells.get(order.contractId) ?? 0) + order.remainingQuantity);
+    }
     const input: NpcTradeInput = {
       actorId: playerId,
       asOf: market.asOf,
-      availableCashWen: cash,
+      availableCashWen: Math.max(0, cash - market.reservedMarginWen),
       clearingDebtWen: market.clearingDebtWen,
-      quotes: market.contracts.map((contract) => ({
+      quotes: market.contracts.filter((contract) => strategyContractIds.has(contract.id)).map((contract) => ({
         contractId: contract.id, underlyingId: contract.underlyingId, kind: contract.kind,
         markPriceWen: contract.markPriceWen, bestBidWen: contract.bestBidWen, bestAskWen: contract.bestAskWen,
       })),
-      positions: market.positions.map((position) => ({ contractId: position.contractId, quantity: position.quantity })),
+      positions: market.positions.filter((position) => strategyContractIds.has(position.contractId)).map((position) => ({
+        contractId: position.contractId,
+        quantity: Math.max(0, position.quantity - (reservedSells.get(position.contractId) ?? 0)),
+      })),
       openOrders: market.orders.map((order) => ({
-        id: order.id, contractId: order.contractId, side: order.side, createdAt: order.createdAt,
+        id: order.id, contractId: order.contractId, side: order.side,
+        limitPriceWen: order.limitPriceWen, remainingQuantity: order.remainingQuantity, createdAt: order.createdAt,
       })),
     };
     const sequence = (this.db.prepare(`
@@ -175,28 +191,38 @@ export class NpcTradeAgentService {
     if (row.output_json) {
       if (row.output_json !== outputJson) throw new Error("商贸决策输出已经改变。");
       if (row.status !== "ready") return { decisionId, status: row.status, message: "这项商贸决策已经处理。" };
-    } else {
-      this.db.prepare(`
-        UPDATE npc_trade_decisions SET output_json=?,output_hash=?,status='ready',decided_at=? WHERE id=?
-      `).run(outputJson, outputHash, at, decisionId);
     }
     if (output.type === "hold") {
-      this.db.prepare("UPDATE npc_trade_decisions SET status='skipped',executed_at=? WHERE id=?").run(at, decisionId);
+      inTransaction(this.db, () => {
+        this.db.prepare(`
+          UPDATE npc_trade_decisions SET output_json=?,output_hash=?,status='skipped',decided_at=COALESCE(decided_at,?),executed_at=?
+          WHERE id=?
+        `).run(outputJson, outputHash, at, at, decisionId);
+      });
       return { decisionId, status: "skipped", message: "本轮商贸代理选择观望。" };
     }
     try {
-      const engine = new MarketEngine(this.db, this.now);
-      if (output.type === "market.order.place") {
-        engine.placeOrder(playerId, row.request_id, output.contractId, output.side, output.limitPriceWen, output.quantity);
-      } else {
-        engine.cancelOrder(playerId, row.request_id, output.orderId);
-      }
-      this.db.prepare("UPDATE npc_trade_decisions SET status='executed',executed_at=? WHERE id=?").run(at, decisionId);
+      inTransaction(this.db, () => {
+        this.db.prepare(`
+          UPDATE npc_trade_decisions SET output_json=?,output_hash=?,status='ready',decided_at=COALESCE(decided_at,?) WHERE id=?
+        `).run(outputJson, outputHash, at, decisionId);
+        const engine = new MarketEngine(this.db, this.now);
+        if (output.type === "market.order.place") {
+          engine.placeOrder(playerId, row.request_id, output.contractId, output.side, output.limitPriceWen, output.quantity);
+        } else {
+          engine.cancelOrder(playerId, row.request_id, output.orderId);
+        }
+        this.db.prepare("UPDATE npc_trade_decisions SET status='executed',executed_at=? WHERE id=?").run(at, decisionId);
+      });
       return { decisionId, status: "executed", message: "商贸决策已经按普通市场规则执行。" };
     } catch (error) {
       const message = error instanceof Error ? error.message : "市场拒绝商贸决策。";
-      this.db.prepare("UPDATE npc_trade_decisions SET status='rejected',error_text=?,executed_at=? WHERE id=?")
-        .run(message, at, decisionId);
+      inTransaction(this.db, () => {
+        this.db.prepare(`
+          UPDATE npc_trade_decisions SET output_json=?,output_hash=?,status='rejected',error_text=?,
+            decided_at=COALESCE(decided_at,?),executed_at=? WHERE id=?
+        `).run(outputJson, outputHash, message, at, at, decisionId);
+      });
       throw error;
     }
   }

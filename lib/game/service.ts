@@ -1,6 +1,9 @@
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import {
+  actionCheckSchema,
   actionOutcomeSchema,
+  actionOutcomesSchema,
+  actionRequirementSchema,
   actionSuccessChance,
   applyNeedDeltas,
   needPenalty,
@@ -46,6 +49,7 @@ import type {
   ActionRuleSnapshot,
   ActionSystemState,
   ActionTemplate,
+  ActionRequirement,
   ActionDefinition,
   BaseAttributes,
   ChatMessage,
@@ -132,6 +136,8 @@ type ActionJobRow = {
   id: string; action_name: string; player_id: string; action_template_id: string; target_player_id: string | null;
   target_location_id: string | null; status: ActionJob["status"]; queue_position: number;
   duration_seconds: number;
+  rule_version: number;
+  rule_snapshot_json: string;
   started_at: string | null; completes_at: string | null; result_text: string | null;
   reserved_json: string; context_json: string;
 };
@@ -649,7 +655,7 @@ export class GameService {
     const now = this.now();
     this.settleActionQueueInternal(playerId, now);
     const player = this.getPlayerRow(playerId);
-    this.getTemplateRow(templateId);
+    const template = this.getTemplateRow(templateId);
     const jobs = this.actionJobs(playerId);
     const queuedCount = jobs.filter((job) => job.status === "queued").length;
     if (queuedCount >= 8) throw new Error("等待队列最多只能安排8项行动。");
@@ -659,13 +665,13 @@ export class GameService {
     this.db.prepare(`
       INSERT INTO action_jobs(
         id,player_id,action_template_id,target_player_id,target_location_id,status,queue_position,started_at,completes_at,
-        duration_seconds,reserved_json,context_json,created_at,updated_at
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,'{}',?,?,?)
+        duration_seconds,rule_version,rule_snapshot_json,reserved_json,context_json,created_at,updated_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `).run(
       id, playerId, templateId, targetPlayerId, player.current_location, running ? "queued" : "running", running ? queuedCount + 1 : 0,
       running ? null : timestamp,
       running ? null : new Date(now.getTime() + durationSeconds * 1000).toISOString(),
-      durationSeconds, JSON.stringify(context), timestamp, timestamp,
+      durationSeconds, template.version, JSON.stringify(this.serializeActionTemplate(template)), "{}", JSON.stringify(context), timestamp, timestamp,
     );
     this.reserveItems(playerId, id, inputs);
     return { id, running };
@@ -1215,6 +1221,41 @@ export class GameService {
     });
   }
 
+  createExternalSession(provider: string, subject: string, editorRole: "player" | "editor" | "admin"): SessionIdentity {
+    const normalizedProvider = provider.trim().toLowerCase();
+    const normalizedSubject = subject.trim();
+    if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(normalizedProvider)) throw new Error("外部身份提供方不合法。");
+    if (!normalizedSubject || normalizedSubject.length > 240 || /[\u0000-\u001f\u007f]/.test(normalizedSubject)) {
+      throw new Error("外部身份主体不合法。");
+    }
+    const linked = this.db.prepare(`
+      SELECT player_id FROM external_identities WHERE provider=? AND subject=?
+    `).get(normalizedProvider, normalizedSubject) as { player_id: string } | undefined;
+    if (!linked) {
+      const identity = this.createSession();
+      return inTransaction(this.db, () => {
+        const timestamp = this.now().toISOString();
+        this.db.prepare(`
+          INSERT INTO external_identities(provider,subject,player_id,editor_role,created_at,updated_at)
+          VALUES (?,?,?,?,?,?)
+        `).run(normalizedProvider, normalizedSubject, identity.player.id, editorRole, timestamp, timestamp);
+        this.db.prepare("UPDATE players SET editor_role=?,updated_at=? WHERE id=?")
+          .run(editorRole, timestamp, identity.player.id);
+        return { token: identity.token, player: this.getPlayer(identity.player.id) };
+      });
+    }
+    return inTransaction(this.db, () => {
+      const timestamp = this.now().toISOString();
+      const token = randomBytes(32).toString("base64url");
+      this.db.prepare("UPDATE external_identities SET editor_role=?,updated_at=? WHERE provider=? AND subject=?")
+        .run(editorRole, timestamp, normalizedProvider, normalizedSubject);
+      this.db.prepare("UPDATE players SET editor_role=?,updated_at=? WHERE id=?").run(editorRole, timestamp, linked.player_id);
+      this.db.prepare("INSERT INTO sessions(token_hash,player_id,created_at,expires_at) VALUES (?,?,?,?)")
+        .run(tokenHash(token), linked.player_id, timestamp, new Date(this.now().getTime() + SESSION_LIFETIME_MS).toISOString());
+      return { token, player: this.getPlayer(linked.player_id) };
+    });
+  }
+
   getPlayerBySessionToken(token: string | undefined) {
     if (!token) return null;
     const row = this.db.prepare(`
@@ -1230,6 +1271,20 @@ export class GameService {
     if (!identity || identity.scope !== "gameplay") return null;
     this.settleActionQueue(identity.player.id, true);
     return this.settleCultivation(identity.player.id, true).player;
+  }
+
+  canEditWorld(playerId: string) {
+    const role = (this.db.prepare("SELECT editor_role FROM players WHERE id=?").get(playerId) as { editor_role: string } | undefined)?.editor_role;
+    if (role === "admin" || role === "editor") return true;
+    // Local demo/test runs remain convenient, while production is deny-by-default.
+    if (process.env.NODE_ENV !== "production" && process.env.EDITOR_ALLOW_ALL !== "false") return true;
+    if (process.env.EDITOR_ALLOW_ALL === "true") return true;
+    const configured = new Set((process.env.EDITOR_PLAYER_IDS ?? "").split(",").map((id) => id.trim()).filter(Boolean));
+    return configured.has(playerId);
+  }
+
+  assertEditor(playerId: string) {
+    if (!this.canEditWorld(playerId)) throw new Error("地图与行动规则编辑权限仅限管理员或授权编辑者。");
   }
 
   getAgentIdentityByToken(token: string | undefined) {
@@ -1449,10 +1504,63 @@ export class GameService {
     return row;
   }
 
+  private serializeActionTemplate(template: ActionTemplateRow) {
+    return {
+      id: template.id,
+      bindingId: template.binding_id,
+      name: template.name,
+      description: template.description,
+      category: template.category,
+      targetKind: template.target_kind,
+      durationSeconds: template.duration_seconds,
+      requirements: parseRequirements(template.requirements_json),
+      check: parseCheck(template.check_json),
+      costs: actionOutcomeSchema.parse(JSON.parse(template.costs_json)),
+      outcomes: parseOutcomes(template.outcomes_json),
+      resultTemplate: template.result_template,
+      adult: template.adult === 1,
+      visibility: template.visibility,
+      cooldownSeconds: template.cooldown_seconds,
+      version: template.version,
+    };
+  }
+
+  private deserializeActionTemplateSnapshot(value: string): ActionTemplateRow | null {
+    if (!value || value === "{}") return null;
+    try {
+      const snapshot = JSON.parse(value) as Record<string, unknown>;
+      if (typeof snapshot.id !== "string" || typeof snapshot.name !== "string") return null;
+      const requirements = actionRequirementSchema.parse(snapshot.requirements ?? {});
+      const check = actionCheckSchema.parse(snapshot.check ?? {});
+      const costs = actionOutcomeSchema.parse(snapshot.costs ?? {});
+      const outcomes = actionOutcomesSchema.parse(snapshot.outcomes ?? {});
+      return {
+        id: snapshot.id,
+        binding_id: typeof snapshot.bindingId === "string" ? snapshot.bindingId : "",
+        name: snapshot.name,
+        description: typeof snapshot.description === "string" ? snapshot.description : "",
+        category: snapshot.category as ActionTemplate["category"],
+        target_kind: snapshot.targetKind as ActionTemplate["targetKind"],
+        duration_seconds: Number(snapshot.durationSeconds ?? 0),
+        requirements_json: JSON.stringify(requirements),
+        check_json: JSON.stringify(check),
+        costs_json: JSON.stringify(costs),
+        outcomes_json: JSON.stringify(outcomes),
+        result_template: typeof snapshot.resultTemplate === "string" ? snapshot.resultTemplate : "{name}完成了行动。",
+        adult: snapshot.adult === true ? 1 : 0,
+        visibility: snapshot.visibility as ActionTemplate["visibility"],
+        cooldown_seconds: Number(snapshot.cooldownSeconds ?? 0),
+        version: Number(snapshot.version ?? 1),
+      };
+    } catch {
+      return null;
+    }
+  }
+
   private actionJobs(playerId: string) {
     return (this.db.prepare(`
       SELECT j.id,t.name AS action_name,j.player_id,j.action_template_id,j.target_player_id,j.target_location_id,
-        j.status,j.queue_position,j.duration_seconds,j.started_at,j.completes_at,j.result_text,j.reserved_json,j.context_json
+        j.status,j.queue_position,j.duration_seconds,j.rule_version,j.rule_snapshot_json,j.started_at,j.completes_at,j.result_text,j.reserved_json,j.context_json
       FROM action_jobs j JOIN action_templates t ON t.id=j.action_template_id
       WHERE j.player_id=? AND j.status IN ('running','queued','paused')
       ORDER BY CASE j.status WHEN 'running' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END,j.queue_position,j.created_at
@@ -1484,7 +1592,7 @@ export class GameService {
 
   private applyActionOutcome(playerId: string, job: ActionJobRow, completedAt: Date) {
     this.settleCultivationInternal(playerId, completedAt, false);
-    const template = this.getTemplateRow(job.action_template_id);
+    const template = this.deserializeActionTemplateSnapshot(job.rule_snapshot_json) ?? this.getTemplateRow(job.action_template_id);
     const requirements = parseRequirements(template.requirements_json);
     const context = JSON.parse(job.context_json) as Record<string, unknown>;
     let check = parseCheck(template.check_json);
@@ -1664,7 +1772,7 @@ export class GameService {
     for (let guard = 0; guard < 32; guard += 1) {
       const running = this.db.prepare(`
         SELECT j.id,t.name AS action_name,j.player_id,j.action_template_id,j.target_player_id,j.target_location_id,
-          j.status,j.queue_position,j.duration_seconds,j.started_at,j.completes_at,j.result_text,j.reserved_json,j.context_json
+          j.status,j.queue_position,j.duration_seconds,j.rule_version,j.rule_snapshot_json,j.started_at,j.completes_at,j.result_text,j.reserved_json,j.context_json
         FROM action_jobs j JOIN action_templates t ON t.id=j.action_template_id
         WHERE j.player_id=? AND j.status='running' LIMIT 1
       `).get(playerId) as ActionJobRow | undefined;
@@ -1674,7 +1782,14 @@ export class GameService {
       }
       if (!running.completes_at || new Date(running.completes_at).getTime() > at.getTime()) break;
       const completedAt = new Date(running.completes_at);
-      this.applyActionOutcome(playerId, running, completedAt);
+      try {
+        this.applyActionOutcome(playerId, running, completedAt);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "行动结算失败。";
+        this.db.prepare("UPDATE action_jobs SET status='failed',result_text=?,updated_at=? WHERE id=?")
+          .run(`结算失败：${message}`, completedAt.toISOString(), running.id);
+        this.db.prepare("DELETE FROM item_reservations WHERE job_id=?").run(running.id);
+      }
       completed += 1;
       this.startNextQueuedJob(playerId, completedAt);
     }
@@ -1695,16 +1810,74 @@ export class GameService {
     return due ? this.settleActionQueue(playerId, false).completed : 0;
   }
 
-  private unavailableReason(playerId: string, template: ActionTemplateRow) {
+  private unavailableReason(playerId: string, template: ActionTemplateRow, includeCooldown = false) {
     const requirements = parseRequirements(template.requirements_json);
     const player = this.getPlayerRow(playerId);
+    if (includeCooldown && template.cooldown_seconds > 0) {
+      const cooldownUntil = this.activeCooldownUntil(playerId, template.id);
+      if (cooldownUntil) return `行动冷却中，请等待至${cooldownUntil}`;
+    }
     if (requirements.attribute && player[requirements.attribute] < (requirements.minimumAttribute ?? 0)) {
       return `${requirements.attribute}需要达到${requirements.minimumAttribute}`;
     }
     if (requirements.skillId && this.skillLevel(playerId, requirements.skillId) < (requirements.minimumSkillLevel ?? 0)) {
       return `技能熟练度需要达到${requirements.minimumSkillLevel}`;
     }
+    if (requirements.facilityType) {
+      const facility = this.db.prepare(`
+        SELECT quality FROM location_facilities
+        WHERE location_id=? AND facility_type=? AND is_active=1
+      `).get(player.current_location, requirements.facilityType) as { quality: number } | undefined;
+      if (!facility) return `当前位置缺少${requirements.facilityType}设施`;
+      if (facility.quality < (requirements.minimumFacilityQuality ?? 1)) {
+        return `${requirements.facilityType}设施品质需要达到${requirements.minimumFacilityQuality}`;
+      }
+    }
+    for (const itemCost of requirements.itemCosts ?? []) {
+      const row = this.db.prepare(`
+        SELECT COALESCE(SUM(i.quantity-COALESCE(r.reserved,0)),0) AS available
+        FROM item_instances i
+        LEFT JOIN (
+          SELECT item_instance_id,SUM(quantity) AS reserved FROM item_reservations GROUP BY item_instance_id
+        ) r ON r.item_instance_id=i.id
+        WHERE i.owner_player_id=? AND i.definition_id=? AND i.equipped_slot IS NULL
+      `).get(playerId, itemCost.definitionId) as { available: number };
+      if (row.available < itemCost.quantity) return `物品${itemCost.definitionId}数量不足`;
+    }
     return null;
+  }
+
+  private applyActionStartCosts(
+    playerId: string,
+    template: ActionTemplateRow,
+    costs: ActionOutcome,
+    requirements: ActionRequirement,
+    at: string,
+  ) {
+    const cashCost = Math.max(0, -(costs.cashWenDelta ?? 0));
+    if (costs.cashWenDelta !== undefined && costs.cashWenDelta > 0) {
+      throw new Error("行动成本不能增加钱贯，请将奖励放入成功结果。");
+    }
+    const hpCost = Math.max(0, -(costs.hpDelta ?? 0));
+    const player = this.getPlayerRow(playerId);
+    if (hpCost >= player.hp) throw new Error("气血不足，无法承担这项行动成本。");
+    if (cashCost > 0) this.changeCashWen(playerId, -cashCost, `${template.name}成本`, "action-cost", template.id, at);
+    if (hpCost > 0) {
+      this.db.prepare("UPDATE players SET hp=hp-?,updated_at=?,last_seen_at=? WHERE id=?").run(hpCost, at, at, playerId);
+    }
+    // Validate item availability before the job is inserted. The actual
+    // reservation is created immediately after insertion so the FK is valid.
+    for (const itemCost of requirements.itemCosts ?? []) {
+      const row = this.db.prepare(`
+        SELECT COALESCE(SUM(i.quantity-COALESCE(r.reserved,0)),0) AS available
+        FROM item_instances i
+        LEFT JOIN (
+          SELECT item_instance_id,SUM(quantity) AS reserved FROM item_reservations GROUP BY item_instance_id
+        ) r ON r.item_instance_id=i.id
+        WHERE i.owner_player_id=? AND i.definition_id=? AND i.equipped_slot IS NULL
+      `).get(playerId, itemCost.definitionId) as { available: number };
+      if (row.available < itemCost.quantity) throw new Error(`物品${itemCost.definitionId}数量不足。`);
+    }
   }
 
   private activeSkillIdForTemplate(template: ActionTemplateRow) {
@@ -1732,7 +1905,7 @@ export class GameService {
       available: rows.map((row) => {
         const check = parseCheck(row.check_json);
         const outcomes = parseOutcomes(row.outcomes_json);
-        const reason = this.unavailableReason(playerId, row);
+        const reason = this.unavailableReason(playerId, row, true);
         return {
           id: row.id,
           bindingId: row.binding_id,
@@ -1802,6 +1975,20 @@ export class GameService {
     const costs = actionOutcomeSchema.parse(action.costs);
     const success = actionOutcomeSchema.parse(action.success);
     const failure = actionOutcomeSchema.parse(action.failure);
+    const referencedItems = [
+      ...(requirements.itemCosts ?? []),
+      ...(costs.items ?? []),
+      ...(success.items ?? []),
+      ...(failure.items ?? []),
+    ];
+    for (const item of referencedItems) {
+      if (!this.db.prepare("SELECT 1 FROM item_definitions WHERE id=? AND is_active=1").get(item.definitionId)) {
+        throw new Error(`物品定义 ${item.definitionId} 不存在。`);
+      }
+    }
+    if ((costs.cashWenDelta ?? 0) > 0 || (costs.hpDelta ?? 0) > 0) {
+      throw new Error("行动成本只能消耗钱贯或气血，奖励请放入成功结果。");
+    }
     if (action.adult && (
       action.targetKind !== "player" || action.visibility !== "participants"
       || requirements.sameLocation !== true || requirements.targetOnline !== true
@@ -2147,10 +2334,13 @@ export class GameService {
         WHERE b.location_id=? AND b.action_template_id=? AND b.is_active=1 AND t.is_active=1
       `).get(player.current_location, actionTemplateId) as ActionTemplateRow | undefined;
       if (!template) throw new Error("这里无法进行这项行动。");
+      const requirements = parseRequirements(template.requirements_json);
       const activeSkillId = this.activeSkillIdForTemplate(template);
       if (activeSkillId) {
         throw new Error(activeSkillId === "qinggong" ? "请在地图上选择轻功落点。" : "请从角色属性栏的技能页发动这项技能。");
       }
+      const cooldownUntil = this.activeCooldownUntil(playerId, template.id);
+      if (cooldownUntil) throw new Error(`行动冷却中，请等待至${cooldownUntil}。`);
       const reason = this.unavailableReason(playerId, template);
       if (reason) throw new Error(reason);
       if (template.target_kind === "player") throw new Error("这项行动需要先选择目标。");
@@ -2163,15 +2353,29 @@ export class GameService {
       const position = running ? queuedCount + 1 : 0;
       const status = running ? "queued" : "running";
       const completesAt = running ? null : new Date(now.getTime() + template.duration_seconds * 1000).toISOString();
+      const costs = actionOutcomeSchema.parse(JSON.parse(template.costs_json));
+      this.applyActionStartCosts(playerId, template, costs, requirements, timestamp);
       this.db.prepare(`
         INSERT INTO action_jobs(
           id,player_id,action_template_id,binding_id,target_location_id,status,queue_position,
-          started_at,completes_at,duration_seconds,reserved_json,context_json,created_at,updated_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,'{}','{}',?,?)
+          started_at,completes_at,duration_seconds,rule_version,rule_snapshot_json,reserved_json,context_json,created_at,updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       `).run(
         id, playerId, template.id, template.binding_id, player.current_location, status, position,
-        running ? null : timestamp, completesAt, template.duration_seconds, timestamp, timestamp,
+        running ? null : timestamp, completesAt, template.duration_seconds, template.version,
+        JSON.stringify(this.serializeActionTemplate(template)), "{}", "{}", timestamp, timestamp,
       );
+      const itemCosts = (requirements.itemCosts ?? []).reduce<Record<string, number>>((all, item) => {
+        all[item.definitionId] = (all[item.definitionId] ?? 0) + item.quantity;
+        return all;
+      }, {});
+      this.reserveItems(playerId, id, itemCosts);
+      if (template.cooldown_seconds > 0) {
+        this.db.prepare(`
+          INSERT INTO player_action_cooldowns(player_id,action_template_id,available_at,updated_at) VALUES (?,?,?,?)
+          ON CONFLICT(player_id,action_template_id) DO UPDATE SET available_at=excluded.available_at,updated_at=excluded.updated_at
+        `).run(playerId, template.id, new Date(now.getTime() + template.cooldown_seconds * 1000).toISOString(), timestamp);
+      }
       if (!running && template.duration_seconds === 0) this.settleActionQueueInternal(playerId, now);
       return {
         actionState: this.readActionState(playerId),
@@ -2690,6 +2894,16 @@ export class GameService {
           UPDATE interaction_requests SET status='cancelled',updated_at=?
           WHERE status='pending' AND request_type='intimate' AND (from_player_id=? OR to_player_id=?)
         `).run(timestamp, playerId, playerId);
+        const jobs = this.db.prepare(`
+          SELECT j.id FROM action_jobs j JOIN action_templates t ON t.id=j.action_template_id
+          WHERE t.adult=1 AND j.status IN ('running','queued','paused')
+            AND (j.player_id=? OR j.target_player_id=?)
+        `).all(playerId, playerId) as Array<{ id: string }>;
+        const cancel = this.db.prepare("UPDATE action_jobs SET status='cancelled',result_text=?,updated_at=? WHERE id=?");
+        for (const job of jobs) {
+          cancel.run("成人资格或同意已撤销，行动已取消。", timestamp, job.id);
+          this.db.prepare("DELETE FROM item_reservations WHERE job_id=?").run(job.id);
+        }
       }
       return {
         social: this.getSocialState(playerId),

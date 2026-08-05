@@ -418,6 +418,14 @@ export class MarketEngine {
       UPDATE market_orders SET status='cancelled',remaining_quantity=0,updated_at=?
       WHERE owner_kind='guild' AND status='open' AND request_id<>?
     `).run(at.toISOString(), `guild:${minute}`);
+    this.db.prepare(`
+      DELETE FROM market_orders
+      WHERE owner_kind='guild' AND status='cancelled'
+        AND NOT EXISTS (
+          SELECT 1 FROM market_trades trade
+          WHERE trade.buy_order_id=market_orders.id OR trade.sell_order_id=market_orders.id
+        )
+    `).run();
     const contracts = this.db.prepare(`
       SELECT id,underlying_id,name,kind,expiry_at,horizon_days,strike_wen,multiplier,mark_price_wen,status
       FROM market_contracts WHERE status='active' ORDER BY id
@@ -571,9 +579,9 @@ export class MarketEngine {
     if (wallet < alreadyReserved + newOrderReserve) throw new Error("订单所需初始保证金不足。");
   }
 
-  snapshot(playerId: string): MarketSnapshot {
+  snapshot(playerId: string, settleMarket = true): MarketSnapshot {
     this.ensureAccount(playerId, this.now().toISOString());
-    this.settle();
+    if (settleMarket) this.settle();
     this.updateRisk(playerId, this.now().toISOString());
     const underlyings = this.db.prepare(`
       SELECT id,name,unit,spot_price_wen,previous_spot_price_wen FROM market_underlyings ORDER BY id

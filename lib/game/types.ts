@@ -107,7 +107,7 @@ export const ACTION_CATEGORIES = [
 export type ActionCategory = (typeof ACTION_CATEGORIES)[number];
 export type ActionTargetKind = "self" | "location" | "player" | "item" | "plot";
 export type ActionVisibility = "public" | "participants" | "private";
-export type ActionJobStatus = "queued" | "running" | "paused" | "completed" | "cancelled" | "interrupted";
+export type ActionJobStatus = "queued" | "running" | "paused" | "completed" | "cancelled" | "interrupted" | "failed";
 export type NeedKey = "satiety" | "hydration" | "hygiene" | "fatigue" | "bladder";
 
 export type ActionRequirement = {

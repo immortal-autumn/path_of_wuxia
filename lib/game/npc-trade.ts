@@ -31,6 +31,8 @@ export type NpcTradeOpenOrder = {
   id: string;
   contractId: string;
   side: MarketOrderSide;
+  limitPriceWen: number;
+  remainingQuantity: number;
   createdAt: string;
 };
 

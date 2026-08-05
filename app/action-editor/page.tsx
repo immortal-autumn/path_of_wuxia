@@ -9,5 +9,6 @@ export default async function ActionEditorPage() {
   const service = getGameService();
   const player = service.getPlayerBySessionToken(cookieStore.get(SESSION_COOKIE)?.value);
   if (!player) redirect("/api/session?returnTo=/action-editor");
+  if (!service.canEditWorld(player.id)) redirect("/?notice=editor-forbidden");
   return <ActionRuleEditor initialRules={service.getActionRuleSnapshot()} />;
 }

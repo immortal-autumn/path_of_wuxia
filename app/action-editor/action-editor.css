@@ -1,4 +1,4 @@
-.rule-editor-shell { min-height: 100vh; padding: 12px; background: #f6f6f3; color: #191919; }
+.rule-editor-shell { height: 100dvh; min-height: 0; padding: 12px; background: #f6f6f3; color: #191919; overflow: hidden; }
 .rule-editor-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border: 1px solid #222; background: #fff; }
 .rule-editor-header p, .rule-editor-header h1 { margin: 0; }
 .rule-editor-header p { color: #666; font-size: 11px; }
@@ -7,7 +7,7 @@
 .rule-editor-header a, .rule-editor-shell button, .rule-editor-shell input, .rule-editor-shell select, .rule-editor-shell textarea { border: 1px solid #333; background: #fff; color: inherit; }
 .rule-editor-header a { padding: 7px 9px; text-decoration: none; }
 .rule-connection { margin-top: 8px; padding: 8px 10px; border: 1px solid #333; background: #fff; font-size: 11px; }
-.rule-editor-grid { display: grid; grid-template-columns: minmax(190px, .55fr) minmax(440px, 1.4fr) minmax(260px, .75fr); gap: 8px; margin-top: 8px; min-height: calc(100vh - 112px); }
+.rule-editor-grid { display: grid; grid-template-columns: minmax(190px, .55fr) minmax(440px, 1.4fr) minmax(260px, .75fr); gap: 8px; margin-top: 8px; height: calc(100dvh - 112px); min-height: 0; }
 .rule-list, .rule-form, .rule-binding { min-width: 0; padding: 10px; border: 1px solid #222; background: #fff; overflow: auto; }
 .rule-list header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 7px; }
 .rule-list > button { display: block; width: 100%; padding: 8px; text-align: left; }
@@ -32,5 +32,5 @@
 .rule-location-summary { margin: 9px 0; padding: 8px; border: 1px solid #aaa; }
 .rule-bindings-list { margin-top: 9px; }
 .rule-bindings-list article { display: flex; justify-content: space-between; gap: 6px; padding: 7px 0; border-top: 1px solid #ccc; }
-@media (max-width: 1050px) { .rule-editor-grid { grid-template-columns: 1fr; } .rule-list, .rule-form, .rule-binding { overflow: visible; } }
+@media (max-width: 1050px) { .rule-editor-shell { height: 100dvh; min-height: 0; overflow-y: auto; } .rule-editor-grid { grid-template-columns: 1fr; height: auto; } .rule-list, .rule-form, .rule-binding { overflow: visible; } }
 @media (max-width: 620px) { .rule-editor-shell { padding: 6px; } .rule-editor-header { align-items: flex-start; flex-direction: column; } .rule-json-grid { grid-template-columns: 1fr; } }

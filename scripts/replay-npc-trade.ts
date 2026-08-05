@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { closeGameDatabase, getGameDatabase } from "../lib/game/database";
+import { openReadOnlyGameDatabase } from "../lib/game/database";
 import {
   canonicalJson,
   decideNpcTrade,
@@ -12,7 +12,7 @@ const argument = process.argv.find((value) => value.startsWith("--decision="));
 const decisionId = argument?.slice("--decision=".length);
 if (!decisionId) throw new Error("Usage: npm run npc:trade:replay -- --decision=<id>");
 
-const db = getGameDatabase();
+const db = openReadOnlyGameDatabase();
 try {
   const row = db.prepare(`
     SELECT decision.strategy_hash,decision.input_snapshot_json,decision.input_snapshot_hash,
@@ -38,5 +38,5 @@ try {
   console.log(JSON.stringify({ decisionId, storedOutputHash: row.output_hash, replayedOutputHash: replayedHash, valid }, null, 2));
   if (!valid) process.exitCode = 1;
 } finally {
-  closeGameDatabase();
+  db.close();
 }

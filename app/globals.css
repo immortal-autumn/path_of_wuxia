@@ -61,6 +61,30 @@ h2 {
   border: 0;
 }
 
+.app-error {
+  display: grid;
+  place-items: center;
+  min-height: 100dvh;
+  padding: 20px;
+}
+
+.app-error section {
+  width: min(520px, 100%);
+  padding: 24px;
+  border: 1px solid var(--border);
+}
+
+.app-error button,
+.app-error a {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  color: var(--text);
+  background: #fff;
+  text-decoration: none;
+}
+
 .game-shell {
   position: relative;
   display: grid;

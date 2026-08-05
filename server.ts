@@ -12,13 +12,22 @@ import { worldStatusKey } from "./lib/game/time";
 const dev = process.env.NODE_ENV !== "production";
 const hostname = process.env.GAME_HOST ?? "0.0.0.0";
 const port = Number(process.env.PORT ?? 3000);
+if (!dev && !process.env.PUBLIC_ORIGIN?.trim()) throw new Error("PUBLIC_ORIGIN 必须在生产环境启动前配置。");
 const service = getGameService();
+
+const gameplayNpcCommands = new Set([
+  "sync", "ping", "move", "action.start", "action.cancel", "action.queue.reorder",
+  "qinggong.start", "skill.use", "skill.stop", "combat.start", "combat.choose", "combat.respawn",
+  "loot.take", "chat.send",
+]);
 
 type SocketContext = {
   playerId: string;
   clientKind: "browser" | "npc-agent" | "npc-trade-agent";
   alive: boolean;
   visibleLocationIds: Set<string>;
+  windowStartedAt: number;
+  messageCount: number;
 };
 
 function readCookie(request: IncomingMessage, name: string) {
@@ -57,7 +66,7 @@ async function main() {
   const handle = app.getRequestHandler();
   const sockets = new Map<WebSocket, SocketContext>();
   const chatTimestamps = new Map<string, number>();
-  const wss = new WebSocketServer({ noServer: true, maxPayload: 4096 });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 32 * 1024 });
   const tradeService = new NpcTradeAgentService(getGameDatabase());
 
   const onlinePlayerIds = () => [...new Set([...sockets.values()]
@@ -65,17 +74,33 @@ async function main() {
     .map((context) => context.playerId))];
 
   const send = (socket: WebSocket, message: ServerMessage) => {
-    if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+    if (socket.readyState !== WebSocket.OPEN) return;
+    if (socket.bufferedAmount > 1_000_000) {
+      socket.close(1013, "客户端发送缓慢");
+      return;
+    }
+    socket.send(JSON.stringify(message));
   };
 
   const sendTrade = (socket: WebSocket, message: NpcTradeServerMessage) => {
-    if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+    if (socket.readyState !== WebSocket.OPEN) return;
+    if (socket.bufferedAmount > 1_000_000) {
+      socket.close(1013, "客户端发送缓慢");
+      return;
+    }
+    socket.send(JSON.stringify(message));
   };
 
   const broadcast = (message: ServerMessage) => {
     const payload = JSON.stringify(message);
     for (const [socket, context] of sockets) {
-      if (context.clientKind !== "npc-trade-agent" && socket.readyState === WebSocket.OPEN) socket.send(payload);
+      if (context.clientKind !== "npc-trade-agent" && socket.readyState === WebSocket.OPEN) {
+        if (socket.bufferedAmount > 1_000_000) {
+          socket.close(1013, "客户端发送缓慢");
+          continue;
+        }
+        socket.send(payload);
+      }
     }
   };
 
@@ -130,6 +155,8 @@ async function main() {
       clientKind: browserPlayer ? "browser" : agentIdentity?.scope === "market-trade" ? "npc-trade-agent" : "npc-agent",
       alive: true,
       visibleLocationIds: new Set(),
+      windowStartedAt: Date.now(),
+      messageCount: 0,
     };
     sockets.set(socket, context);
     if (context.clientKind !== "npc-trade-agent") {
@@ -146,6 +173,16 @@ async function main() {
     socket.on("message", (rawMessage) => {
       const context = sockets.get(socket);
       if (!context) return;
+      const now = Date.now();
+      if (now - context.windowStartedAt >= 1_000) {
+        context.windowStartedAt = now;
+        context.messageCount = 0;
+      }
+      context.messageCount += 1;
+      if (context.messageCount > 60) {
+        send(socket, { type: "error", message: "指令过于频繁，请稍后再试。" });
+        return;
+      }
 
       let raw: unknown;
       try {
@@ -204,6 +241,14 @@ async function main() {
       }
 
       const command = parsed.data;
+      if (context.clientKind === "npc-agent" && !gameplayNpcCommands.has(command.type)) {
+        send(socket, {
+          type: "error",
+          requestId: "requestId" in command ? command.requestId : undefined,
+          message: "NPC gameplay 凭证不能执行编辑、交易、社交或管理指令。",
+        });
+        return;
+      }
       try {
         if (command.type === "sync") {
           sendSnapshot(socket, context);
@@ -276,6 +321,7 @@ async function main() {
         }
 
         if (command.type === "rules.action.create" || command.type === "rules.action.update" || command.type === "rules.action.delete") {
+          service.assertEditor(context.playerId);
           const result = command.type === "rules.action.create"
             ? service.createActionRule(command.action)
             : command.type === "rules.action.update"
@@ -288,6 +334,7 @@ async function main() {
         }
 
         if (command.type === "rules.binding.upsert" || command.type === "rules.binding.delete") {
+          service.assertEditor(context.playerId);
           const result = command.type === "rules.binding.upsert"
             ? service.upsertActionRuleBinding(command.locationId, command.actionId, command.facilityId, command.priority)
             : service.deleteActionRuleBinding(command.bindingId);
@@ -298,6 +345,7 @@ async function main() {
         }
 
         if (command.type === "map.lock.acquire") {
+          service.assertEditor(context.playerId);
           const session = service.acquireMapLocks(
             context.playerId,
             command.scopes,
@@ -310,12 +358,14 @@ async function main() {
         }
 
         if (command.type === "map.lock.renew") {
+          service.assertEditor(context.playerId);
           const session = service.renewMapLocks(context.playerId, command.sessionId);
           send(socket, { type: "map.edit.session", requestId: command.requestId, session });
           return;
         }
 
         if (command.type === "map.lock.release") {
+          service.assertEditor(context.playerId);
           service.releaseMapLocks(context.playerId, command.sessionId);
           broadcast({ type: "map.locks.updated", locks: service.getActiveLocks() });
           send(socket, { type: "ack", requestId: command.requestId, message: "编辑已完成，锁已释放。" });
@@ -323,6 +373,7 @@ async function main() {
         }
 
         if (command.type === "map.edit") {
+          service.assertEditor(context.playerId);
           const result = service.applyMapOperation(context.playerId, command.sessionId, command.operation);
           send(socket, { type: "map.history.state", requestId: command.requestId, history: result.history });
           broadcast({ type: "map.chunks.invalidated", chunkKeys: result.invalidatedChunks });
@@ -331,6 +382,7 @@ async function main() {
         }
 
         if (command.type === "map.history.undo" || command.type === "map.history.redo") {
+          service.assertEditor(context.playerId);
           const result = command.type === "map.history.undo"
             ? service.undoMapOperation(context.playerId, command.sessionId)
             : service.redoMapOperation(context.playerId, command.sessionId);
@@ -656,7 +708,11 @@ async function main() {
 
   httpServer.on("upgrade", (request, socket, head) => {
     const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
-    if (url.pathname !== "/ws") return;
+    if (url.pathname !== "/ws") {
+      socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
     if (!isSameOrigin(request)) {
       socket.destroy();
       return;
@@ -710,27 +766,39 @@ async function main() {
   }, 60_000);
 
   const marketClock = setInterval(() => {
-    const affected = service.settleMarket();
-    tradeService.recoverReadyDecisions();
-    if (affected.length > 0) refreshPlayers(affected);
-    broadcast({ type: "market.updated" });
+    try {
+      const affected = service.settleMarket();
+      tradeService.recoverReadyDecisions();
+      if (affected.length > 0) refreshPlayers(affected);
+      broadcast({ type: "market.updated" });
+    } catch (error) {
+      console.error("[clock:market]", error);
+    }
   }, 60_000);
 
   const actionClock = setInterval(() => {
-    for (const playerId of new Set(onlinePlayerIds())) service.getLawState(playerId);
-    for (const playerId of new Set(onlinePlayerIds())) {
-      if (service.settleDueActions(playerId) <= 0) continue;
-      for (const [socket, context] of sockets) {
-        if (context.playerId === playerId) sendSnapshot(socket, context);
+    try {
+      for (const playerId of new Set(onlinePlayerIds())) service.getLawState(playerId);
+      for (const playerId of new Set(onlinePlayerIds())) {
+        try {
+          if (service.settleDueActions(playerId) <= 0) continue;
+          for (const [socket, context] of sockets) {
+            if (context.playerId === playerId) sendSnapshot(socket, context);
+          }
+          broadcastPresence();
+        } catch (error) {
+          console.error(`[clock:action:${playerId}]`, error);
+        }
       }
-      broadcastPresence();
-    }
-    const combatPlayers = service.settleDueCombats();
-    if (combatPlayers.length > 0) refreshPlayers(combatPlayers);
-    const respawnedNpcs = service.settleDueNpcRespawns();
-    if (respawnedNpcs.length > 0) {
-      refreshPlayers(respawnedNpcs);
-      broadcastPresence();
+      const combatPlayers = service.settleDueCombats();
+      if (combatPlayers.length > 0) refreshPlayers(combatPlayers);
+      const respawnedNpcs = service.settleDueNpcRespawns();
+      if (respawnedNpcs.length > 0) {
+        refreshPlayers(respawnedNpcs);
+        broadcastPresence();
+      }
+    } catch (error) {
+      console.error("[clock:action]", error);
     }
   }, 1_000);
 

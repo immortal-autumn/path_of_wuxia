@@ -106,8 +106,8 @@ describe("deterministic NPC trade helpers", () => {
     expect(decideNpcTrade(strategy, {
       ...input,
       openOrders: [
-        { id: "new", contractId: "spot-rice", side: "buy", createdAt: "2026-08-04T12:01:00.000Z" },
-        { id: "old", contractId: "spot-tea", side: "sell", createdAt: "2026-08-04T12:00:00.000Z" },
+        { id: "new", contractId: "spot-rice", side: "buy", limitPriceWen: 100, remainingQuantity: 1, createdAt: "2026-08-04T12:01:00.000Z" },
+        { id: "old", contractId: "spot-tea", side: "sell", limitPriceWen: 100, remainingQuantity: 1, createdAt: "2026-08-04T12:00:00.000Z" },
       ],
     }, "seed")).toEqual({ type: "market.order.cancel", orderId: "old" });
   });

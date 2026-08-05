@@ -13,7 +13,7 @@ const attributeKeys = ["strength", "agility", "constitution", "root", "comprehen
 
 const itemAmountSchema = z.object({
   definitionId: z.string().min(1).max(120),
-  quantity: z.number().int().min(1).max(1_000_000),
+  quantity: z.number().int().min(1).max(100_000),
 });
 
 export const actionRequirementSchema = z.object({
@@ -36,8 +36,8 @@ export const actionCheckSchema = z.object({
 }).strict();
 
 export const actionOutcomeSchema = z.object({
-  cashWenDelta: z.number().int().min(-1_000_000_000).max(1_000_000_000).optional(),
-  hpDelta: z.number().int().min(-1_000_000).max(1_000_000).optional(),
+  cashWenDelta: z.number().int().min(-10_000_000).max(10_000_000).optional(),
+  hpDelta: z.number().int().min(-100_000).max(100_000).optional(),
   cultivationDelta: z.number().int().min(-1_000_000).max(1_000_000).optional(),
   skillExperience: z.number().int().min(0).max(1_000_000).optional(),
   needDeltas: z.partialRecord(z.enum(needKeys), z.number().min(-100).max(100)).optional(),
