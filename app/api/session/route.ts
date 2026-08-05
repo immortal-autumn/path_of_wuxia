@@ -4,6 +4,27 @@ import { getGameService, SESSION_COOKIE, SESSION_MAX_AGE } from "@/lib/game/serv
 
 export const runtime = "nodejs";
 
+const sessionAttempts = new Map<string, { windowStartedAt: number; count: number }>();
+const SESSION_RATE_WINDOW_MS = 60_000;
+const SESSION_RATE_LIMIT = 30;
+
+function requestAddress(request: NextRequest) {
+  return (request.headers.get("x-forwarded-for")?.split(",", 1)[0]?.trim()
+    || request.headers.get("x-real-ip")?.trim() || "unknown").slice(0, 120);
+}
+
+function allowSessionCreation(request: NextRequest) {
+  const key = requestAddress(request);
+  const now = Date.now();
+  const current = sessionAttempts.get(key);
+  if (!current || now - current.windowStartedAt >= SESSION_RATE_WINDOW_MS) {
+    sessionAttempts.set(key, { windowStartedAt: now, count: 1 });
+    return true;
+  }
+  current.count += 1;
+  return current.count <= SESSION_RATE_LIMIT;
+}
+
 function trustedExternalIdentity(request: NextRequest) {
   const expectedSecret = process.env.OIDC_PROXY_SECRET;
   const suppliedSecret = request.headers.get("x-wuxia-proxy-secret");
@@ -21,6 +42,12 @@ function trustedExternalIdentity(request: NextRequest) {
 export function GET(request: NextRequest) {
   const service = getGameService();
   const existing = service.getPlayerBySessionToken(request.cookies.get(SESSION_COOKIE)?.value);
+  if (!existing && !allowSessionCreation(request)) {
+    return NextResponse.json({ error: "创建试玩身份过于频繁，请稍后再试。" }, {
+      status: 429,
+      headers: { "cache-control": "no-store", "retry-after": "60" },
+    });
+  }
   const external = trustedExternalIdentity(request);
   const identity = existing ? null : external
     ? service.createExternalSession(external.provider, external.subject, external.role)

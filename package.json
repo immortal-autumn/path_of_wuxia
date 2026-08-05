@@ -22,7 +22,7 @@
     "smoke:live": "node scripts/live-smoke.mjs"
   },
   "dependencies": {
-    "next": "16.2.12",
+    "next": "16.3.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "ws": "^8.21.1",
@@ -36,7 +36,7 @@
     "@types/react-dom": "^19",
     "@types/ws": "^8.18.1",
     "eslint": "^9",
-    "eslint-config-next": "16.2.12",
+    "eslint-config-next": "16.3.0",
     "tailwindcss": "^4",
     "tsx": "^4.23.4",
     "typescript": "^5",

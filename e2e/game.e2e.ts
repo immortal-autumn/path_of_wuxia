@@ -113,6 +113,21 @@ async function updatePlayer(page: Page, sql: string, ...params: Array<string | n
 }
 
 test.describe("entries and session identity", () => {
+  test("rate-limits cookie-less session creation", async ({ request }) => {
+    for (let index = 0; index < 30; index += 1) {
+      const response = await request.get(`/api/session?returnTo=/?attempt=${index}`, {
+        headers: { cookie: "", "x-forwarded-for": "198.51.100.42" },
+        maxRedirects: 0,
+      });
+      expect(response.status()).toBe(307);
+    }
+    const blocked = await request.get("/api/session?returnTo=/", {
+      headers: { cookie: "", "x-forwarded-for": "198.51.100.42" },
+      maxRedirects: 0,
+    });
+    expect(blocked.status()).toBe(429);
+  });
+
   test("bootstraps an HttpOnly session and exposes all application entries", async ({ page, context }) => {
     const health = await page.request.get("/api/health");
     expect(health.status()).toBe(200);
