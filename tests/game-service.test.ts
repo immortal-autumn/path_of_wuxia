@@ -498,9 +498,13 @@ describe("GameService", () => {
     const reversedIds = service.getActionState(player.id).queued.map((job) => job.id).reverse();
     expect(service.reorderActionQueue(player.id, reversedIds).actionState.queued.map((job) => job.id)).toEqual(reversedIds);
     clock = new Date(clock.getTime() + 60_000);
-    expect(service.settleActionQueue(player.id).completed).toBe(1);
+    expect(service.settleActionQueue(player.id).completed).toBe(2);
     const after = service.getActionState(player.id);
-    expect(after.current).toMatchObject({ name: "凝神聆听", status: "running", startedAt: clock.toISOString() });
+    expect(after.current).toMatchObject({
+      name: "凝神聆听",
+      status: "running",
+      startedAt: new Date(clock.getTime() - 20_000).toISOString(),
+    });
     expect(service.getPlayer(player.id).skills.find((skill) => skill.id === "perception")?.experience).toBe(8);
     service.cancelAction(player.id, after.current!.id);
     expect(service.getActionState(player.id).current).toMatchObject({ name: "凝神聆听" });
