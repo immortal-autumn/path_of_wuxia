@@ -138,7 +138,7 @@ export const clientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("interaction.greet"), requestId, targetPlayerId: id }),
   z.object({
     type: z.literal("interaction.request"), requestId, targetPlayerId: id,
-    requestType: z.enum(["relationship.friend", "relationship.sworn", "relationship.mentor", "relationship.lover", "relationship.spouse", "intimate"]),
+    requestType: z.enum(["relationship.friend", "relationship.sworn", "relationship.mentor", "relationship.lover", "relationship.spouse", "intimate", "duel"]),
     actionId: id.optional(),
   }),
   z.object({ type: z.literal("interaction.respond"), requestId, interactionRequestId: id, accept: z.boolean() }),

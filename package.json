@@ -16,6 +16,7 @@
     "test:e2e": "playwright test",
     "test:all": "npm run lint && npx tsc --noEmit && npm run map:validate && npm test && npm run test:e2e",
     "db:backup": "node scripts/backup-db.mjs",
+    "db:maintenance": "node scripts/db-maintenance.mjs",
     "map:seed": "tsx scripts/import-world-seed.ts",
     "map:validate": "tsx scripts/validate-map.ts",
     "map:seed-load": "node scripts/generate-map-load.mjs",

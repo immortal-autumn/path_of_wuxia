@@ -175,6 +175,7 @@ export default function ActionRuleEditor({ initialRules }: { initialRules: Actio
 
         <section className="rule-form" aria-label="行动规则表单">
           <div className="rule-form-heading"><h2>{form.version === null ? "新增行动" : `编辑：${form.name}`}</h2><span>ID {form.id || "保存时生成"}</span></div>
+          <div className="rule-form-scroll">
           <label>行动名称<input value={form.name} onChange={(event) => updateForm({ name: event.target.value })} /></label>
           <label>行动说明<textarea value={form.description} onChange={(event) => updateForm({ description: event.target.value })} /></label>
           <div className="rule-fields-row">
@@ -203,6 +204,7 @@ export default function ActionRuleEditor({ initialRules }: { initialRules: Actio
             <label>失败结果 JSON<textarea value={form.failure} onChange={(event) => updateForm({ failure: event.target.value })} /></label>
           </div>
           <label>结果文本<textarea value={form.resultTemplate} onChange={(event) => updateForm({ resultTemplate: event.target.value })} /></label>
+          </div>
           <div className="rule-form-actions"><button disabled={!connected} onClick={save}>保存规则{dirty ? " · 草稿" : ""}</button>{form.version !== null && <button disabled={!connected} onClick={() => send({ type: "rules.action.delete", actionId: form.id })}>停用规则</button>}</div>
         </section>
 

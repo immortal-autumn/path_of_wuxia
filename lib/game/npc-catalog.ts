@@ -1,9 +1,60 @@
 import type { DatabaseSync } from "node:sqlite";
 import { NPC_POPULATION, npcStableKey } from "./npc-seed";
 
-export const NPC_CITY_SEED_REVISION = 1;
+export const NPC_CITY_SEED_REVISION = 2;
 
 type Occupation = { cohort: string; key: string; name: string };
+
+const NPC_DIALOGUE_TOPICS = [
+  ["topic-greeting", "问候", "向对方问好。", "{npc}向你还礼，谈起今日东京城中的人情往来。", 1],
+  ["topic-work", "营生", "询问对方的营生。", "{npc}说起自己作为{occupation}的一日营作。", 0],
+  ["topic-city", "东京见闻", "询问附近见闻。", "{npc}提到御街、州桥与街市近来的消息。", 0],
+  ["topic-market", "行市行情", "打听街市货价与客流。", "{npc}说起近来行市的货色、客商与议价门道。", 0],
+  ["topic-craft", "手艺门道", "请教作坊里的手艺。", "{npc}谈到选料、火候与学徒打磨基本功的规矩。", 0],
+  ["topic-law", "开封法度", "询问城中的法度与治安。", "{npc}提醒你遵守坊市规矩，也说起府衙近日处置的案情。", 0],
+  ["topic-patrol", "巡城守门", "打听城门与巡更情形。", "{npc}说起交更时辰、城门盘验和夜间巡路的见闻。", 0],
+  ["topic-learning", "经义学问", "请教读书与治学。", "{npc}谈起国子监讲学、经义章句与东京士林风气。", 0],
+  ["topic-remedies", "药材诊疗", "请教常见药材与伤病。", "{npc}辨说几味常见药材，也提醒你伤重时莫要强撑。", 0],
+  ["topic-performance", "瓦舍百戏", "询问东京的曲艺百戏。", "{npc}说起瓦舍勾栏的新曲、杂剧与台前幕后的辛苦。", 0],
+  ["topic-neighborhood", "坊巷人情", "打听坊巷里的生活。", "{npc}讲起邻里往来、汲水买食和近日坊中的琐事。", 0],
+  ["topic-travel", "商路脚程", "询问出行与运货路线。", "{npc}细说桥渡、城门与歇脚处，提醒你避开拥堵路段。", 0],
+  ["topic-faith", "寺院香火", "询问寺院与香会。", "{npc}谈到大相国寺的斋会、钟鼓和往来香客。", 0],
+  ["topic-waterways", "汴河舟运", "打听汴河与桥渡。", "{npc}说起漕舟到埠、桥下水势与沿岸脚店的消息。", 0],
+  ["topic-gates", "城门出入", "询问城门与关津。", "{npc}告诉你各门往来的车马、盘验时辰与城外道路。", 0],
+] as const;
+
+function occupationTopicId(occupation: Occupation) {
+  if (occupation.cohort === "shopkeeper" || occupation.cohort === "commerce_worker") return "topic-market";
+  if (occupation.cohort === "assistant_artisan") return "topic-craft";
+  if (occupation.cohort === "constable") return "topic-law";
+  if (occupation.cohort === "patrol_guard") return "topic-patrol";
+  if (occupation.key === "monk") return "topic-faith";
+  if (occupation.key === "scholar") return "topic-learning";
+  if (occupation.key === "healer") return "topic-remedies";
+  if (occupation.key === "performer") return "topic-performance";
+  if (occupation.key === "traveler") return "topic-travel";
+  return "topic-neighborhood";
+}
+
+function areaTopicId(locationId: string) {
+  if (locationId.includes("xiangguo")) return "topic-faith";
+  if (locationId.includes("guozijian")) return "topic-learning";
+  if (locationId.includes("gate-") || locationId.includes("-gate")) return "topic-gates";
+  if (locationId.includes("bridge") || locationId.includes("river") || locationId.includes("water")) return "topic-waterways";
+  if (locationId.includes("market") || locationId.includes("shop") || locationId.includes("street")) return "topic-market";
+  return "topic-city";
+}
+
+function npcTopicIds(index: number, occupation: Occupation, workplace: string) {
+  // Keep the first resident's original public conversation surface stable for saved tutorials and smoke tests.
+  if (index === 0) return ["topic-greeting", "topic-work", "topic-city"];
+  const topics = new Set(["topic-greeting", occupationTopicId(occupation), areaTopicId(workplace)]);
+  for (const fallback of ["topic-work", "topic-city"]) {
+    if (topics.size >= 3) break;
+    topics.add(fallback);
+  }
+  return [...topics];
+}
 
 export function npcOccupation(index: number): Occupation {
   if (index < 120) return { cohort: "shopkeeper", key: "shopkeeper", name: "店主" };
@@ -165,14 +216,21 @@ export function seedNpcCity(db: DatabaseSync, now: string) {
     VALUES (?,?,?,?,?,?,1) ON CONFLICT(id) DO UPDATE SET title=excluded.title,player_prompt=excluded.player_prompt,
       reply_template=excluded.reply_template,standing_delta=excluded.standing_delta,seed_revision=excluded.seed_revision,is_active=1
   `);
-  for (const topic of [
-    ["topic-greeting", "问候", "向对方问好。", "{npc}向你还礼，谈起今日东京城中的人情往来。", 1],
-    ["topic-work", "营生", "询问对方的营生。", "{npc}说起自己作为{occupation}的一日营作。", 0],
-    ["topic-city", "东京见闻", "询问附近见闻。", "{npc}提到御街、州桥与街市近来的消息。", 0],
-  ] as const) topicInsert.run(...topic, NPC_CITY_SEED_REVISION);
+  for (const topic of NPC_DIALOGUE_TOPICS) topicInsert.run(...topic, NPC_CITY_SEED_REVISION);
+  db.prepare(`
+    DELETE FROM npc_dialogue_assignments
+    WHERE player_id IN (SELECT player_id FROM npc_assignments WHERE seed_revision>0)
+  `).run();
   const topicAssignment = db.prepare("INSERT OR IGNORE INTO npc_dialogue_assignments(player_id,topic_id) VALUES (?,?)");
   for (let index = 0; index < NPC_POPULATION; index += 1) {
-    for (const topicId of ["topic-greeting", "topic-work", "topic-city"]) topicAssignment.run(npcStableKey(index), topicId);
+    const assignment = db.prepare("SELECT cohort,occupation_key,occupation_name,workplace_location_id FROM npc_assignments WHERE player_id=?")
+      .get(npcStableKey(index)) as {
+        cohort: string; occupation_key: string; occupation_name: string; workplace_location_id: string;
+      };
+    const occupation = { cohort: assignment.cohort, key: assignment.occupation_key, name: assignment.occupation_name };
+    for (const topicId of npcTopicIds(index, occupation, assignment.workplace_location_id)) {
+      topicAssignment.run(npcStableKey(index), topicId);
+    }
   }
 
   const commissionInsert = db.prepare(`
@@ -183,12 +241,44 @@ export function seedNpcCity(db: DatabaseSync, now: string) {
       objective_json=excluded.objective_json,reward_wen=excluded.reward_wen,standing_reward=excluded.standing_reward,
       duration_seconds=excluded.duration_seconds,seed_revision=excluded.seed_revision,is_active=1
   `);
-  commissionInsert.run("commission-visit-zhou", "州桥探路", "亲自抵达州桥后回来复命。", "visit", JSON.stringify({ locationId: "song-landmark-bridge-zhou" }), 300, 3, 86_400, NPC_CITY_SEED_REVISION);
-  commissionInsert.run("commission-observe", "留心街市", "完成一次观察四周后回来复命。", "action", JSON.stringify({ actionTemplateId: "action-observe" }), 240, 2, 86_400, NPC_CITY_SEED_REVISION);
-  commissionInsert.run("commission-deliver-rice", "送来稻米", "交付一份未绑定且未被预留的稻米。", "deliver", JSON.stringify({ definitionId: "rice", quantity: 1 }), 420, 4, 86_400, NPC_CITY_SEED_REVISION);
+  const commissions = [
+    ["commission-visit-zhou", "州桥探路", "亲自抵达州桥后回来复命。", "visit", { locationId: "song-landmark-bridge-zhou" }, 300, 3],
+    ["commission-observe", "留心街市", "完成一次观察四周后回来复命。", "action", { actionTemplateId: "action-observe" }, 240, 2],
+    ["commission-deliver-rice", "送来稻米", "交付一份未绑定且未被预留的稻米。", "deliver", { definitionId: "rice", quantity: 1 }, 420, 4],
+    ["commission-visit-market", "潘楼问市", "到潘楼街市察看客流后回来复命。", "visit", { locationId: "song-landmark-market-patlou" }, 360, 3],
+    ["commission-visit-prefecture", "府署递话", "到开封府署走一趟，再回来说明沿途情形。", "visit", { locationId: "song-landmark-office-kaifeng" }, 380, 3],
+    ["commission-visit-xiangguo", "寺前访客", "到大相国寺探看香客往来后回来复命。", "visit", { locationId: "song-landmark-temple-xiangguo" }, 360, 3],
+    ["commission-visit-nanxun", "南薰门脚程", "到南薰门核对车马出入后回来复命。", "visit", { locationId: "song-landmark-gate-nanxun" }, 400, 3],
+    ["commission-listen", "听辨动静", "完成一次凝神聆听，记下附近的公开动静。", "action", { actionTemplateId: "action-listen" }, 260, 2],
+    ["commission-study", "温习经义", "完成一次研读，回来交流所得。", "action", { actionTemplateId: "action-study" }, 520, 4],
+    ["commission-deliver-herb", "添补药材", "交付一份未绑定且未被预留的药草。", "deliver", { definitionId: "herb", quantity: 1 }, 520, 4],
+    ["commission-deliver-wood", "送来木料", "交付一份未绑定且未被预留的木材。", "deliver", { definitionId: "wood", quantity: 1 }, 540, 4],
+    ["commission-deliver-paper", "捎来楮纸", "交付一份未绑定且未被预留的楮纸。", "deliver", { definitionId: "paper", quantity: 1 }, 480, 4],
+  ] as const;
+  for (const [id, title, description, kind, objective, reward, standing] of commissions) {
+    commissionInsert.run(
+      id, title, description, kind, JSON.stringify(objective), reward, standing, 86_400, NPC_CITY_SEED_REVISION,
+    );
+  }
+  db.prepare(`
+    DELETE FROM npc_commission_offers
+    WHERE npc_id IN (SELECT player_id FROM npc_assignments WHERE seed_revision>0)
+  `).run();
   const offerInsert = db.prepare("INSERT OR IGNORE INTO npc_commission_offers(npc_id,template_id) VALUES (?,?)");
-  const commissionIds = ["commission-visit-zhou", "commission-observe", "commission-deliver-rice"];
-  for (let index = 0; index < NPC_POPULATION; index += 1) offerInsert.run(npcStableKey(index), commissionIds[index % commissionIds.length]);
+  const cohortCommissions: Record<string, readonly string[]> = {
+    shopkeeper: ["commission-visit-zhou", "commission-observe", "commission-deliver-rice", "commission-visit-market", "commission-deliver-paper"],
+    assistant_artisan: ["commission-listen", "commission-deliver-wood", "commission-observe"],
+    commerce_worker: ["commission-visit-market", "commission-deliver-rice", "commission-listen"],
+    constable: ["commission-visit-prefecture", "commission-listen"],
+    patrol_guard: ["commission-visit-nanxun", "commission-listen"],
+    specialist: ["commission-visit-xiangguo", "commission-study", "commission-deliver-herb"],
+    townsfolk: ["commission-visit-zhou", "commission-observe", "commission-deliver-rice"],
+  };
+  for (let index = 0; index < NPC_POPULATION; index += 1) {
+    const occupation = npcOccupation(index);
+    const cohortTemplates = cohortCommissions[occupation.cohort];
+    offerInsert.run(npcStableKey(index), cohortTemplates[index % cohortTemplates.length]);
+  }
 
   db.prepare("DELETE FROM npc_relationships WHERE seed_revision>0").run();
   const relationshipInsert = db.prepare(`

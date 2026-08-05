@@ -1,28 +1,18 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { timingSafeEqual } from "node:crypto";
 import { getGameService, SESSION_COOKIE, SESSION_MAX_AGE } from "@/lib/game/service";
+import {
+  requestClientAddress,
+  SessionCreationLimiter,
+  trustProxyHeaders,
+} from "@/lib/game/session-security";
 
 export const runtime = "nodejs";
 
-const sessionAttempts = new Map<string, { windowStartedAt: number; count: number }>();
-const SESSION_RATE_WINDOW_MS = 60_000;
-const SESSION_RATE_LIMIT = 30;
-
-function requestAddress(request: NextRequest) {
-  return (request.headers.get("x-forwarded-for")?.split(",", 1)[0]?.trim()
-    || request.headers.get("x-real-ip")?.trim() || "unknown").slice(0, 120);
-}
+const sessionLimiter = new SessionCreationLimiter();
 
 function allowSessionCreation(request: NextRequest) {
-  const key = requestAddress(request);
-  const now = Date.now();
-  const current = sessionAttempts.get(key);
-  if (!current || now - current.windowStartedAt >= SESSION_RATE_WINDOW_MS) {
-    sessionAttempts.set(key, { windowStartedAt: now, count: 1 });
-    return true;
-  }
-  current.count += 1;
-  return current.count <= SESSION_RATE_LIMIT;
+  return sessionLimiter.allow(requestClientAddress(request.headers));
 }
 
 function trustedExternalIdentity(request: NextRequest) {
@@ -53,8 +43,11 @@ export function GET(request: NextRequest) {
     ? service.createExternalSession(external.provider, external.subject, external.role)
     : service.createSession();
   const returnTo = request.nextUrl.searchParams.get("returnTo");
-  const forwardedProtocol = request.headers.get("x-forwarded-proto") ?? request.nextUrl.protocol.replace(":", "");
-  const forwardedHost = request.headers.get("x-forwarded-host") ?? request.headers.get("host") ?? request.nextUrl.host;
+  const trustProxy = trustProxyHeaders();
+  const forwardedProtocol = (trustProxy ? request.headers.get("x-forwarded-proto") : null)
+    ?? request.nextUrl.protocol.replace(":", "");
+  const forwardedHost = (trustProxy ? request.headers.get("x-forwarded-host") : null)
+    ?? request.headers.get("host") ?? request.nextUrl.host;
   const publicOrigin = process.env.PUBLIC_ORIGIN?.replace(/\/$/, "") ?? `${forwardedProtocol}://${forwardedHost}`;
   let destination = new URL("/", publicOrigin);
   if (returnTo && !/[\\\u0000-\u001f\u007f]/.test(returnTo)) {

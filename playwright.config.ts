@@ -23,7 +23,7 @@ export default defineConfig({
     screenshot: "only-on-failure",
   },
   webServer: {
-    command: `npm run build && PORT=${port} GAME_HOST=127.0.0.1 PUBLIC_ORIGIN=http://127.0.0.1:${port} DATABASE_PATH=${databasePath} EDITOR_ALLOW_ALL=true NPC_RUNNER_SECRET=playwright-gameplay-secret NPC_TRADE_RUNNER_SECRET=playwright-trade-secret npm start`,
+    command: `npm run build && PORT=${port} GAME_HOST=127.0.0.1 PUBLIC_ORIGIN=http://127.0.0.1:${port} DATABASE_PATH=${databasePath} TRUST_PROXY=true EDITOR_ALLOW_ALL=true ANONYMOUS_ECONOMY=true NPC_RUNNER_SECRET=playwright-gameplay-secret NPC_TRADE_RUNNER_SECRET=playwright-trade-secret npm start`,
     url: `http://127.0.0.1:${port}/favicon.ico`,
     timeout: 120_000,
     reuseExistingServer: false,

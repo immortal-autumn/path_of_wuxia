@@ -1,4 +1,0 @@
-interface:
-  display_name: "Track Project Functions"
-  short_description: "Keep the root function inventory current"
-  default_prompt: "Use $track-project-functions to implement a function and update the root function inventory."
