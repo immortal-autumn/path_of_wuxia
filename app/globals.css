@@ -302,12 +302,14 @@ h2 {
 }
 
 .map-status dd {
+  block-size: 2.8em;
   margin: 0;
-  overflow: hidden;
+  overflow: auto;
   font-size: 12px;
   font-weight: 700;
   line-height: 1.4;
   overflow-wrap: anywhere;
+  scrollbar-width: thin;
 }
 
 .map-stage {

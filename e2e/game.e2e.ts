@@ -422,8 +422,20 @@ test.describe("game map", () => {
     await expect(page.getByLabel("地图信息")).toContainText("地图中心玄关 · (0, 0)");
     await expect(page.getByLabel("地图信息")).toContainText("三步结构10 地点");
     expect(await page.locator(".map-node .node-name").allTextContents()).toEqual(expect.arrayContaining(["玄关", "前庭", "门厅", "客厅", "餐厅", "修炼房"]));
+    const mapLayoutBeforeHover = await page.locator(".map-panel").evaluate((panel) => {
+      const status = panel.querySelector(".map-status");
+      const stage = panel.querySelector(".map-stage");
+      if (!status || !stage) throw new Error("Map status or stage is missing");
+      return `${Math.round(status.getBoundingClientRect().height)}:${Math.round(stage.getBoundingClientRect().top)}`;
+    });
     await page.getByRole("button", { name: /嬴长嫚与楼夜秋之家·门厅.*可前往/ }).hover();
     await expect(page.getByLabel("地图信息")).toContainText("聚焦地点嬴长嫚与楼夜秋之家·门厅 · (0, 1)");
+    await expect.poll(() => page.locator(".map-panel").evaluate((panel) => {
+      const status = panel.querySelector(".map-status");
+      const stage = panel.querySelector(".map-stage");
+      if (!status || !stage) throw new Error("Map status or stage is missing");
+      return `${Math.round(status.getBoundingClientRect().height)}:${Math.round(stage.getBoundingClientRect().top)}`;
+    })).toBe(mapLayoutBeforeHover);
     expect(await page.locator(".node-name").evaluateAll((nodes) => nodes.every((node) => (
       node.scrollWidth <= node.clientWidth && node.scrollHeight <= node.clientHeight
     )))).toBe(true);
