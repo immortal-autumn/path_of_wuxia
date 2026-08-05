@@ -100,6 +100,8 @@ const EDIT_LEASE_MS = 2 * 60 * 1000;
 const MAX_HISTORY = 50;
 const MAX_VIEWPORT_LOCATIONS = 1200;
 const MINUTE_MS = 60_000;
+const NEW_PLAYER_PROTECTION_MS = 60 * 60_000;
+const HOSTILE_SAFE_LOCATION_IDS = new Set(["home-exterior", "song-gate"]);
 export const SESSION_COOKIE = "wuxia_session";
 export const SESSION_MAX_AGE = Math.floor(SESSION_LIFETIME_MS / 1000);
 
@@ -342,6 +344,43 @@ export class GameService {
       SELECT 1 FROM combat_sessions WHERE status='active' AND (attacker_id=? OR defender_id=?) LIMIT 1
     `).get(playerId, playerId)) throw new Error("战斗尚未结束，当前只能选择战斗行动。");
     return player;
+  }
+
+  private isNpc(playerId: string) {
+    return this.db.prepare("SELECT 1 FROM npc_profiles WHERE player_id=?").get(playerId) !== undefined;
+  }
+
+  private assertAnonymousEconomyAllowed(playerId: string, operation: string) {
+    if (process.env.NODE_ENV !== "production" || process.env.ANONYMOUS_ECONOMY === "true") return;
+    const trustedIdentity = this.db.prepare("SELECT 1 FROM external_identities WHERE player_id=? LIMIT 1").get(playerId);
+    if (trustedIdentity || this.isNpc(playerId)) return;
+    throw new Error(`匿名试玩角色不能${operation}；绑定外部账号后再试，或仅在演示环境显式开启 ANONYMOUS_ECONOMY=true。`);
+  }
+
+  private assertDirectTradeAllowed(playerId: string, targetPlayerId: string) {
+    this.assertAnonymousEconomyAllowed(playerId, "进行玩家交易");
+    this.assertAnonymousEconomyAllowed(targetPlayerId, "进行玩家交易");
+  }
+
+  private assertHostileCombatAllowed(attackerId: string, defenderId: string, locationId: string) {
+    const location = this.db.prepare("SELECT layer_id FROM locations WHERE id=? AND is_active=1").get(locationId) as {
+      layer_id: string;
+    } | undefined;
+    if (!location) throw new Error("战斗地点不存在或已经关闭。");
+    if (location.layer_id === "home-ground" || HOSTILE_SAFE_LOCATION_IDS.has(locationId)) {
+      throw new Error("住宅、玄关与东京入口属于安全地点，禁止敌意攻击。");
+    }
+    const attackerIsNpc = this.isNpc(attackerId);
+    const defenderIsNpc = this.isNpc(defenderId);
+    if (!attackerIsNpc && !defenderIsNpc) throw new Error("真人之间不能直接敌意攻击，请先发起切磋并由对方接受。");
+    if (!defenderIsNpc) {
+      const defender = this.db.prepare("SELECT created_at FROM players WHERE id=?").get(defenderId) as {
+        created_at: string;
+      } | undefined;
+      if (defender && this.now().getTime() - new Date(defender.created_at).getTime() < NEW_PLAYER_PROTECTION_MS) {
+        throw new Error("该角色仍在一小时新手保护期内，不能被敌意攻击。");
+      }
+    }
   }
 
   private ensurePlayerSystems(playerId: string, at = this.now()) {
@@ -799,6 +838,7 @@ export class GameService {
   ) {
     return inTransaction(this.db, () => {
       this.assertMarketAccess(playerId);
+      this.assertAnonymousEconomyAllowed(playerId, "在市易行会下单");
       return new MarketEngine(this.db, this.now).placeOrder(
         playerId, requestId, contractId, side, limitPriceWen, quantity,
       );
@@ -2944,6 +2984,8 @@ export class GameService {
         `).get(templateId) as { id: string } | undefined;
         if (!template) throw new Error("成人互动规则不存在或隐私设置不安全。");
         payload.actionId = template.id;
+      } else if (requestType === "duel") {
+        if (this.isNpc(playerId) || this.isNpc(targetPlayerId)) throw new Error("切磋请求只适用于真人角色。");
       } else if (!relationshipType) {
         throw new Error("不支持这种互动请求。");
       }
@@ -2980,10 +3022,12 @@ export class GameService {
       const timestamp = this.now().toISOString();
       if (!accept) {
         this.db.prepare("UPDATE interaction_requests SET status='declined',updated_at=? WHERE id=?").run(timestamp, request.id);
-        return { affectedPlayerIds: [request.from_player_id, request.to_player_id], message: "已拒绝请求。" };
+        return { affectedPlayerIds: [request.from_player_id, request.to_player_id], message: "已拒绝请求。", event: undefined };
       }
       this.assertDirectInteraction(playerId, request.from_player_id);
       if (onlinePlayerIds.length > 0 && !onlinePlayerIds.includes(request.from_player_id)) throw new Error("请求方当前不在线。");
+      let event: WorldEvent | undefined;
+      let responseMessage = "已接受请求。";
       if (request.request_type.startsWith("relationship.")) {
         const relationType = request.request_type.slice("relationship.".length);
         const [a, b] = [request.from_player_id, request.to_player_id].sort();
@@ -3015,11 +3059,22 @@ export class GameService {
           durationSeconds: template.duration_seconds,
           context: { interactionRequestId: request.id },
         });
+      } else if (request.request_type === "duel") {
+        if (this.isNpc(request.from_player_id) || this.isNpc(request.to_player_id)) {
+          throw new Error("切磋请求只适用于真人角色。");
+        }
+        const combat = this.createCombatInternal(request.from_player_id, request.to_player_id, "duel");
+        const payload = JSON.parse(request.payload_json) as Record<string, unknown>;
+        payload.combatId = combat.combatId;
+        this.db.prepare("UPDATE interaction_requests SET payload_json=? WHERE id=?")
+          .run(JSON.stringify(payload), request.id);
+        event = combat.event;
+        responseMessage = "已接受切磋，双方点到即止；落败不会掉落钱贯或物品。";
       } else {
         throw new Error("不支持这种互动请求。");
       }
       this.db.prepare("UPDATE interaction_requests SET status='accepted',updated_at=? WHERE id=?").run(timestamp, request.id);
-      return { affectedPlayerIds: [request.from_player_id, request.to_player_id], message: "已接受请求。" };
+      return { affectedPlayerIds: [request.from_player_id, request.to_player_id], message: responseMessage, event };
     });
   }
 
@@ -3063,6 +3118,7 @@ export class GameService {
     return inTransaction(this.db, () => {
       this.cleanupExpiredSocial();
       const { target } = this.assertDirectInteraction(playerId, targetPlayerId);
+      this.assertDirectTradeAllowed(playerId, targetPlayerId);
       if (this.db.prepare(`
         SELECT 1 FROM trade_sessions WHERE status IN ('pending','active')
           AND ((player_a_id=? AND player_b_id=?) OR (player_a_id=? AND player_b_id=?))
@@ -3088,6 +3144,7 @@ export class GameService {
       const timestamp = this.now().toISOString();
       if (accept) {
         this.assertDirectInteraction(playerId, row.player_a_id);
+        this.assertDirectTradeAllowed(playerId, row.player_a_id);
         if (onlinePlayerIds.length > 0 && !onlinePlayerIds.includes(row.player_a_id)) throw new Error("交易发起方当前不在线。");
         this.db.prepare("UPDATE trade_sessions SET status='active',expires_at=?,updated_at=? WHERE id=?")
           .run(new Date(this.now().getTime() + 30 * 60_000).toISOString(), timestamp, tradeId);
@@ -3133,6 +3190,7 @@ export class GameService {
       `).get(tradeId, this.now().toISOString(), playerId, playerId) as { player_a_id: string; player_b_id: string } | undefined;
       if (!row) throw new Error("交易不存在、未开始或已过期。");
       this.assertDirectInteraction(row.player_a_id, row.player_b_id);
+      this.assertDirectTradeAllowed(row.player_a_id, row.player_b_id);
       const offer = { cashWen, items } satisfies StoredTradeOffer;
       this.validateTradeOffer(playerId, offer);
       const side = row.player_a_id === playerId ? "a" : "b";
@@ -3173,6 +3231,7 @@ export class GameService {
       } | undefined;
       if (!row) throw new Error("交易不存在、未开始或已过期。");
       this.assertDirectInteraction(row.player_a_id, row.player_b_id);
+      this.assertDirectTradeAllowed(row.player_a_id, row.player_b_id);
       const offerA = parseStoredTradeOffer(row.offer_a_json);
       const offerB = parseStoredTradeOffer(row.offer_b_json);
       this.validateTradeOffer(row.player_a_id, offerA);
@@ -3309,34 +3368,41 @@ export class GameService {
     `).get(combatId) as CombatRow | undefined;
   }
 
-  startCombat(playerId: string, targetPlayerId: string) {
-    return inTransaction(this.db, () => {
-      if (playerId === targetPlayerId) throw new Error("不能攻击自己。");
-      const attacker = this.assertCanTakeGameAction(playerId);
-      const defender = this.assertCanTakeGameAction(targetPlayerId);
-      if (attacker.current_location !== defender.current_location) throw new Error("只能攻击同一地点的角色。");
-      for (const participant of [playerId, targetPlayerId]) {
-        this.settleActionQueueInternal(participant, this.now());
-        if (this.db.prepare("SELECT 1 FROM action_jobs WHERE player_id=? AND status IN ('running','paused','queued')").get(participant)) {
-          throw new Error("参战者仍有进行中或排队的行动。");
-        }
+  private createCombatInternal(playerId: string, targetPlayerId: string, kind: "hostile" | "duel") {
+    if (playerId === targetPlayerId) throw new Error(kind === "duel" ? "不能与自己切磋。" : "不能攻击自己。");
+    const attacker = this.assertCanTakeGameAction(playerId);
+    const defender = this.assertCanTakeGameAction(targetPlayerId);
+    if (attacker.current_location !== defender.current_location) throw new Error("只能与同一地点的角色战斗。");
+    if (kind === "hostile") this.assertHostileCombatAllowed(playerId, targetPlayerId, attacker.current_location);
+    for (const participant of [playerId, targetPlayerId]) {
+      this.settleActionQueueInternal(participant, this.now());
+      if (this.db.prepare("SELECT 1 FROM action_jobs WHERE player_id=? AND status IN ('running','paused','queued')").get(participant)) {
+        throw new Error("参战者仍有进行中或排队的行动。");
       }
-      const now = this.now();
-      const id = randomUUID();
-      this.db.prepare(`
-        INSERT INTO combat_sessions(
-          id,location_id,attacker_id,defender_id,status,round,acting_player_id,turn_deadline,
-          attacker_misses,defender_misses,created_at,updated_at
-        ) VALUES (?,?,?,?,'active',1,?,?,0,0,?,?)
-      `).run(id, attacker.current_location, playerId, targetPlayerId, playerId, new Date(now.getTime() + 30_000).toISOString(), now.toISOString(), now.toISOString());
+    }
+    const now = this.now();
+    const id = randomUUID();
+    this.db.prepare(`
+      INSERT INTO combat_sessions(
+        id,location_id,attacker_id,defender_id,status,round,acting_player_id,turn_deadline,
+        attacker_misses,defender_misses,created_at,updated_at
+      ) VALUES (?,?,?,?,'active',1,?,?,0,0,?,?)
+    `).run(id, attacker.current_location, playerId, targetPlayerId, playerId, new Date(now.getTime() + 30_000).toISOString(), now.toISOString(), now.toISOString());
+    if (kind === "hostile") {
       this.recordLawIncident(playerId, targetPlayerId, "assault", attacker.current_location, "combat", id, now.toISOString());
-      const content = `${attacker.name}向${defender.name}发起战斗。`;
-      const inserted = this.db.prepare("INSERT INTO world_events(player_id,event_type,content,created_at) VALUES (?,'combat',?,?)")
-        .run(playerId, content, now.toISOString());
-      const event = this.db.prepare("SELECT id,player_id,event_type,content,created_at FROM world_events WHERE id=?")
-        .get(inserted.lastInsertRowid) as EventRow;
-      return { combatId: id, affectedPlayerIds: [playerId, targetPlayerId], event: mapEvent(event), message: content };
-    });
+    }
+    const content = kind === "duel"
+      ? `${attacker.name}与${defender.name}开始切磋，双方约定点到即止。`
+      : `${attacker.name}向${defender.name}发起敌意战斗。`;
+    const inserted = this.db.prepare("INSERT INTO world_events(player_id,event_type,content,created_at) VALUES (?,'combat',?,?)")
+      .run(playerId, content, now.toISOString());
+    const event = this.db.prepare("SELECT id,player_id,event_type,content,created_at FROM world_events WHERE id=?")
+      .get(inserted.lastInsertRowid) as EventRow;
+    return { combatId: id, affectedPlayerIds: [playerId, targetPlayerId], event: mapEvent(event), message: content };
+  }
+
+  startCombat(playerId: string, targetPlayerId: string) {
+    return inTransaction(this.db, () => this.createCombatInternal(playerId, targetPlayerId, "hostile"));
   }
 
   private insertCombatTurn(combat: CombatRow, playerId: string, choice: string, resultText: string, at: string) {
@@ -3364,6 +3430,23 @@ export class GameService {
   private defeatPlayer(combat: CombatRow, winnerId: string, loserId: string, at: string) {
     const winner = this.getPlayer(winnerId);
     const loser = this.getPlayer(loserId);
+    const isHumanDuel = !this.isNpc(winnerId) && !this.isNpc(loserId) && this.db.prepare(`
+      SELECT 1 FROM interaction_requests
+      WHERE request_type='duel' AND status='accepted' AND json_extract(payload_json,'$.combatId')=? LIMIT 1
+    `).get(combat.id) !== undefined;
+    if (isHumanDuel) {
+      this.db.prepare("UPDATE players SET hp=1,updated_at=?,last_seen_at=? WHERE id=?").run(at, at, loserId);
+      this.db.prepare(`
+        UPDATE combat_sessions SET status='completed',acting_player_id=NULL,turn_deadline=NULL,
+          winner_id=?,loser_id=?,ended_at=?,updated_at=? WHERE id=?
+      `).run(winnerId, loserId, at, at, combat.id);
+      const text = `${winner.name}在切磋中胜过${loser.name}，双方点到即止；钱贯与物品均未掉落。`;
+      this.db.prepare("INSERT INTO world_events(player_id,event_type,content,created_at) VALUES (?,'combat',?,?)").run(winnerId, text, at);
+      for (const participant of [winnerId, loserId]) {
+        this.db.prepare("INSERT INTO private_events(player_id,event_type,content,created_at) VALUES (?,'combat',?,?)").run(participant, text, at);
+      }
+      return text;
+    }
     const lootId = randomUUID();
     this.db.prepare(`
       INSERT INTO loot_piles(id,location_id,silver,cash_wen,source_player_id,created_at,updated_at) VALUES (?,?,0,?,?,?,?)
@@ -3596,7 +3679,9 @@ export class GameService {
       items: (this.db.prepare(`
         SELECT d.name,i.quantity,i.quality FROM item_instances i JOIN item_definitions d ON d.id=i.definition_id
         WHERE i.loot_pile_id=? ORDER BY d.name,i.id
-      `).all(row.id) as Array<{ name: string; quantity: number; quality: number }>),
+      `).all(row.id) as Array<{ name: string; quantity: number; quality: number }>).map((item) => ({
+        name: item.name, quantity: item.quantity, quality: item.quality,
+      })),
     }));
   }
 
@@ -3607,6 +3692,9 @@ export class GameService {
         location_id: string; cash_wen: number; source_player_id: string | null;
       } | undefined;
       if (!pile || pile.location_id !== player.current_location) throw new Error("战利品不在当前位置或已经被取走。");
+      if (pile.source_player_id && pile.source_player_id !== playerId) {
+        this.assertAnonymousEconomyAllowed(playerId, "拾取他人的战利品");
+      }
       const timestamp = this.now().toISOString();
       if (pile.cash_wen > 0) this.changeCashWen(playerId, pile.cash_wen, "拾取战利品", "loot", lootPileId, timestamp);
       this.db.prepare("UPDATE item_instances SET owner_player_id=?,loot_pile_id=NULL,updated_at=? WHERE loot_pile_id=?")
@@ -3871,12 +3959,13 @@ export class GameService {
       const name = cleanText(layer.name, "地图层名称", 40);
       const description = cleanText(layer.description, "地图层描述", 200);
       if (this.db.prepare("SELECT 1 FROM map_layers WHERE id=?").get(layer.id)) {
-        this.db.prepare("UPDATE map_layers SET name=?,description=?,parent_layer_id=?,is_active=1,version=version+1,updated_at=? WHERE id=?")
+        this.db.prepare("UPDATE map_layers SET name=?,description=?,parent_layer_id=?,is_active=1,seed_revision=0,version=version+1,updated_at=? WHERE id=?")
           .run(name, description, layer.parentLayerId, now, layer.id);
       } else {
         this.db.prepare(`INSERT INTO map_layers(id,name,description,parent_layer_id,version,is_active,created_at,updated_at) VALUES (?,?,?,?,1,1,?,?)`)
           .run(layer.id, name, description, layer.parentLayerId, now, now);
       }
+      this.db.prepare("DELETE FROM map_seed_tombstones WHERE entity_type='layer' AND entity_id=?").run(layer.id);
       return { forward: { type: "layer.create", layer }, inverse: { type: "layer.delete", layerId: layer.id }, invalidatedChunks: [] };
     }
     if (operation.type === "layer.update") {
@@ -3892,7 +3981,7 @@ export class GameService {
       }
       const name = operation.patch.name === undefined ? current.name : cleanText(operation.patch.name, "地图层名称", 40);
       const description = operation.patch.description === undefined ? current.description : cleanText(operation.patch.description, "地图层描述", 200);
-      this.db.prepare("UPDATE map_layers SET name=?,description=?,parent_layer_id=?,version=version+1,updated_at=? WHERE id=?").run(name, description, parent, now, current.id);
+      this.db.prepare("UPDATE map_layers SET name=?,description=?,parent_layer_id=?,seed_revision=0,version=version+1,updated_at=? WHERE id=?").run(name, description, parent, now, current.id);
       return { forward: operation, inverse: { type: "layer.update", layerId: current.id, patch: { name: current.name, description: current.description, parentLayerId: current.parentLayerId } }, invalidatedChunks: [] };
     }
     if (operation.type === "layer.delete") {
@@ -3900,7 +3989,8 @@ export class GameService {
       const current = this.getLayer(operation.layerId);
       const used = this.db.prepare("SELECT 1 FROM locations WHERE layer_id=? AND is_active=1 UNION SELECT 1 FROM map_layers WHERE parent_layer_id=? AND is_active=1 LIMIT 1").get(current.id, current.id);
       if (used) throw new Error("地图层仍包含地点或子层，不能删除。");
-      this.db.prepare("UPDATE map_layers SET is_active=0,version=version+1,updated_at=? WHERE id=?").run(now, current.id);
+      this.db.prepare("INSERT OR REPLACE INTO map_seed_tombstones(entity_type,entity_id,deleted_at) VALUES ('layer',?,?)").run(current.id, now);
+      this.db.prepare("UPDATE map_layers SET is_active=0,seed_revision=0,version=version+1,updated_at=? WHERE id=?").run(now, current.id);
       return { forward: operation, inverse: { type: "layer.create", layer: current }, invalidatedChunks: [] };
     }
     if (operation.type === "region.create") {
@@ -3909,12 +3999,13 @@ export class GameService {
       const name = cleanText(region.name, "区域名称", 40);
       const description = cleanText(region.description, "区域描述", 200);
       if (this.db.prepare("SELECT 1 FROM map_regions WHERE id=?").get(region.id)) {
-        this.db.prepare("UPDATE map_regions SET layer_id=?,name=?,description=?,x=?,y=?,width=?,height=?,is_active=1,version=version+1,updated_at=? WHERE id=?")
+        this.db.prepare("UPDATE map_regions SET layer_id=?,name=?,description=?,x=?,y=?,width=?,height=?,is_active=1,seed_revision=0,version=version+1,updated_at=? WHERE id=?")
           .run(region.layerId, name, description, region.x, region.y, Math.max(160, region.width), Math.max(160, region.height), now, region.id);
       } else {
         this.db.prepare(`INSERT INTO map_regions(id,layer_id,name,description,x,y,width,height,version,is_active,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,1,1,?,?)`)
           .run(region.id, region.layerId, name, description, region.x, region.y, Math.max(160, region.width), Math.max(160, region.height), now, now);
       }
+      this.db.prepare("DELETE FROM map_seed_tombstones WHERE entity_type='region' AND entity_id=?").run(region.id);
       return { forward: { type: "region.create", region }, inverse: { type: "region.delete", regionId: region.id }, invalidatedChunks: [] };
     }
     if (operation.type === "region.update") {
@@ -3926,7 +4017,7 @@ export class GameService {
         x: operation.patch.x ?? current.x, y: operation.patch.y ?? current.y,
         width: Math.max(160, operation.patch.width ?? current.width), height: Math.max(160, operation.patch.height ?? current.height),
       };
-      this.db.prepare("UPDATE map_regions SET name=?,description=?,x=?,y=?,width=?,height=?,version=version+1,updated_at=? WHERE id=?")
+      this.db.prepare("UPDATE map_regions SET name=?,description=?,x=?,y=?,width=?,height=?,seed_revision=0,version=version+1,updated_at=? WHERE id=?")
         .run(next.name, next.description, next.x, next.y, next.width, next.height, now, current.id);
       this.db.prepare("UPDATE locations SET region=?,version=version+1 WHERE region_id=?").run(next.name, current.id);
       return { forward: operation, inverse: { type: "region.update", regionId: current.id, patch: { name: current.name, description: current.description, x: current.x, y: current.y, width: current.width, height: current.height } }, invalidatedChunks: [] };
@@ -3935,7 +4026,8 @@ export class GameService {
       if (operation.regionId === "home") throw new Error("初始之家区域不能删除。");
       const current = this.getRegion(operation.regionId);
       if (this.db.prepare("SELECT 1 FROM locations WHERE region_id=? AND is_active=1 LIMIT 1").get(current.id)) throw new Error("区域内仍有地点，不能删除。");
-      this.db.prepare("UPDATE map_regions SET is_active=0,version=version+1,updated_at=? WHERE id=?").run(now, current.id);
+      this.db.prepare("INSERT OR REPLACE INTO map_seed_tombstones(entity_type,entity_id,deleted_at) VALUES ('region',?,?)").run(current.id, now);
+      this.db.prepare("UPDATE map_regions SET is_active=0,seed_revision=0,version=version+1,updated_at=? WHERE id=?").run(now, current.id);
       return { forward: operation, inverse: { type: "region.create", region: current }, invalidatedChunks: [] };
     }
     if (operation.type === "location.create") {
@@ -3951,7 +4043,7 @@ export class GameService {
       const description = cleanText(operation.location.description, "地点描述", 200);
       if (this.db.prepare("SELECT 1 FROM locations WHERE id=?").get(id)) {
         this.db.prepare(`
-          UPDATE locations SET layer_id=?,name=?,region=?,description=?,x=?,y=?,region_id=?,grid_x=?,grid_y=?,chunk_x=?,chunk_y=?,is_active=1,version=version+1 WHERE id=?
+          UPDATE locations SET layer_id=?,name=?,region=?,description=?,x=?,y=?,region_id=?,grid_x=?,grid_y=?,chunk_x=?,chunk_y=?,is_active=1,seed_revision=0,version=version+1 WHERE id=?
         `).run(layerId, name, region?.name ?? "公共区域", description, position.x, position.y, regionId, gridX, gridY, chunk.chunkX, chunk.chunkY, id);
       } else {
         this.db.prepare(`
@@ -3959,6 +4051,7 @@ export class GameService {
           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,1)
         `).run(id, layerId, name, region?.name ?? "公共区域", description, position.x, position.y, regionId, gridX, gridY, chunk.chunkX, chunk.chunkY);
       }
+      this.db.prepare("DELETE FROM map_seed_tombstones WHERE entity_type='location' AND entity_id=?").run(id);
       this.db.prepare("INSERT OR IGNORE INTO action_definitions(id,location_id,name,description,stamina_delta,silver_delta,cultivation_delta,hp_delta,result_template,cash_wen_delta) VALUES (?,?,'观察','观察这个地点的环境。',0,0,0,0,'{name}在此观察四周。',0)").run(`observe-${id}`, id);
       const forward: MapEditOperation = { type: "location.create", location: { id, layerId, name, description, regionId, gridX, gridY } };
       return { forward, inverse: { type: "location.delete", locationId: id }, invalidatedChunks: [`${layerId}:${chunkKey(chunk.chunkX, chunk.chunkY)}`] };
@@ -3983,7 +4076,7 @@ export class GameService {
       const chunk = chunkForGrid(gridX, gridY);
       const name = operation.patch.name === undefined ? current.name : cleanText(operation.patch.name, "地点名称", 40);
       const description = operation.patch.description === undefined ? current.description : cleanText(operation.patch.description, "地点描述", 200);
-      this.db.prepare("UPDATE locations SET name=?,region=?,description=?,region_id=?,grid_x=?,grid_y=?,x=?,y=?,chunk_x=?,chunk_y=?,version=version+1 WHERE id=?")
+      this.db.prepare("UPDATE locations SET name=?,region=?,description=?,region_id=?,grid_x=?,grid_y=?,x=?,y=?,chunk_x=?,chunk_y=?,seed_revision=0,version=version+1 WHERE id=?")
         .run(name, region?.name ?? "公共区域", description, regionId, gridX, gridY, position.x, position.y, chunk.chunkX, chunk.chunkY, current.id);
       return {
         forward: operation,
@@ -3996,7 +4089,8 @@ export class GameService {
       const current = this.getLocation(operation.locationId);
       if (this.db.prepare("SELECT 1 FROM players WHERE current_location=? LIMIT 1").get(current.id)) throw new Error("仍有玩家位于该地点，不能删除。");
       if (this.db.prepare("SELECT 1 FROM routes WHERE is_active=1 AND (from_location=? OR to_location=?) LIMIT 1").get(current.id, current.id)) throw new Error("请先删除地点连接的路线。");
-      this.db.prepare("UPDATE locations SET is_active=0,version=version+1 WHERE id=?").run(current.id);
+      this.db.prepare("INSERT OR REPLACE INTO map_seed_tombstones(entity_type,entity_id,deleted_at) VALUES ('location',?,?)").run(current.id, now);
+      this.db.prepare("UPDATE locations SET is_active=0,seed_revision=0,version=version+1 WHERE id=?").run(current.id);
       return {
         forward: operation,
         inverse: { type: "location.create", location: { id: current.id, layerId: current.layerId, name: current.name, description: current.description, regionId: current.regionId, gridX: current.gridX, gridY: current.gridY } },
@@ -4018,11 +4112,18 @@ export class GameService {
         if (this.db.prepare("SELECT 1 FROM location_direction_slots WHERE location_id=? AND direction=?").get(to.id, toDirection)) throw new Error("终点反方向已有路线。");
       }
       if (operation.routeType === "transition" && from.layerId === to.layerId) throw new Error("跨层连接必须连接不同地图层。");
+      if (operation.routeType !== "normal" && this.db.prepare(`
+        SELECT 1 FROM routes
+        WHERE is_active=1 AND route_type IN ('transition','portal')
+          AND ((from_location=? AND to_location=?) OR (from_location=? AND to_location=?))
+        LIMIT 1
+      `).get(from.id, to.id, to.id, from.id)) throw new Error("两地点之间已有跨层连接，不能重复建立反向路线。");
       const routeId = operation.routeId || `route-${randomUUID()}`;
       const kind = operation.routeType === "portal" ? "portal" : operation.routeType === "transition" ? operation.transitionKind ?? "door" : null;
       this.db.prepare("DELETE FROM routes WHERE is_active=0 AND ((from_location=? AND to_location=?) OR (from_location=? AND to_location=?))").run(from.id, to.id, to.id, from.id);
-      this.db.prepare(`INSERT INTO routes(from_location,to_location,stamina_cost,id,route_type,transition_kind,from_direction,to_direction,version,is_active) VALUES (?,?,0,?,?,?,?,?,1,1)`)
+      this.db.prepare(`INSERT INTO routes(from_location,to_location,stamina_cost,id,route_type,transition_kind,from_direction,to_direction,version,is_active,seed_revision) VALUES (?,?,0,?,?,?,?,?,1,1,0)`)
         .run(from.id, to.id, routeId, operation.routeType, kind, fromDirection, toDirection);
+      this.db.prepare("DELETE FROM map_seed_tombstones WHERE entity_type='route' AND entity_id=?").run(routeId);
       if (fromDirection && toDirection) {
         this.db.prepare("INSERT INTO location_direction_slots(location_id,direction,route_id,target_location) VALUES (?,?,?,?)").run(from.id, fromDirection, routeId, to.id);
         this.db.prepare("INSERT INTO location_direction_slots(location_id,direction,route_id,target_location) VALUES (?,?,?,?)").run(to.id, toDirection, routeId, from.id);
@@ -4034,7 +4135,8 @@ export class GameService {
     const from = this.getLocation(route.fromLocation);
     const to = this.getLocation(route.toLocation);
     this.db.prepare("DELETE FROM location_direction_slots WHERE route_id=?").run(route.id);
-    this.db.prepare("DELETE FROM routes WHERE id=?").run(route.id);
+    this.db.prepare("INSERT OR REPLACE INTO map_seed_tombstones(entity_type,entity_id,deleted_at) VALUES ('route',?,?)").run(route.id, now);
+    this.db.prepare("UPDATE routes SET is_active=0,seed_revision=0,version=version+1 WHERE id=?").run(route.id);
     return {
       forward: operation,
       inverse: { type: "route.create", routeId: route.id, fromLocation: route.fromLocation, toLocation: route.toLocation, routeType: route.routeType, transitionKind: route.transitionKind ?? undefined },

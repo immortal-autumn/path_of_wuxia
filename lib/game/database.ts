@@ -7,7 +7,7 @@ import { seedNpcCity } from "./npc-catalog";
 
 export type GameDatabase = DatabaseSync;
 
-export const MAP_SCHEMA_VERSION = 16;
+export const MAP_SCHEMA_VERSION = 17;
 
 export function openGameDatabase(databasePath = process.env.DATABASE_PATH ?? resolve("data/wuxia.db")) {
   if (databasePath !== ":memory:") mkdirSync(dirname(databasePath), { recursive: true });
@@ -197,6 +197,11 @@ function migrate(db: GameDatabase) {
       id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES map_edit_sessions(id) ON DELETE CASCADE,
       operation_type TEXT NOT NULL, forward_json TEXT NOT NULL, inverse_json TEXT NOT NULL,
       undone INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS map_seed_tombstones(
+      entity_type TEXT NOT NULL CHECK(entity_type IN ('layer','region','location','route')),
+      entity_id TEXT NOT NULL,deleted_at TEXT NOT NULL,
+      PRIMARY KEY(entity_type,entity_id)
     );
     CREATE TABLE IF NOT EXISTS action_templates(
       id TEXT PRIMARY KEY,name TEXT NOT NULL,description TEXT NOT NULL,category TEXT NOT NULL,
@@ -782,6 +787,41 @@ function migrate(db: GameDatabase) {
     db.prepare("UPDATE action_jobs SET rule_version=1 WHERE rule_version IS NULL OR rule_version<1").run();
   }
 
+  if (previousVersion < 17) {
+    // Seeded map rows edited by schema-v16 have version > 1, while seed
+    // refreshes never increment the optimistic version. Preserve those edits
+    // as user-owned overrides and remember explicit soft deletions before the
+    // bundled world seed runs again.
+    db.prepare(`
+      INSERT OR IGNORE INTO map_seed_tombstones(entity_type,entity_id,deleted_at)
+      SELECT 'layer',id,? FROM map_layers
+      WHERE seed_revision>0 AND version>1 AND is_active=0
+    `).run(now);
+    db.prepare(`
+      INSERT OR IGNORE INTO map_seed_tombstones(entity_type,entity_id,deleted_at)
+      SELECT 'region',id,? FROM map_regions
+      WHERE seed_revision>0 AND version>1 AND is_active=0
+    `).run(now);
+    db.prepare(`
+      INSERT OR IGNORE INTO map_seed_tombstones(entity_type,entity_id,deleted_at)
+      SELECT 'location',id,? FROM locations
+      WHERE seed_revision>0 AND version>1 AND is_active=0
+    `).run(now);
+    db.prepare(`
+      INSERT OR IGNORE INTO map_seed_tombstones(entity_type,entity_id,deleted_at)
+      SELECT 'route',json_extract(forward_json,'$.routeId'),?
+      FROM map_edit_operations
+      WHERE operation_type='route.delete' AND undone=0 AND json_valid(forward_json)
+        AND json_type(forward_json,'$.routeId')='text'
+    `).run(now);
+    db.exec(`
+      UPDATE map_layers SET seed_revision=0 WHERE seed_revision>0 AND version>1;
+      UPDATE map_regions SET seed_revision=0 WHERE seed_revision>0 AND version>1;
+      UPDATE locations SET seed_revision=0 WHERE seed_revision>0 AND version>1;
+      UPDATE routes SET seed_revision=0 WHERE seed_revision>0 AND version>1;
+    `);
+  }
+
   db.exec(`
     DROP INDEX IF EXISTS idx_active_grid;
     CREATE INDEX IF NOT EXISTS idx_sessions_player ON sessions(player_id);
@@ -822,6 +862,8 @@ function migrate(db: GameDatabase) {
     CREATE INDEX IF NOT EXISTS idx_market_orders_book ON market_orders(contract_id,status,side,limit_price_wen,created_at,id);
     CREATE INDEX IF NOT EXISTS idx_market_orders_player ON market_orders(player_id,status,created_at,id);
     CREATE INDEX IF NOT EXISTS idx_market_trades_contract ON market_trades(contract_id,id DESC);
+    CREATE INDEX IF NOT EXISTS idx_market_trades_buyer ON market_trades(buyer_player_id,created_at DESC,id DESC);
+    CREATE INDEX IF NOT EXISTS idx_market_trades_seller ON market_trades(seller_player_id,created_at DESC,id DESC);
     CREATE INDEX IF NOT EXISTS idx_market_positions_player ON market_positions(player_id,contract_id);
     CREATE INDEX IF NOT EXISTS idx_npc_assignments_cohort ON npc_assignments(cohort,occupation_key,player_id);
     CREATE INDEX IF NOT EXISTS idx_npc_schedule_player ON npc_schedule_entries(player_id,start_minute,end_minute);
@@ -834,6 +876,7 @@ function migrate(db: GameDatabase) {
     CREATE INDEX IF NOT EXISTS idx_market_account_ledger_player ON market_account_ledger(player_id,created_at,id);
     CREATE INDEX IF NOT EXISTS idx_law_incidents_actor ON law_incidents(actor_player_id,created_at DESC,id);
     CREATE INDEX IF NOT EXISTS idx_npc_respawn_due ON npc_respawn_jobs(status,due_at,npc_player_id);
+    CREATE INDEX IF NOT EXISTS idx_combat_turn_deadline ON combat_sessions(status,turn_deadline,id);
   `);
   db.prepare("INSERT OR REPLACE INTO schema_migrations(version,applied_at) VALUES (?,?)").run(MAP_SCHEMA_VERSION, now);
 }

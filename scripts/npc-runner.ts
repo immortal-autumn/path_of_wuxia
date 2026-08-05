@@ -10,9 +10,36 @@ import type { GameSnapshot } from "../lib/game/types";
 const requestedCount = Number.parseInt(process.env.NPC_COUNT ?? String(NPC_POPULATION), 10);
 const count = Math.max(1, Math.min(NPC_POPULATION, Number.isFinite(requestedCount) ? requestedCount : NPC_POPULATION));
 const serverUrl = process.env.NPC_SERVER_URL ?? `ws://127.0.0.1:${process.env.PORT ?? 3000}/ws`;
-const controller = createNpcController();
 const actors = new Set<NpcActor>();
 type NpcDirectiveMessage = { type: "npc.directive"; directive: NpcScheduleDirective };
+
+function stableJitter(index: number, phase: number, range: number) {
+  if (range <= 1) return 0;
+  let value = Math.imul(index + 1, 0x45d9f3b) ^ Math.imul(phase + 1, 0x119de1f3);
+  value ^= value >>> 16;
+  value = Math.imul(value, 0x45d9f3b);
+  value ^= value >>> 16;
+  return (value >>> 0) % range;
+}
+
+export function gameplayActorStartupDelayMs(index: number, population: number) {
+  const safePopulation = Math.max(1, Math.floor(population));
+  const safeIndex = Math.max(0, Math.min(safePopulation - 1, Math.floor(index)));
+  const windowMs = Math.min(30_000, Math.max(2_000, safePopulation * 125));
+  const slotMs = Math.max(1, Math.floor(windowMs / safePopulation));
+  return Math.min(windowMs - 1, safeIndex * slotMs + stableJitter(safeIndex, 0, slotMs));
+}
+
+export function gameplayActorReconnectDelayMs(index: number, attempts: number, population: number) {
+  const safePopulation = Math.max(1, Math.floor(population));
+  const safeIndex = Math.max(0, Math.min(safePopulation - 1, Math.floor(index)));
+  const safeAttempts = Math.max(1, Math.floor(attempts));
+  const backoffMs = Math.min(1_000 * 2 ** Math.min(safeAttempts, 5), 30_000);
+  const spreadWindowMs = Math.min(10_000, Math.max(1_000, safePopulation * 40));
+  const slotMs = Math.max(1, Math.floor(spreadWindowMs / safePopulation));
+  const stableOffsetMs = safeIndex * slotMs;
+  return backoffMs + stableOffsetMs + stableJitter(safeIndex, safeAttempts, Math.min(250, Math.max(25, slotMs)));
+}
 
 class NpcActor {
   private socket: WebSocket | null = null;
@@ -56,7 +83,7 @@ class NpcActor {
       this.syncTimer = null;
       if (this.stopped) return;
       this.reconnectAttempts += 1;
-      const delay = Math.min(1_000 * 2 ** Math.min(this.reconnectAttempts, 5), 30_000);
+      const delay = gameplayActorReconnectDelayMs(this.index, this.reconnectAttempts, count);
       this.reconnectTimer = setTimeout(() => this.connect(), delay);
     });
     socket.on("error", () => socket.close());
@@ -142,18 +169,21 @@ class NpcActor {
   }
 }
 
-for (let index = 0; index < count; index += 1) {
-  const actor = new NpcActor(index, controller);
-  actors.add(actor);
-  setTimeout(() => actor.start(), index * 25);
+if (!process.env.VITEST) {
+  const controller = createNpcController();
+  for (let index = 0; index < count; index += 1) {
+    const actor = new NpcActor(index, controller);
+    actors.add(actor);
+    setTimeout(() => actor.start(), gameplayActorStartupDelayMs(index, count));
+  }
+
+  console.log(`[npc-runner] starting ${count} isolated actors against ${serverUrl}`);
+
+  const shutdown = () => {
+    for (const actor of actors) actor.stop();
+    setTimeout(() => process.exit(0), 250);
+  };
+
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 }
-
-console.log(`[npc-runner] starting ${count} isolated actors against ${serverUrl}`);
-
-function shutdown() {
-  for (const actor of actors) actor.stop();
-  setTimeout(() => process.exit(0), 250);
-}
-
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);

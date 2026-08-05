@@ -19,6 +19,14 @@ export type WorldSeedReport = {
 export function applyWorldSeed(db: DatabaseSync): WorldSeedReport {
   const seed = buildWorldSeed();
   const now = new Date().toISOString();
+  const tombstones = new Set(
+    (db.prepare("SELECT entity_type,entity_id FROM map_seed_tombstones").all() as Array<{
+      entity_type: "layer" | "region" | "location" | "route";
+      entity_id: string;
+    }>).map((row) => `${row.entity_type}:${row.entity_id}`),
+  );
+  const isTombstoned = (entityType: "layer" | "region" | "location" | "route", entityId: string) =>
+    tombstones.has(`${entityType}:${entityId}`);
   const sourceInsert = db.prepare(`
     INSERT INTO world_sources(id,title,url,content_version,retrieved_at,notes) VALUES (?,?,?,?,?,?)
     ON CONFLICT(id) DO UPDATE SET title=excluded.title,url=excluded.url,
@@ -48,9 +56,10 @@ export function applyWorldSeed(db: DatabaseSync): WorldSeedReport {
     VALUES (?,?,?,?,1,1,?,?,?)
     ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description,
       parent_layer_id=excluded.parent_layer_id,is_active=1,seed_revision=excluded.seed_revision,updated_at=excluded.updated_at
-    WHERE map_layers.seed_revision<excluded.seed_revision
+    WHERE map_layers.seed_revision>0 AND map_layers.seed_revision<excluded.seed_revision
   `);
   for (const layer of seed.layers) {
+    if (isTombstoned("layer", layer.id)) continue;
     layerInsert.run(layer.id, layer.name, layer.description, layer.parentLayerId, WORLD_SEED_REVISION, now, now);
   }
 
@@ -62,9 +71,10 @@ export function applyWorldSeed(db: DatabaseSync): WorldSeedReport {
     ON CONFLICT(id) DO UPDATE SET layer_id=excluded.layer_id,name=excluded.name,description=excluded.description,
       x=excluded.x,y=excluded.y,width=excluded.width,height=excluded.height,is_active=1,
       seed_revision=excluded.seed_revision,updated_at=excluded.updated_at
-    WHERE map_regions.seed_revision<excluded.seed_revision
+    WHERE map_regions.seed_revision>0 AND map_regions.seed_revision<excluded.seed_revision
   `);
   for (const region of seed.regions) {
+    if (isTombstoned("region", region.id)) continue;
     regionInsert.run(
       region.id, region.layerId, region.name, region.description, region.x, region.y,
       region.width, region.height, WORLD_SEED_REVISION, now, now,
@@ -87,9 +97,10 @@ export function applyWorldSeed(db: DatabaseSync): WorldSeedReport {
       description=excluded.description,x=excluded.x,y=excluded.y,region_id=excluded.region_id,
       grid_x=excluded.grid_x,grid_y=excluded.grid_y,chunk_x=excluded.chunk_x,chunk_y=excluded.chunk_y,
       is_active=1,seed_revision=excluded.seed_revision
-    WHERE locations.seed_revision<excluded.seed_revision
+    WHERE locations.seed_revision>0 AND locations.seed_revision<excluded.seed_revision
   `);
   for (const location of seed.locations) {
+    if (isTombstoned("location", location.id)) continue;
     const x = location.gridX * GRID_SIZE;
     const y = location.gridY * GRID_SIZE;
     locationInsert.run(
@@ -107,7 +118,7 @@ export function applyWorldSeed(db: DatabaseSync): WorldSeedReport {
     ON CONFLICT(from_location,to_location) DO UPDATE SET id=excluded.id,route_type=excluded.route_type,
       transition_kind=excluded.transition_kind,from_direction=excluded.from_direction,to_direction=excluded.to_direction,
       stamina_cost=0,is_active=1,seed_revision=excluded.seed_revision
-    WHERE routes.seed_revision<excluded.seed_revision
+    WHERE routes.seed_revision>0 AND routes.seed_revision<excluded.seed_revision
   `);
   const slotInsert = db.prepare(`
     INSERT INTO location_direction_slots(location_id,direction,route_id,target_location) VALUES (?,?,?,?)
@@ -135,11 +146,18 @@ export function applyWorldSeed(db: DatabaseSync): WorldSeedReport {
     }
   }
   for (const route of seed.routes) {
+    if (isTombstoned("route", route.id)) continue;
+    const existingById = db.prepare("SELECT seed_revision FROM routes WHERE id=?").get(route.id) as { seed_revision: number } | undefined;
+    if (existingById?.seed_revision === 0) continue;
     routeInsert.run(
       route.fromLocation, route.toLocation, route.id, route.routeType, route.transitionKind,
       route.fromDirection, route.toDirection, WORLD_SEED_REVISION,
     );
-    if (route.routeType === "normal" && route.fromDirection && route.toDirection) {
+    const activeSeedRoute = db.prepare(`
+      SELECT 1 FROM routes
+      WHERE id=? AND from_location=? AND to_location=? AND is_active=1 AND seed_revision>0
+    `).get(route.id, route.fromLocation, route.toLocation);
+    if (activeSeedRoute && route.routeType === "normal" && route.fromDirection && route.toDirection) {
       slotInsert.run(route.fromLocation, route.fromDirection, route.id, route.toLocation);
       slotInsert.run(route.toLocation, route.toDirection, route.id, route.fromLocation);
     }

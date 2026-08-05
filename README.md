@@ -25,7 +25,7 @@ npm run dev
 - 修炼房会按服务器时间自动积累修为，达到条件后可以突破境界。主动技能立即发动并进入冷却，被动技能显示在角色属性栏中。
 - 行动支持一个当前行动和最多八个排队行动。每个行动显示耗时、检定、成本、冷却和结果；取消或离线后仍由服务端按时间结算。
 - 开封地图按道路、城门、河桥、宫城、寺院、官署、店铺和单层建筑组织。宋式店铺有营业时间、有限库存和柜上现金；市易行会提供文计价的现货及衍生品。
-- 同地点角色可以问候、交往、切磋、交易和接取委托。战斗、掉落、法度和同意规则全部在服务端校验。
+- 同地点角色可以问候、交往、切磋、交易和接取委托。真人切磋必须由对方明确接受，落败不掉钱物；敌意攻击受住宅/入口安全区和一小时新手保护限制。战斗、掉落、法度和同意规则全部在服务端校验。
 
 ## 常用命令
 
@@ -41,6 +41,7 @@ npx tsc --noEmit        # TypeScript 检查
 npm run map:validate    # 校验地图来源、方向、层级和可达性
 npm run map:seed        # 幂等导入演示地图（会写入 DATABASE_PATH）
 npm run db:backup -- ./backup.db  # SQLite 在线备份
+npm run db:maintenance  # 默认只报告可清理历史；追加 -- --apply 才执行
 npm run smoke:live      # 对已启动服务执行健康和协议 smoke test
 ```
 
@@ -98,10 +99,13 @@ npm run npc:trade:replay -- --decision=<决策ID>
 | `NPC_CONTROLLER_URL` | 未设置 | 可选的外部 NPC 决策 HTTP 服务 |
 | `NPC_TRADE_STRATEGY_URL` | 未设置 | 可选的外部商贸策略 HTTP 服务 |
 | `OIDC_PROXY_SECRET` | 未设置 | 可信反向代理身份绑定密钥 |
+| `ANONYMOUS_ECONOMY` | 开发开启、生产关闭 | 设为 `true` 时允许匿名试玩角色交易、市场下单和拾取他人战利品；仅用于受控 demo |
+| `TRUST_PROXY` | `false` | 仅在代理会清除并重写 forwarded headers 时设为 `true` |
 | `EDITOR_PLAYER_IDS` | 空 | 允许编辑地图和行动规则的角色 ID（逗号分隔） |
 | `EDITOR_ALLOW_ALL` | 开发环境开启 | 受控实例中临时开放编辑权限 |
 
 生产环境至少设置 `DATABASE_PATH`、`PORT`、`PUBLIC_ORIGIN`、两个 runner secret，并将密钥放入进程管理器的 secret store，不要提交到 Git。
+生产环境的匿名角色默认只能试玩，不能把初始资产转给其他角色；通过可信 OIDC 代理绑定的账号不受此限制。公开实例不要开启 `ANONYMOUS_ECONOMY`。
 
 ## 生产自托管
 
@@ -128,6 +132,8 @@ npm run db:backup -- /srv/backups/wuxia-$(date +%F).db
 ```
 
 建议定期验证备份可读，限制数据库目录权限，并在公开部署前运行完整测试和 `npm audit --omit=dev`。
+
+`npm run db:maintenance` 默认是 dry-run，并输出完整性、数据库大小、WAL checkpoint 和可清理记录数量。确认报告后使用 `npm run db:maintenance -- --apply`，默认保留30天 NPC 商贸决策、30天市场 tick 和90天已关闭且无成交引用的订单；不可变钱贯流水不会被清理。
 
 ## 数据来源与许可
 

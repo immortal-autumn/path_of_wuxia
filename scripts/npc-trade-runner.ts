@@ -11,6 +11,34 @@ const intervalMs = Math.max(60_000, Number.parseInt(process.env.NPC_TRADE_INTERV
 const serverUrl = process.env.NPC_SERVER_URL ?? `ws://127.0.0.1:${process.env.PORT ?? 3000}/ws`;
 const strategyUrl = process.env.NPC_TRADE_STRATEGY_URL;
 
+function stableJitter(index: number, phase: number, range: number) {
+  if (range <= 1) return 0;
+  let value = Math.imul(index + 1, 0x45d9f3b) ^ Math.imul(phase + 1, 0x119de1f3);
+  value ^= value >>> 16;
+  value = Math.imul(value, 0x45d9f3b);
+  value ^= value >>> 16;
+  return (value >>> 0) % range;
+}
+
+export function tradeActorStartupDelayMs(index: number, population: number) {
+  const safePopulation = Math.max(1, Math.floor(population));
+  const safeIndex = Math.max(0, Math.min(safePopulation - 1, Math.floor(index)));
+  const windowMs = Math.min(30_000, Math.max(2_000, safePopulation * 125));
+  const slotMs = Math.max(1, Math.floor(windowMs / safePopulation));
+  return Math.min(windowMs - 1, safeIndex * slotMs + stableJitter(safeIndex, 0, slotMs));
+}
+
+export function tradeActorReconnectDelayMs(index: number, attempts: number, population: number) {
+  const safePopulation = Math.max(1, Math.floor(population));
+  const safeIndex = Math.max(0, Math.min(safePopulation - 1, Math.floor(index)));
+  const safeAttempts = Math.max(1, Math.floor(attempts));
+  const backoffMs = Math.min(1_000 * 2 ** Math.min(safeAttempts, 5), 30_000);
+  const spreadWindowMs = Math.min(10_000, Math.max(1_000, safePopulation * 40));
+  const slotMs = Math.max(1, Math.floor(spreadWindowMs / safePopulation));
+  const stableOffsetMs = safeIndex * slotMs;
+  return backoffMs + stableOffsetMs + stableJitter(safeIndex, safeAttempts, Math.min(250, Math.max(25, slotMs)));
+}
+
 class TradeActor {
   private socket: WebSocket | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -43,7 +71,10 @@ class TradeActor {
       this.socket = null;
       if (this.stopped) return;
       this.reconnectAttempts += 1;
-      this.timer = setTimeout(() => this.connect(), Math.min(1_000 * 2 ** Math.min(5, this.reconnectAttempts), 30_000));
+      this.timer = setTimeout(
+        () => this.connect(),
+        tradeActorReconnectDelayMs(this.index, this.reconnectAttempts, count),
+      );
     });
     socket.on("error", () => socket.close());
   }
@@ -117,13 +148,15 @@ class TradeActor {
   }
 }
 
-const actors = Array.from({ length: count }, (_, index) => new TradeActor(index));
-actors.forEach((actor, index) => setTimeout(() => actor.start(), index * 25));
-console.log(`[npc-trade-runner] starting ${count} restricted actors against ${serverUrl}`);
+if (!process.env.VITEST) {
+  const actors = Array.from({ length: count }, (_, index) => new TradeActor(index));
+  actors.forEach((actor, index) => setTimeout(() => actor.start(), tradeActorStartupDelayMs(index, count)));
+  console.log(`[npc-trade-runner] starting ${count} restricted actors against ${serverUrl}`);
 
-function shutdown() {
-  actors.forEach((actor) => actor.stop());
-  setTimeout(() => process.exit(0), 250);
+  const shutdown = () => {
+    actors.forEach((actor) => actor.stop());
+    setTimeout(() => process.exit(0), 250);
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 }
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);

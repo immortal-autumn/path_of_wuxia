@@ -170,11 +170,13 @@ describe("Kaifeng law and delayed NPC return", () => {
   it("does not criminalize human opponents or conduct outside Kaifeng", () => {
     const first = service.createSession().player;
     const second = service.createSession().player;
-    service.startCombat(first.id, second.id);
+    service.requestInteraction(first.id, second.id, "duel");
+    const requestId = service.getSocialState(second.id).incomingRequests[0].id;
+    service.respondInteraction(second.id, requestId, true, [first.id, second.id]);
     expect(service.getLawState(first.id).wantedPoints).toBe(0);
 
     const outsider = service.createSession().player;
-    db.prepare("UPDATE players SET current_location='home-front-garden' WHERE id IN (?,?)")
+    db.prepare("UPDATE players SET current_location='loumen-road' WHERE id IN (?,?)")
       .run(outsider.id, "npc-001");
     service.startCombat(outsider.id, "npc-001");
     expect(service.getLawState(outsider.id).wantedPoints).toBe(0);

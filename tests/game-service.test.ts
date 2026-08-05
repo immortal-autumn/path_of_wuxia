@@ -143,6 +143,144 @@ describe("GameService", () => {
     expect(validateWorldMap(db).ok).toBe(true);
   });
 
+  it("persists map overrides and seed tombstones across reseed and restart", () => {
+    const directory = mkdtempSync(join(tmpdir(), "wuxia-map-overrides-"));
+    const databasePath = join(directory, "game.db");
+    try {
+      const firstDb = openGameDatabase(databasePath);
+      const firstService = new GameService(firstDb, () => new Date(clock), () => roll);
+      const player = firstService.createSession().player;
+      const session = firstService.acquireMapLocks(player.id, [
+        "layer:world-root", "region:song", "region:home", "layer:home-ground:chunk:0:0",
+        "layer:world-root:chunk:-1:-1", "layer:world-root:chunk:-1:0",
+        "layer:world-root:chunk:0:-1", "layer:world-root:chunk:0:0",
+        "layer:world-root:chunk:1:-1", "layer:world-root:chunk:1:0",
+      ]);
+
+      firstService.applyMapOperation(player.id, session.id, {
+        type: "layer.update", layerId: "world-root", patch: { description: "玩家编辑的大世界描述。" },
+      });
+      firstService.applyMapOperation(player.id, session.id, {
+        type: "region.update", regionId: "song", patch: { description: "玩家编辑的开封区域描述。" },
+      });
+      const overrideRoutes = firstDb.prepare(`
+        SELECT id FROM routes WHERE is_active=1
+        AND (from_location='home-training-room' OR to_location='home-training-room')
+      `).all() as Array<{ id: string }>;
+      for (const route of overrideRoutes) {
+        firstService.applyMapOperation(player.id, session.id, { type: "route.delete", routeId: route.id });
+      }
+      firstService.applyMapOperation(player.id, session.id, {
+        type: "location.update", locationId: "home-training-room", patch: { name: "玩家改名的地图地点" },
+      });
+
+      const constructionRoutes = firstDb.prepare(`
+        SELECT id FROM routes WHERE is_active=1
+        AND (from_location='world-construction-site' OR to_location='world-construction-site')
+      `).all() as Array<{ id: string }>;
+      expect(constructionRoutes.length).toBeGreaterThan(0);
+      for (const route of constructionRoutes) {
+        firstService.applyMapOperation(player.id, session.id, { type: "route.delete", routeId: route.id });
+      }
+      firstService.applyMapOperation(player.id, session.id, { type: "location.delete", locationId: "world-construction-site" });
+
+      expect(firstDb.prepare("SELECT seed_revision FROM map_layers WHERE id='world-root'").get()).toEqual({ seed_revision: 0 });
+      expect(firstDb.prepare("SELECT seed_revision FROM map_regions WHERE id='song'").get()).toEqual({ seed_revision: 0 });
+      expect(firstDb.prepare("SELECT seed_revision FROM locations WHERE id='home-training-room'").get()).toEqual({ seed_revision: 0 });
+      expect(firstDb.prepare("SELECT is_active,seed_revision FROM locations WHERE id='world-construction-site'").get())
+        .toEqual({ is_active: 0, seed_revision: 0 });
+      expect(firstDb.prepare("SELECT COUNT(*) AS count FROM map_seed_tombstones WHERE entity_type='location' AND entity_id='world-construction-site'").get())
+        .toEqual({ count: 1 });
+      expect(firstDb.prepare("SELECT COUNT(*) AS count FROM map_seed_tombstones WHERE entity_type='route' AND entity_id=?").get(constructionRoutes[0].id))
+        .toEqual({ count: 1 });
+
+      importWorldSeed(firstDb);
+      expect(firstDb.prepare("SELECT description FROM map_layers WHERE id='world-root'").get()).toEqual({ description: "玩家编辑的大世界描述。" });
+      expect(firstDb.prepare("SELECT description FROM map_regions WHERE id='song'").get()).toEqual({ description: "玩家编辑的开封区域描述。" });
+      expect(firstDb.prepare("SELECT name FROM locations WHERE id='home-training-room'").get()).toEqual({ name: "玩家改名的地图地点" });
+      expect(firstDb.prepare("SELECT is_active FROM locations WHERE id='world-construction-site'").get()).toEqual({ is_active: 0 });
+      expect(firstDb.prepare("SELECT is_active FROM routes WHERE id=?").get(constructionRoutes[0].id)).toEqual({ is_active: 0 });
+      firstDb.close();
+
+      const restarted = openGameDatabase(databasePath);
+      expect(restarted.prepare("SELECT description FROM map_layers WHERE id='world-root'").get()).toEqual({ description: "玩家编辑的大世界描述。" });
+      expect(restarted.prepare("SELECT description FROM map_regions WHERE id='song'").get()).toEqual({ description: "玩家编辑的开封区域描述。" });
+      expect(restarted.prepare("SELECT name FROM locations WHERE id='home-training-room'").get()).toEqual({ name: "玩家改名的地图地点" });
+      expect(restarted.prepare("SELECT is_active FROM locations WHERE id='world-construction-site'").get()).toEqual({ is_active: 0 });
+      expect(restarted.prepare("SELECT is_active FROM routes WHERE id=?").get(constructionRoutes[0].id)).toEqual({ is_active: 0 });
+      restarted.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("migrates schema-v16 map edits into seed overrides and tombstones", () => {
+    const directory = mkdtempSync(join(tmpdir(), "wuxia-map-migration-"));
+    const databasePath = join(directory, "game.db");
+    try {
+      const legacy = openGameDatabase(databasePath);
+      const legacyService = new GameService(legacy, () => new Date(clock), () => roll);
+      const player = legacyService.createSession().player;
+      const constructionRoute = legacy.prepare(`
+        SELECT id FROM routes WHERE is_active=1
+        AND (from_location='world-construction-site' OR to_location='world-construction-site')
+        LIMIT 1
+      `).get() as { id: string };
+      const session = legacyService.acquireMapLocks(player.id, ["layer:world-root:chunk:0:0"]);
+      legacyService.applyMapOperation(player.id, session.id, { type: "route.delete", routeId: constructionRoute.id });
+      // Reproduce schema-v16 storage: route.delete physically removed the row
+      // and retained only the edit-history operation.
+      legacy.prepare("DELETE FROM map_seed_tombstones WHERE entity_type='route' AND entity_id=?").run(constructionRoute.id);
+      legacy.prepare("DELETE FROM routes WHERE id=?").run(constructionRoute.id);
+      legacy.prepare("UPDATE map_layers SET name='迁移后的大世界',version=2 WHERE id='world-root'").run();
+      legacy.prepare("UPDATE locations SET is_active=0,version=2 WHERE id='world-construction-site'").run();
+      legacy.prepare("DELETE FROM schema_migrations WHERE version>16").run();
+      legacy.prepare("INSERT OR REPLACE INTO schema_migrations(version,applied_at) VALUES (16,?)").run(clock.toISOString());
+      legacy.close();
+
+      const upgraded = openGameDatabase(databasePath);
+      expect(upgraded.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: MAP_SCHEMA_VERSION });
+      expect(upgraded.prepare("SELECT name,seed_revision FROM map_layers WHERE id='world-root'").get())
+        .toEqual({ name: "迁移后的大世界", seed_revision: 0 });
+      expect(upgraded.prepare("SELECT is_active,seed_revision FROM locations WHERE id='world-construction-site'").get())
+        .toEqual({ is_active: 0, seed_revision: 0 });
+      expect(upgraded.prepare("SELECT COUNT(*) AS count FROM map_seed_tombstones WHERE entity_type='location' AND entity_id='world-construction-site'").get())
+        .toEqual({ count: 1 });
+      expect(upgraded.prepare("SELECT COUNT(*) AS count FROM map_seed_tombstones WHERE entity_type='route' AND entity_id=?").get(constructionRoute.id))
+        .toEqual({ count: 1 });
+      expect(upgraded.prepare("SELECT COUNT(*) AS count FROM routes WHERE id=?").get(constructionRoute.id)).toEqual({ count: 0 });
+      upgraded.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects reverse transition and portal duplicates while retaining normal direction rules", () => {
+    const player = service.createSession().player;
+    const session = service.acquireMapLocks(player.id, [
+      "layer:world-root", "layer:custom-portal-layer",
+      "layer:world-root:chunk:16:16", "layer:custom-portal-layer:chunk:16:16",
+    ]);
+    service.applyMapOperation(player.id, session.id, {
+      type: "layer.create",
+      layer: { id: "custom-portal-layer", name: "跨层连接测试层", description: "跨层连接测试。", parentLayerId: "world-root", version: 1 },
+    });
+    service.applyMapOperation(player.id, session.id, {
+      type: "location.create",
+      location: { id: "portal-test-a", layerId: "world-root", name: "跨层甲", description: "甲。", regionId: null, gridX: 100, gridY: 100 },
+    });
+    service.applyMapOperation(player.id, session.id, {
+      type: "location.create",
+      location: { id: "portal-test-b", layerId: "custom-portal-layer", name: "跨层乙", description: "乙。", regionId: null, gridX: 100, gridY: 100 },
+    });
+    service.applyMapOperation(player.id, session.id, {
+      type: "route.create", fromLocation: "portal-test-a", toLocation: "portal-test-b", routeType: "portal",
+    });
+    expect(() => service.applyMapOperation(player.id, session.id, {
+      type: "route.create", fromLocation: "portal-test-b", toLocation: "portal-test-a", routeType: "transition", transitionKind: "door",
+    })).toThrow("反向路线");
+  });
+
   it("replaces an intermediate seed route when its stable ID receives final Kaifeng endpoints", () => {
     db.prepare("DELETE FROM location_direction_slots WHERE route_id='route-kaifeng-east-entry-1'").run();
     db.prepare("DELETE FROM routes WHERE id='route-kaifeng-east-entry-1'").run();
@@ -803,7 +941,10 @@ describe("GameService", () => {
   it("runs 30-second combat turns, auto-defends timeouts, and auto-flees after three misses", () => {
     const attacker = service.createSession().player;
     const defender = service.createSession().player;
-    const started = service.startCombat(attacker.id, defender.id);
+    service.requestInteraction(attacker.id, defender.id, "duel");
+    const requestId = service.getSocialState(defender.id).incomingRequests[0].id;
+    service.respondInteraction(defender.id, requestId, true, [attacker.id, defender.id]);
+    const started = { combatId: service.getCombatState(attacker.id)!.id };
     expect(service.getCombatState(attacker.id)).toMatchObject({ selfTurn: true, opponentId: defender.id, round: 1 });
     expect(() => service.chooseCombatAction(defender.id, started.combatId, "attack")).toThrow("不是你的战斗回合");
     service.chooseCombatAction(attacker.id, started.combatId, "defend");
@@ -821,32 +962,37 @@ describe("GameService", () => {
   });
 
   it("drops all cash wen and unbound items on defeat, then supports loot pickup and half-health respawn", () => {
-    const attacker = service.createSession().player;
+    const attacker = service.getPlayer("npc-001");
     const defender = service.createSession().player;
     db.prepare(`
       INSERT INTO item_instances(id,definition_id,owner_player_id,quantity,quality,durability,affixes_json,bound,equipped_slot,created_at,updated_at)
       VALUES ('combat-rice','rice',?,4,2,0,'[]',0,NULL,?,?),
              ('combat-boots','cloth-boots',?,1,3,100,'[]',0,'feet',?,?)
     `).run(defender.id, clock.toISOString(), clock.toISOString(), defender.id, clock.toISOString(), clock.toISOString());
-    db.prepare("UPDATE players SET hp=1 WHERE id=?").run(defender.id);
+    db.prepare("UPDATE players SET current_location='loumen-road' WHERE id IN (?,?)").run(attacker.id, defender.id);
+    db.prepare("UPDATE players SET hp=1,created_at=? WHERE id=?")
+      .run(new Date(clock.getTime() - 2 * 60 * 60_000).toISOString(), defender.id);
     const boundCount = (db.prepare("SELECT COUNT(*) AS count FROM item_instances WHERE owner_player_id=? AND bound=1").get(defender.id) as { count: number }).count;
     const combat = service.startCombat(attacker.id, defender.id);
     service.chooseCombatAction(attacker.id, combat.combatId, "attack");
 
     expect(service.getPlayer(defender.id)).toMatchObject({ hp: 0, cashWen: 0, defeated: true });
-    const piles = service.getLootPiles("home-entrance");
+    const piles = service.getLootPiles("loumen-road");
     expect(piles).toHaveLength(1);
     expect(piles[0]).toMatchObject({ cashWen: 20_000, sourcePlayerId: defender.id });
     expect(piles[0].items).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: "稻米", quantity: 4 }),
       expect.objectContaining({ name: "布靴", quantity: 1 }),
     ]));
+    expect(Object.getPrototypeOf(piles[0])).toBe(Object.prototype);
+    expect(piles[0].items.every((item) => Object.getPrototypeOf(item) === Object.prototype)).toBe(true);
+    expect(Object.getPrototypeOf(service.getSnapshot(attacker.id, [attacker.id]).lootPiles[0].items[0])).toBe(Object.prototype);
     expect(db.prepare("SELECT COUNT(*) AS count FROM item_instances WHERE owner_player_id=? AND bound=1").get(defender.id)).toEqual({ count: boundCount });
     expect(() => service.move(defender.id, "home-hall")).toThrow("请先返回玄关复起");
 
     service.takeLoot(attacker.id, piles[0].id);
-    expect(service.getPlayer(attacker.id).cashWen).toBe(40_000);
-    expect(service.getLootPiles("home-entrance")).toHaveLength(0);
+    expect(service.getPlayer(attacker.id).cashWen).toBe(attacker.cashWen + 20_000);
+    expect(service.getLootPiles("loumen-road")).toHaveLength(0);
     expect(db.prepare("SELECT owner_player_id,equipped_slot FROM item_instances WHERE id='combat-boots'").get())
       .toEqual({ owner_player_id: attacker.id, equipped_slot: null });
 
@@ -1016,7 +1162,7 @@ describe("GameService", () => {
       let rule = new GameService(upgraded, () => new Date(clock), () => roll)
         .getActionRuleSnapshot().actions.find((action) => action.id === "schema-13-silver-action");
       expect(rule).toMatchObject({ costs: { cashWenDelta: -2_000 }, success: { cashWenDelta: 3_000 } });
-      expect(upgraded.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: 16 });
+      expect(upgraded.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toEqual({ version: MAP_SCHEMA_VERSION });
       upgraded.close();
 
       upgraded = openGameDatabase(databasePath);

@@ -10,7 +10,8 @@ async function enterWorld(page: Page) {
   await page.goto("/");
   await expect(page).toHaveURL(/\/$/);
   await expect(page.locator(".connection-badge")).toContainText("江湖在线");
-  await expect(page.getByRole("heading", { name: "八方世界地图" })).toBeVisible();
+  if ((page.viewportSize()?.width ?? 801) <= 800) await expect(page.getByLabel("世界地图")).toBeVisible();
+  else await expect(page.getByRole("heading", { name: "八方世界地图" })).toBeVisible();
 }
 
 async function enterEditor(page: Page) {
@@ -148,6 +149,12 @@ test.describe("entries and session identity", () => {
     await page.getByRole("link", { name: "行动设计" }).click();
     await expect(page).toHaveURL(/\/action-editor$/);
     await expect(page.getByRole("heading", { name: "行动规则设计工具" })).toBeVisible();
+    const ruleFormScroll = page.locator(".rule-form-scroll");
+    const saveRule = page.getByRole("button", { name: /保存规则/ });
+    expect(await ruleFormScroll.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+    await expect(saveRule).toBeInViewport();
+    await ruleFormScroll.evaluate((element) => element.scrollTo(0, element.scrollHeight));
+    await expect(saveRule).toBeInViewport();
     await page.setViewportSize({ width: 390, height: 844 });
     const editorScrollTop = await page.locator(".rule-editor-shell").evaluate((element) => {
       element.scrollTo(0, element.scrollHeight);
@@ -157,6 +164,32 @@ test.describe("entries and session identity", () => {
     await page.setViewportSize({ width: 1280, height: 844 });
     await page.getByRole("link", { name: "返回游戏" }).click();
     await expect(page.locator(".character-heading h2")).toHaveText(name);
+  });
+
+  test("server-renders and reconnects with SQLite-backed loot items in the snapshot", async ({ page }) => {
+    await enterWorld(page);
+    await updatePlayer(page, `
+      INSERT INTO loot_piles(
+        id,location_id,silver,cash_wen,source_player_id,expires_at,created_at,updated_at
+      ) VALUES (
+        'server-render-loot-pile','home-entrance',0,1250,?,NULL,
+        '2026-08-05T12:00:00.000Z','2026-08-05T12:00:00.000Z'
+      )
+    `);
+    await updatePlayer(page, `
+      INSERT INTO item_instances(
+        id,definition_id,owner_player_id,loot_pile_id,quantity,quality,durability,
+        affixes_json,bound,equipped_slot,locked_by_job_id,created_at,updated_at
+      ) SELECT
+        'server-render-loot-item','rice',NULL,'server-render-loot-pile',2,1,0,
+        '[]',0,NULL,NULL,'2026-08-05T12:00:00.000Z','2026-08-05T12:00:00.000Z'
+      FROM players WHERE id=?
+    `);
+
+    const response = await page.reload();
+    expect(response?.status()).toBe(200);
+    await expect(page.locator(".connection-badge")).toContainText("江湖在线");
+    await expect(page.locator(".loot-card")).toContainText("1贯250文 · 稻米×2");
   });
 
   test("authenticates an isolated NPC actor and runs normal action commands over WebSocket", async () => {
@@ -417,9 +450,16 @@ test.describe("game map", () => {
 
   test("opens a personal full map containing only locations the player has visited", async ({ page }) => {
     await enterWorld(page);
-    await page.getByRole("button", { name: "足迹地图" }).click();
+    const visitedMapTrigger = page.getByRole("button", { name: "足迹地图" });
+    await visitedMapTrigger.focus();
+    await visitedMapTrigger.click();
     let dialog = page.getByRole("dialog", { name: "足迹地图" });
     await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "关闭足迹地图" })).toBeFocused();
+    await expect(page.locator(".main-column")).toHaveAttribute("aria-hidden", "true");
+    await expect(page.locator(".main-column")).toHaveAttribute("inert", "");
+    await page.keyboard.press("Shift+Tab");
+    expect(await dialog.evaluate((element) => element.contains(document.activeElement))).toBe(true);
     await expect(dialog).toHaveAttribute("data-visited-locations", "1");
     await expect(dialog.locator(".visited-map-location")).toHaveCount(1);
     await expect(dialog.locator(".visited-map-route")).toHaveCount(0);
@@ -431,6 +471,8 @@ test.describe("game map", () => {
     await dialog.getByRole("button", { name: "适应全图" }).click();
     await expect(dialog.locator("svg")).toHaveAttribute("viewBox", fittedViewBox ?? "");
     await dialog.getByRole("button", { name: "关闭足迹地图" }).click();
+    await expect(visitedMapTrigger).toBeFocused();
+    await expect(page.locator(".main-column")).not.toHaveAttribute("aria-hidden", "true");
 
     await moveTo(page, "嬴长嫚与楼夜秋之家·门厅");
     await moveTo(page, "玄关");
@@ -566,12 +608,17 @@ test.describe("game map", () => {
     await expect(openShop).toContainText("正在营业");
     await openShop.click();
     let dialog = page.getByRole("dialog", { name: "店铺详情：惠民药铺" });
+    await expect(dialog.getByRole("button", { name: "关闭" })).toBeFocused();
+    await expect(page.locator(".game-shell")).toHaveAttribute("aria-hidden", "true");
+    await expect(page.locator(".game-shell")).toHaveAttribute("inert", "");
     await expect(dialog).toContainText("钱袋 20贯");
     await expect(dialog).toContainText("店柜 200贯");
     const medicine = dialog.getByLabel("店铺货物").getByRole("button").filter({ hasText: "止血药膏" });
     await expect(medicine).toContainText("存 12");
     await page.keyboard.press("Escape");
     await expect(dialog).toBeHidden();
+    await expect(openShop).toBeFocused();
+    await expect(page.locator(".game-shell")).not.toHaveAttribute("aria-hidden", "true");
 
     await openShop.click();
     dialog = page.getByRole("dialog", { name: "店铺详情：惠民药铺" });
@@ -1003,15 +1050,27 @@ test.describe("real-time multiplayer", () => {
     await secondContext.close();
   });
 
-  test("runs authoritative combat turns and auto-flees after repeated 30-second timeouts", async ({ browser }) => {
+  test("confirms hostile consequences and starts a consented no-loot duel", async ({ browser }) => {
     const firstContext = await browser.newContext();
     const secondContext = await browser.newContext();
     const first = await newPlayer(firstContext);
     const second = await newPlayer(secondContext);
+    const firstName = await first.locator(".character-heading h2").innerText();
     const secondName = await second.locator(".character-heading h2").innerText();
+    const existingLootCount = await first.locator(".loot-card").count();
     await first.getByRole("button", { name: "交往交易" }).click();
+    await second.getByRole("button", { name: "交往交易" }).click();
     const target = first.locator(".social-player").filter({ hasText: secondName });
-    await target.getByRole("button", { name: "攻击" }).click();
+    await target.getByRole("button", { name: "敌意攻击" }).click();
+    const hostileConfirmation = first.getByRole("dialog", { name: `确认敌意攻击：${secondName}` });
+    await expect(hostileConfirmation).toContainText("真实战败会掉落全部钱贯与未绑定物品");
+    await expect(hostileConfirmation).toContainText("真人之间不能直接攻击");
+    await hostileConfirmation.getByRole("button", { name: "取消" }).click();
+    await expect(hostileConfirmation).toBeHidden();
+
+    await target.getByRole("button", { name: "切磋" }).click();
+    const duelRequest = second.getByLabel("互动请求").locator(".social-request").filter({ hasText: "切磋请求" });
+    await duelRequest.getByRole("button", { name: "接受" }).click();
 
     await expect(first.getByLabel("当前战斗")).toContainText(`对阵 ${secondName}`);
     await expect(first.getByLabel("当前战斗")).toContainText("你的回合");
@@ -1026,7 +1085,9 @@ test.describe("real-time multiplayer", () => {
     `);
     await expect(first.getByLabel("当前战斗")).toBeHidden();
     await expect(second.getByLabel("当前战斗")).toBeHidden();
-    await expect(first.getByText("的掉落", { exact: false })).toHaveCount(0);
+    await expect(first.locator(".loot-card")).toHaveCount(existingLootCount);
+    await expect(first.locator(".loot-card").filter({ hasText: firstName })).toHaveCount(0);
+    await expect(first.locator(".loot-card").filter({ hasText: secondName })).toHaveCount(0);
 
     await firstContext.close();
     await secondContext.close();
@@ -1051,9 +1112,18 @@ test.describe("mobile layout", () => {
     for (const [buttonLabel, panelLabel] of [
       ["世界", "世界状态"], ["行动", "行动"], ["角色", "角色状态"], ["聊天", "世界聊天"],
     ] as const) {
-      await page.locator(".mobile-dock button").filter({ hasText: buttonLabel }).click();
-      await expect(page.getByLabel(panelLabel, { exact: true })).toHaveClass(/drawer-open/);
-      await expect(page.getByLabel(panelLabel, { exact: true })).toBeInViewport();
+      const trigger = page.locator(".mobile-dock button").filter({ hasText: buttonLabel });
+      const panel = page.getByLabel(panelLabel, { exact: true });
+      await trigger.click();
+      await expect(panel).toHaveClass(/drawer-open/);
+      await expect(panel).not.toHaveAttribute("aria-hidden", "true");
+      await expect(panel).toBeFocused();
+      await expect(panel).toBeInViewport();
+      await expect(page.getByLabel("世界地图")).toHaveAttribute("inert", "");
+      await page.keyboard.press("Escape");
+      await expect(panel).toHaveAttribute("aria-hidden", "true");
+      await expect(panel).toHaveAttribute("inert", "");
+      await expect(trigger).toBeFocused();
     }
   });
 });

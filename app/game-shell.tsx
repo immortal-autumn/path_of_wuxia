@@ -36,6 +36,99 @@ const CONNECTION_LABEL: Record<ConnectionState, string> = {
   offline: "暂离江湖",
 };
 
+const DIALOG_FOCUSABLE = [
+  "button:not([disabled])",
+  "[href]",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  "[tabindex]:not([tabindex='-1'])",
+].join(", ");
+
+function useDialogFocus(onClose: () => void, active = true, returnFocus: HTMLElement | null = null) {
+  const dialogRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  useEffect(() => {
+    if (!active) return;
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const restoreFocus = returnFocus?.isConnected
+      ? returnFocus
+      : document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const backdrop = dialog.parentElement;
+    const backgroundElements = backdrop?.parentElement
+      ? [...backdrop.parentElement.children].filter((element): element is HTMLElement => (
+        element instanceof HTMLElement && element !== backdrop
+      ))
+      : [];
+    const backgroundState = backgroundElements.map((element) => ({
+      element,
+      ariaHidden: element.getAttribute("aria-hidden"),
+      inert: element.inert,
+    }));
+    backgroundElements.forEach((element) => {
+      element.inert = true;
+      element.setAttribute("aria-hidden", "true");
+    });
+
+    const focusable = () => [...dialog.querySelectorAll<HTMLElement>(DIALOG_FOCUSABLE)]
+      .filter((element) => !element.closest("[inert], [aria-hidden='true']"));
+    const frame = window.requestAnimationFrame(() => (focusable()[0] ?? dialog).focus());
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const nodes = focusable();
+      if (nodes.length === 0) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+      const index = nodes.indexOf(document.activeElement as HTMLElement);
+      if (event.shiftKey && index <= 0) {
+        event.preventDefault();
+        nodes[nodes.length - 1].focus();
+      } else if (!event.shiftKey && (index === nodes.length - 1 || index < 0)) {
+        event.preventDefault();
+        nodes[0].focus();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("keydown", handleKeyDown);
+      backgroundState.forEach(({ element, ariaHidden, inert }) => {
+        element.inert = inert;
+        if (ariaHidden === null) element.removeAttribute("aria-hidden");
+        else element.setAttribute("aria-hidden", ariaHidden);
+      });
+      window.requestAnimationFrame(() => {
+        if (restoreFocus?.isConnected) restoreFocus.focus();
+      });
+    };
+  }, [active, returnFocus]);
+
+  return dialogRef;
+}
+
+function drawerAccessibility(open: boolean, mobileLayout: boolean) {
+  const hidden = mobileLayout && !open;
+  return {
+    "aria-hidden": hidden ? true : undefined,
+    inert: hidden ? true : undefined,
+    tabIndex: mobileLayout ? -1 : undefined,
+  } as const;
+}
+
 function formatClock(iso: string) {
   return new Intl.DateTimeFormat("zh-CN", {
     hour: "2-digit",
@@ -116,13 +209,14 @@ function StatBar({ label, value, max, tone }: { label: string; value: number; ma
   );
 }
 
-function WorldPanel({ world, recentEvents: events, law, open, onOpenLaw }: Pick<GameSnapshot, "world" | "recentEvents"> & {
+function WorldPanel({ world, recentEvents: events, law, open, mobileLayout, onOpenLaw }: Pick<GameSnapshot, "world" | "recentEvents"> & {
   law: GameSnapshot["self"]["law"];
   open: boolean;
+  mobileLayout: boolean;
   onOpenLaw: () => void;
 }) {
   return (
-    <section className={`world-panel paper-panel mobile-drawer ${open ? "drawer-open" : ""}`} aria-label="世界状态">
+    <section id="mobile-drawer-world" className={`world-panel paper-panel mobile-drawer ${open ? "drawer-open" : ""}`} aria-label="世界状态" {...drawerAccessibility(open, mobileLayout)}>
       <div className="world-main">
         <div className="seal" aria-hidden="true">世界</div>
         <div>
@@ -164,6 +258,7 @@ function MapPanel({
   onInspectPerson,
   visitedMapLoading,
   currentLayer,
+  backgroundDisabled,
 }: Pick<GameSnapshot, "locations" | "routes" | "self" | "onlinePlayers" | "qinggongTargets" | "currentLayer"> & {
   pending: boolean;
   onMove: (locationId: string) => void;
@@ -171,6 +266,7 @@ function MapPanel({
   onOpenVisitedMap: () => void;
   onInspectPerson: (personId: string) => void;
   visitedMapLoading: boolean;
+  backgroundDisabled: boolean;
 }) {
   const [inspectedLocationId, setInspectedLocationId] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -325,7 +421,7 @@ function MapPanel({
   };
 
   return (
-    <section className="map-panel" aria-label="世界地图">
+    <section className="map-panel" aria-label="世界地图" aria-hidden={backgroundDisabled ? true : undefined} inert={backgroundDisabled ? true : undefined}>
       <header className="map-title">
         <div>
           <p className="eyebrow">八方向移动</p>
@@ -520,6 +616,7 @@ function VisitedMapDialog({
   onLayerChange,
   onFastTravel,
   onClose,
+  returnFocus,
 }: {
   map: VisitedMap | null;
   loading: boolean;
@@ -529,8 +626,10 @@ function VisitedMapDialog({
   onLayerChange: (layerId: string) => void;
   onFastTravel: (locationId: string) => void;
   onClose: () => void;
+  returnFocus: HTMLElement | null;
 }) {
   const [inspectedLocationId, setInspectedLocationId] = useState<string | null>(null);
+  const dialogRef = useDialogFocus(onClose, true, returnFocus);
   const locations = useMemo(
     () => map?.locations.filter((location) => location.layerId === layerId) ?? [],
     [layerId, map],
@@ -575,17 +674,13 @@ function VisitedMapDialog({
     return `${x + (width - nextWidth) / 2} ${y + (height - nextHeight) / 2} ${nextWidth} ${nextHeight}`;
   }, [baseViewBox, zoom]);
 
-  useEffect(() => {
-    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [onClose]);
-
   return (
-    <div className="visited-map-backdrop">
+    <div className="visited-map-backdrop" onMouseDown={(event) => {
+      if (event.target === event.currentTarget) onClose();
+    }}>
       <section
+        ref={dialogRef}
+        tabIndex={-1}
         className="visited-map-dialog"
         role="dialog"
         aria-modal="true"
@@ -702,6 +797,7 @@ function ActionsPanel({
   marketAvailable,
   pending,
   open,
+  mobileLayout,
   onStart,
   onCancel,
   onReorder,
@@ -716,6 +812,7 @@ function ActionsPanel({
 }: Pick<GameSnapshot, "actionState" | "inventory" | "transitions" | "self" | "locations" | "privateEvents" | "combat" | "lootPiles" | "shop" | "marketAvailable"> & {
   pending: boolean;
   open: boolean;
+  mobileLayout: boolean;
   onStart: (actionId: string) => void;
   onCancel: (jobId: string) => void;
   onReorder: (jobIds: string[]) => void;
@@ -750,7 +847,7 @@ function ActionsPanel({
     onReorder(next.map((job) => job.id));
   };
   return (
-    <section className={`actions-panel paper-panel mobile-drawer ${open ? "drawer-open" : ""}`} aria-label="行动">
+    <section id="mobile-drawer-actions" className={`actions-panel paper-panel mobile-drawer ${open ? "drawer-open" : ""}`} aria-label="行动" {...drawerAccessibility(open, mobileLayout)}>
       <div className="section-heading">
         <div>
           <p className="eyebrow">此地可为</p>
@@ -916,6 +1013,7 @@ const INTERACTION_LABELS: Record<string, string> = {
   "relationship.lover": "恋人请求",
   "relationship.spouse": "婚配请求",
   intimate: "本次私密亲昵请求",
+  duel: "切磋请求（点到即止）",
 };
 
 const RELATIONSHIP_LABELS: Record<string, string> = {
@@ -936,6 +1034,7 @@ function CharacterPanel({
   nearbyPlayers,
   location,
   open,
+  mobileLayout,
   pending,
   onAllocate,
   onBreakthrough,
@@ -965,6 +1064,7 @@ function CharacterPanel({
   nearbyPlayers: GameSnapshot["onlinePlayers"];
   location?: Location;
   open: boolean;
+  mobileLayout: boolean;
   pending: boolean;
   onAllocate: (allocations: BaseAttributes) => void;
   onBreakthrough: () => void;
@@ -975,7 +1075,7 @@ function CharacterPanel({
   onStopSkill: (skillId: string) => void;
   onAdultUpdate: (status: "unknown" | "adult" | "minor", enabled: boolean) => void;
   onGreet: (targetPlayerId: string) => void;
-  onInteractionRequest: (targetPlayerId: string, requestType: "relationship.friend" | "relationship.sworn" | "relationship.mentor" | "relationship.lover" | "relationship.spouse" | "intimate") => void;
+  onInteractionRequest: (targetPlayerId: string, requestType: "relationship.friend" | "relationship.sworn" | "relationship.mentor" | "relationship.lover" | "relationship.spouse" | "intimate" | "duel") => void;
   onInteractionRespond: (requestId: string, accept: boolean) => void;
   onRelationshipEnd: (relationshipId: string) => void;
   onBlock: (targetPlayerId: string, blocked: boolean) => void;
@@ -998,8 +1098,9 @@ function CharacterPanel({
   const [adultEnabled, setAdultEnabled] = useState(social.adultProfile.contentEnabled);
   const [tradeDrafts, setTradeDrafts] = useState<Record<string, { cashWen: string; itemId: string; quantity: string }>>({});
   const [detail, setDetail] = useState<{ kind: "skill" | "item"; id: string } | null>(null);
-  const detailModalRef = useRef<HTMLElement | null>(null);
-  const detailRestoreFocusRef = useRef<HTMLElement | null>(null);
+  const [hostileTargetId, setHostileTargetId] = useState<string | null>(null);
+  const detailModalRef = useDialogFocus(() => setDetail(null), detail !== null);
+  const hostileModalRef = useDialogFocus(() => setHostileTargetId(null), hostileTargetId !== null);
   const allocated = Object.values(draft).reduce((sum, value) => sum + value, 0);
   const progress = Math.min(100, (self.cultivation.progress / Math.max(1, self.cultivation.nextLevelCost)) * 100);
   const tradableItems = inventory.items.filter((item) => !item.bound && !item.equippedSlot && item.quantity > item.reservedQuantity);
@@ -1007,31 +1108,7 @@ function CharacterPanel({
   const passiveSkills = self.skills.filter((skill) => skill.kind === "passive");
   const detailSkill = detail?.kind === "skill" ? self.skills.find((skill) => skill.id === detail.id) ?? null : null;
   const detailItem = detail?.kind === "item" ? inventory.items.find((item) => item.id === detail.id) ?? null : null;
-
-  useEffect(() => {
-    if (!detail) return;
-    detailRestoreFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const focusable = () => detailModalRef.current?.querySelectorAll<HTMLElement>(
-      "button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])",
-    ) ?? [];
-    const first = focusable()[0];
-    first?.focus();
-    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") setDetail(null);
-      if (event.key === "Tab") {
-        const nodes = [...focusable()];
-        if (nodes.length === 0) return;
-        const index = nodes.indexOf(document.activeElement as HTMLElement);
-        if (event.shiftKey && (index <= 0 || index < 0)) { event.preventDefault(); nodes[nodes.length - 1].focus(); }
-        else if (!event.shiftKey && (index === nodes.length - 1 || index < 0)) { event.preventDefault(); nodes[0].focus(); }
-      }
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => {
-      window.removeEventListener("keydown", closeOnEscape);
-      detailRestoreFocusRef.current?.focus();
-    };
-  }, [detail]);
+  const hostileTarget = nearbyPlayers.find((player) => player.id === hostileTargetId) ?? null;
 
   const openDetailOnKey = (event: KeyboardEvent<HTMLElement>, kind: "skill" | "item", id: string) => {
     if (event.key === "Enter" || event.key === " ") {
@@ -1042,7 +1119,7 @@ function CharacterPanel({
 
   return (
     <>
-    <section className={`character-panel side-section mobile-drawer ${open ? "drawer-open" : ""}`} aria-label="角色状态">
+    <section id="mobile-drawer-character" className={`character-panel side-section mobile-drawer ${open ? "drawer-open" : ""}`} aria-label="角色状态" {...drawerAccessibility(open, mobileLayout)}>
       <div className="character-heading">
         <div className="avatar" aria-hidden="true">侠</div>
         <div>
@@ -1231,7 +1308,8 @@ function CharacterPanel({
                   <button disabled={pending} onClick={() => onInteractionRequest(player.id, "relationship.spouse")}>婚配</button>
                   <button disabled={pending || !social.adultProfile.contentEnabled} onClick={() => onInteractionRequest(player.id, "intimate")}>私密亲昵</button>
                   <button disabled={pending} onClick={() => onTradeRequest(player.id)}>交易</button>
-                  <button disabled={pending} onClick={() => onCombatStart(player.id)}>攻击</button>
+                  <button disabled={pending} onClick={() => onInteractionRequest(player.id, "duel")}>切磋</button>
+                  <button disabled={pending} onClick={() => setHostileTargetId(player.id)}>敌意攻击</button>
                   <button disabled={pending} onClick={() => onBlock(player.id, true)}>屏蔽</button>
                 </div>
               </article>
@@ -1368,6 +1446,27 @@ function CharacterPanel({
       </div>,
       document.body,
     )}
+    {hostileTarget && typeof document !== "undefined" && createPortal(
+      <div className="detail-modal-backdrop" onMouseDown={(event) => {
+        if (event.target === event.currentTarget) setHostileTargetId(null);
+      }}>
+        <section ref={hostileModalRef} tabIndex={-1} className="detail-modal" role="dialog" aria-modal="true" aria-label={`确认敌意攻击：${hostileTarget.name}`}>
+          <header><div><p className="eyebrow">不可撤回的敌意行为</p><h2>攻击 {hostileTarget.name}？</h2></div><button type="button" onClick={() => setHostileTargetId(null)}>关闭</button></header>
+          <div className="detail-modal-body">
+            <p>敌意攻击可能增加开封通缉值；真实战败会掉落全部钱贯与未绑定物品。住宅、玄关、东京入口和新手保护期内禁止敌意攻击。</p>
+            <p>真人之间不能直接攻击。如需安全对练，请关闭此窗口并选择“切磋”，等待对方明确接受；切磋落败不会掉落财物。</p>
+            <div className="detail-modal-actions">
+              <button type="button" onClick={() => setHostileTargetId(null)}>取消</button>
+              <button type="button" disabled={pending} onClick={() => {
+                onCombatStart(hostileTarget.id);
+                setHostileTargetId(null);
+              }}>确认敌意攻击</button>
+            </div>
+          </div>
+        </section>
+      </div>,
+      document.body,
+    )}
     </>
   );
 }
@@ -1385,6 +1484,7 @@ function ShopModal({
   onBuy,
   onSell,
   onClose,
+  returnFocus,
 }: {
   shop: ShopState;
   inventory: GameSnapshot["inventory"];
@@ -1393,7 +1493,9 @@ function ShopModal({
   onBuy: (definitionId: string, quantity: number) => void;
   onSell: (itemId: string, quantity: number) => void;
   onClose: () => void;
+  returnFocus: HTMLElement | null;
 }) {
+  const dialogRef = useDialogFocus(onClose, true, returnFocus);
   const [buyId, setBuyId] = useState(shop.stock[0]?.definitionId ?? "");
   const [sellId, setSellId] = useState("");
   const [quantity, setQuantity] = useState("1");
@@ -1406,19 +1508,11 @@ function ShopModal({
   const selectedSellStock = selectedOwned ? shop.stock.find((item) => item.definitionId === selectedOwned.definitionId) ?? null : null;
   const parsedQuantity = Math.max(1, Number.parseInt(quantity || "1", 10) || 1);
 
-  useEffect(() => {
-    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [onClose]);
-
   return createPortal(
     <div className="detail-modal-backdrop" onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose();
     }}>
-      <section className="detail-modal shop-modal" role="dialog" aria-modal="true" aria-label={`店铺详情：${shop.name}`}>
+      <section ref={dialogRef} tabIndex={-1} className="detail-modal shop-modal" role="dialog" aria-modal="true" aria-label={`店铺详情：${shop.name}`}>
         <header>
           <div><p className="eyebrow">东京市易</p><h2>{shop.name}</h2></div>
           <button type="button" onClick={onClose}>关闭</button>
@@ -1481,6 +1575,7 @@ function MarketModal({
   onPlace,
   onCancel,
   onClose,
+  returnFocus,
 }: {
   market: MarketSnapshot;
   cashWen: number;
@@ -1488,7 +1583,9 @@ function MarketModal({
   onPlace: (contractId: string, side: "buy" | "sell", priceWen: number, quantity: number) => void;
   onCancel: (orderId: string) => void;
   onClose: () => void;
+  returnFocus: HTMLElement | null;
 }) {
+  const dialogRef = useDialogFocus(onClose, true, returnFocus);
   const [underlyingId, setUnderlyingId] = useState(market.underlyings[0]?.id ?? "");
   const [kind, setKind] = useState<"spot" | "future" | "call" | "put">("spot");
   const [horizon, setHorizon] = useState("1");
@@ -1507,19 +1604,11 @@ function MarketModal({
   const parsedPrice = Math.max(1, Number.parseInt(price || String(defaultPrice), 10) || defaultPrice);
   const parsedQuantity = Math.max(1, Number.parseInt(quantity || "1", 10) || 1);
 
-  useEffect(() => {
-    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [onClose]);
-
   return createPortal(
     <div className="detail-modal-backdrop" onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose();
     }}>
-      <section className="detail-modal market-modal" role="dialog" aria-modal="true" aria-label="市易行会详情">
+      <section ref={dialogRef} tabIndex={-1} className="detail-modal market-modal" role="dialog" aria-modal="true" aria-label="市易行会详情">
         <header>
           <div><p className="eyebrow">开封市易</p><h2>现货、期货与期权</h2></div>
           <button type="button" onClick={onClose}>关闭</button>
@@ -1609,6 +1698,7 @@ function PersonDetailModal({
   onAccept,
   onComplete,
   onClose,
+  returnFocus,
 }: {
   person: PersonDetail;
   commissions: GameSnapshot["commissions"];
@@ -1618,22 +1708,16 @@ function PersonDetailModal({
   onAccept: (templateId: string) => void;
   onComplete: (commissionId: string) => void;
   onClose: () => void;
+  returnFocus: HTMLElement | null;
 }) {
+  const dialogRef = useDialogFocus(onClose, true, returnFocus);
   const issuedCommissions = commissions.filter((commission) => commission.npcId === person.id);
-
-  useEffect(() => {
-    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [onClose]);
 
   return createPortal(
     <div className="detail-modal-backdrop" onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose();
     }}>
-      <section className="detail-modal person-modal" role="dialog" aria-modal="true" aria-label={`人物详情：${person.name}`}>
+      <section ref={dialogRef} tabIndex={-1} className="detail-modal person-modal" role="dialog" aria-modal="true" aria-label={`人物详情：${person.name}`}>
         <header>
           <div><p className="eyebrow">此地人物</p><h2>{person.name}</h2></div>
           <button type="button" onClick={onClose}>关闭</button>
@@ -1710,25 +1794,21 @@ function LawDetailModal({
   pending,
   onSurrender,
   onClose,
+  returnFocus,
 }: {
   law: GameSnapshot["self"]["law"];
   pending: boolean;
   onSurrender: () => void;
   onClose: () => void;
+  returnFocus: HTMLElement | null;
 }) {
-  useEffect(() => {
-    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [onClose]);
+  const dialogRef = useDialogFocus(onClose, true, returnFocus);
   const offenseLabel = { assault: "袭击居民", defeat: "击败居民", robbery: "夺取居民财物" } as const;
   return createPortal(
     <div className="detail-modal-backdrop" onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose();
     }}>
-      <section className="detail-modal law-modal" role="dialog" aria-modal="true" aria-label="开封法度详情">
+      <section ref={dialogRef} tabIndex={-1} className="detail-modal law-modal" role="dialog" aria-modal="true" aria-label="开封法度详情">
         <header><div><p className="eyebrow">东京城治安</p><h2>开封法度</h2></div><button type="button" onClick={onClose}>关闭</button></header>
         <div className="detail-modal-body">
           <dl>
@@ -1766,12 +1846,14 @@ function ChatPanel({
   selfId,
   connected,
   open,
+  mobileLayout,
   onSend,
 }: {
   messages: GameSnapshot["chatMessages"];
   selfId: string;
   connected: boolean;
   open: boolean;
+  mobileLayout: boolean;
   onSend: (content: string) => boolean;
 }) {
   const [content, setContent] = useState("");
@@ -1788,7 +1870,7 @@ function ChatPanel({
   };
 
   return (
-    <section className={`chat-panel side-section mobile-drawer ${open ? "drawer-open" : ""}`} aria-label="世界聊天">
+    <section id="mobile-drawer-chat" className={`chat-panel side-section mobile-drawer ${open ? "drawer-open" : ""}`} aria-label="世界聊天" {...drawerAccessibility(open, mobileLayout)}>
       <div className="chat-heading">
         <div>
           <p className="eyebrow">同道传音</p>
@@ -1837,6 +1919,8 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
   const [snapshot, setSnapshot] = useState(initialSnapshot);
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [drawer, setDrawer] = useState<Drawer>(null);
+  const [mobileLayout, setMobileLayout] = useState(false);
+  const [modalTrigger, setModalTrigger] = useState<HTMLElement | null>(null);
   const [pending, setPending] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [visitedMapOpen, setVisitedMapOpen] = useState(false);
@@ -1853,6 +1937,70 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
   const pendingRequestRef = useRef<string | null>(null);
   const visitedMapRequestRef = useRef<string | null>(null);
   const visitedLayerPreferenceRef = useRef<string | null>(null);
+  const drawerTriggerRef = useRef<HTMLButtonElement | null>(null);
+
+  const rememberModalTrigger = () => {
+    setModalTrigger(document.activeElement instanceof HTMLElement ? document.activeElement : null);
+  };
+
+  const closeDrawer = () => {
+    const trigger = drawerTriggerRef.current;
+    setDrawer(null);
+    window.requestAnimationFrame(() => trigger?.focus());
+  };
+
+  const openDrawer = (next: Exclude<Drawer, null>, trigger: HTMLButtonElement) => {
+    drawerTriggerRef.current = trigger;
+    if (drawer === next) {
+      closeDrawer();
+      return;
+    }
+    setDrawer(next);
+  };
+
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 800px)");
+    const update = () => setMobileLayout(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+
+  useEffect(() => {
+    if (!mobileLayout || !drawer) return;
+    const panel = document.getElementById(`mobile-drawer-${drawer}`);
+    if (!(panel instanceof HTMLElement)) return;
+    const frame = window.requestAnimationFrame(() => panel.focus());
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (document.querySelector("[aria-modal='true']")) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeDrawer();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const nodes = [...panel.querySelectorAll<HTMLElement>(DIALOG_FOCUSABLE)]
+        .filter((element) => !element.closest("[inert], [aria-hidden='true']"));
+      if (nodes.length === 0) {
+        event.preventDefault();
+        panel.focus();
+        return;
+      }
+      const index = nodes.indexOf(document.activeElement as HTMLElement);
+      if (event.shiftKey && index <= 0) {
+        event.preventDefault();
+        nodes[nodes.length - 1].focus();
+      } else if (!event.shiftKey && (index === nodes.length - 1 || index < 0)) {
+        event.preventDefault();
+        nodes[0].focus();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [drawer, mobileLayout]);
 
   useEffect(() => {
     let disposed = false;
@@ -2027,6 +2175,7 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
   const drawerOpen = drawer !== null;
 
   const openVisitedMap = () => {
+    rememberModalTrigger();
     setDrawer(null);
     setVisitedMapOpen(true);
     const socket = socketRef.current;
@@ -2050,7 +2199,8 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           recentEvents={snapshot.recentEvents}
           law={snapshot.self.law}
           open={drawer === "world"}
-          onOpenLaw={() => setLawOpen(true)}
+          mobileLayout={mobileLayout}
+          onOpenLaw={() => { rememberModalTrigger(); setLawOpen(true); }}
         />
         <MapPanel
           locations={snapshot.locations}
@@ -2059,10 +2209,11 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           onlinePlayers={snapshot.onlinePlayers}
           qinggongTargets={snapshot.qinggongTargets}
           currentLayer={snapshot.currentLayer}
+          backgroundDisabled={mobileLayout && drawerOpen}
           pending={pending !== null || connection !== "online" || snapshot.combat !== null || snapshot.self.defeated}
           visitedMapLoading={visitedMapLoading}
           onOpenVisitedMap={openVisitedMap}
-          onInspectPerson={(personId) => sendCommand({ type: "person.inspect", personId }, "person")}
+          onInspectPerson={(personId) => { rememberModalTrigger(); sendCommand({ type: "person.inspect", personId }, "person"); }}
           onMove={(locationId) => {
             setDrawer(null);
             sendCommand({ type: "move", locationId }, "move");
@@ -2082,6 +2233,7 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           marketAvailable={snapshot.marketAvailable}
           pending={pending !== null || connection !== "online"}
           open={drawer === "actions"}
+          mobileLayout={mobileLayout}
           onStart={(actionId) => sendCommand({ type: "action.start", actionId }, "action")}
           onCancel={(jobId) => sendCommand({ type: "action.cancel", jobId }, "action")}
           onReorder={(jobIds) => sendCommand({ type: "action.queue.reorder", jobIds }, "action")}
@@ -2091,8 +2243,8 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           onRespawn={() => sendCommand({ type: "combat.respawn" }, "combat")}
           onTakeLoot={(lootPileId) => sendCommand({ type: "loot.take", lootPileId }, "loot")}
           onTransition={(locationId) => sendCommand({ type: "move", locationId }, "move")}
-          onInspectShop={(shopId) => sendCommand({ type: "shop.inspect", shopId }, "shop")}
-          onOpenMarket={() => sendCommand({ type: "market.snapshot" }, "market")}
+          onInspectShop={(shopId) => { rememberModalTrigger(); sendCommand({ type: "shop.inspect", shopId }, "shop"); }}
+          onOpenMarket={() => { rememberModalTrigger(); sendCommand({ type: "market.snapshot" }, "market"); }}
         />
       </div>
 
@@ -2108,6 +2260,7 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           nearbyPlayers={nearbyPlayers}
           location={currentLocation}
           open={drawer === "character"}
+          mobileLayout={mobileLayout}
           pending={pending !== null || connection !== "online" || snapshot.combat !== null || snapshot.self.defeated}
           onAllocate={(allocations) => sendCommand({ type: "attributes.allocate", allocations }, "attributes")}
           onBreakthrough={() => sendCommand({ type: "cultivation.breakthrough" }, "breakthrough")}
@@ -2135,18 +2288,19 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           selfId={snapshot.self.id}
           connected={connection === "online"}
           open={drawer === "chat"}
+          mobileLayout={mobileLayout}
           onSend={(content) => sendCommand({ type: "chat.send", content })}
         />
       </aside>
 
-      {drawerOpen && <button className="drawer-backdrop" aria-label="关闭面板" onClick={() => setDrawer(null)} />}
+      {drawerOpen && <button className="drawer-backdrop" aria-label="关闭面板" onClick={closeDrawer} />}
       <nav className="mobile-dock" aria-label="游戏界面">
         <button className={drawer === null && !visitedMapOpen ? "active" : ""} onClick={() => { setDrawer(null); setVisitedMapOpen(false); }}><i>图</i><span>地图</span></button>
         <button className={visitedMapOpen ? "active" : ""} onClick={openVisitedMap}><i>迹</i><span>足迹</span></button>
-        <button className={drawer === "world" ? "active" : ""} onClick={() => setDrawer("world")}><i>天</i><span>世界</span></button>
-        <button className={drawer === "actions" ? "active" : ""} onClick={() => setDrawer("actions")}><i>行</i><span>行动</span></button>
-        <button className={drawer === "character" ? "active" : ""} onClick={() => setDrawer("character")}><i>侠</i><span>角色</span></button>
-        <button className={drawer === "chat" ? "active" : ""} onClick={() => setDrawer("chat")}><i>言</i><span>聊天</span></button>
+        <button className={drawer === "world" ? "active" : ""} aria-expanded={drawer === "world"} aria-controls="mobile-drawer-world" onClick={(event) => openDrawer("world", event.currentTarget)}><i>天</i><span>世界</span></button>
+        <button className={drawer === "actions" ? "active" : ""} aria-expanded={drawer === "actions"} aria-controls="mobile-drawer-actions" onClick={(event) => openDrawer("actions", event.currentTarget)}><i>行</i><span>行动</span></button>
+        <button className={drawer === "character" ? "active" : ""} aria-expanded={drawer === "character"} aria-controls="mobile-drawer-character" onClick={(event) => openDrawer("character", event.currentTarget)}><i>侠</i><span>角色</span></button>
+        <button className={drawer === "chat" ? "active" : ""} aria-expanded={drawer === "chat"} aria-controls="mobile-drawer-chat" onClick={(event) => openDrawer("chat", event.currentTarget)}><i>言</i><span>聊天</span></button>
       </nav>
 
       {visitedMapOpen && (
@@ -2161,6 +2315,7 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
             if (sendCommand({ type: "travel.fast", destinationId }, "fast-travel")) setVisitedMapOpen(false);
           }}
           onClose={() => setVisitedMapOpen(false)}
+          returnFocus={modalTrigger}
         />
       )}
 
@@ -2173,6 +2328,7 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           onBuy={(definitionId, quantity) => sendCommand({ type: "shop.buy", shopId: shopState.id, definitionId, quantity }, "shop")}
           onSell={(itemId, quantity) => sendCommand({ type: "shop.sell", shopId: shopState.id, itemId, quantity }, "shop")}
           onClose={() => setShopState(null)}
+          returnFocus={modalTrigger}
         />
       )}
 
@@ -2186,6 +2342,7 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           }, "market")}
           onCancel={(orderId) => sendCommand({ type: "market.order.cancel", orderId }, "market")}
           onClose={() => setMarketState(null)}
+          returnFocus={modalTrigger}
         />
       )}
 
@@ -2199,6 +2356,7 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           onAccept={(templateId) => sendCommand({ type: "commission.accept", personId: personDetail.id, templateId }, "commission")}
           onComplete={(commissionId) => sendCommand({ type: "commission.complete", commissionId }, "commission")}
           onClose={() => { setPersonDetail(null); setPersonReply(null); }}
+          returnFocus={modalTrigger}
         />
       )}
 
@@ -2208,10 +2366,14 @@ export default function GameShell({ initialSnapshot }: { initialSnapshot: GameSn
           pending={pending !== null || connection !== "online"}
           onSurrender={() => sendCommand({ type: "law.surrender" }, "law")}
           onClose={() => setLawOpen(false)}
+          returnFocus={modalTrigger}
         />
       )}
 
-      {notice && <div className="notice" role="status">{notice}</div>}
+      {notice && typeof document !== "undefined" && createPortal(
+        <div className="notice" role="status">{notice}</div>,
+        document.body,
+      )}
       {pending && <div className="pending-ink" aria-label="行动处理中"><span /></div>}
     </main>
   );

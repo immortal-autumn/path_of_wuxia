@@ -6,14 +6,37 @@ import { resolveNpcAgentDirective } from "./lib/game/npc-schedule";
 import { npcTradeClientMessageSchema, type NpcTradeServerMessage } from "./lib/game/npc-trade-protocol";
 import { NpcTradeAgentService } from "./lib/game/npc-trade-service";
 import { clientMessageSchema, type ServerMessage } from "./lib/game/protocol";
+import { serverUpgradeOwner } from "./lib/game/server-upgrade";
+import { INTERNAL_CLIENT_ADDRESS_HEADER } from "./lib/game/session-security";
 import { getGameService, SESSION_COOKIE } from "./lib/game/service";
 import { worldStatusKey } from "./lib/game/time";
 
 const dev = process.env.NODE_ENV !== "production";
 const hostname = process.env.GAME_HOST ?? "0.0.0.0";
 const port = Number(process.env.PORT ?? 3000);
-if (!dev && !process.env.PUBLIC_ORIGIN?.trim()) throw new Error("PUBLIC_ORIGIN 必须在生产环境启动前配置。");
-const service = getGameService();
+export const SYNC_MIN_INTERVAL_MS = 5_000;
+
+export type RealtimeClientKind = "browser" | "npc-agent" | "npc-trade-agent";
+
+export function syncRetryAfterMs(lastSyncAt: number, now: number, minimumIntervalMs = SYNC_MIN_INTERVAL_MS) {
+  if (lastSyncAt <= 0) return 0;
+  return Math.max(0, minimumIntervalMs - (now - lastSyncAt));
+}
+
+export function groupSnapshotRefreshes<T extends { playerId: string; clientKind: RealtimeClientKind }>(
+  playerIds: string[],
+  recipients: T[],
+) {
+  const targets = new Set(playerIds);
+  const groups = new Map<string, T[]>();
+  for (const recipient of recipients) {
+    if (recipient.clientKind === "npc-trade-agent" || !targets.has(recipient.playerId)) continue;
+    const group = groups.get(recipient.playerId) ?? [];
+    group.push(recipient);
+    groups.set(recipient.playerId, group);
+  }
+  return groups;
+}
 
 const gameplayNpcCommands = new Set([
   "sync", "ping", "move", "action.start", "action.cancel", "action.queue.reorder",
@@ -23,11 +46,12 @@ const gameplayNpcCommands = new Set([
 
 type SocketContext = {
   playerId: string;
-  clientKind: "browser" | "npc-agent" | "npc-trade-agent";
+  clientKind: RealtimeClientKind;
   alive: boolean;
   visibleLocationIds: Set<string>;
   windowStartedAt: number;
   messageCount: number;
+  lastSyncAt: number;
 };
 
 function readCookie(request: IncomingMessage, name: string) {
@@ -61,6 +85,8 @@ function errorMessage(error: unknown) {
 }
 
 async function main() {
+  if (!dev && !process.env.PUBLIC_ORIGIN?.trim()) throw new Error("PUBLIC_ORIGIN 必须在生产环境启动前配置。");
+  const service = getGameService();
   const httpServer = createServer();
   const app = next({ dev, hostname, port, httpServer });
   const handle = app.getRequestHandler();
@@ -117,26 +143,59 @@ async function main() {
     broadcast({ type: "world.updated", world: service.getWorldStatus(playerIds.length) });
   };
 
-  const sendSnapshot = (socket: WebSocket, context: SocketContext) => {
-    const snapshot = service.getSnapshot(context.playerId, onlinePlayerIds());
-    context.visibleLocationIds = new Set(
-      service.getNeighborhood(snapshot.self.currentLocation, snapshot.self.visionDepth).locations.map((location) => location.id),
-    );
+  const prepareSnapshot = (playerId: string, onlineIds: string[], includeDirective: boolean) => {
+    const snapshot = service.getSnapshot(playerId, onlineIds);
+    const visibleLocationIds = service.getNeighborhood(
+      snapshot.self.currentLocation,
+      snapshot.self.visionDepth,
+    ).locations.map((location) => location.id);
+    const directive = includeDirective
+      ? resolveNpcAgentDirective(getGameDatabase(), playerId, onlineIds, new Date(snapshot.world.serverTime))
+      : null;
+    return { snapshot, visibleLocationIds, directive };
+  };
+
+  const sendPreparedSnapshot = (
+    socket: WebSocket,
+    context: SocketContext,
+    prepared: ReturnType<typeof prepareSnapshot>,
+  ) => {
+    if (context.clientKind === "npc-trade-agent") return;
+    context.visibleLocationIds = new Set(prepared.visibleLocationIds);
+    const { snapshot } = prepared;
     send(socket, { type: "snapshot", snapshot });
-    if (context.clientKind === "npc-agent" && socket.readyState === WebSocket.OPEN) {
+    if (context.clientKind === "npc-agent" && prepared.directive && socket.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify({
         type: "npc.directive",
-        directive: resolveNpcAgentDirective(
-          getGameDatabase(), context.playerId, onlinePlayerIds(), new Date(snapshot.world.serverTime),
-        ),
+        directive: prepared.directive,
       }));
     }
   };
 
+  const sendSnapshot = (socket: WebSocket, context: SocketContext) => {
+    if (context.clientKind === "npc-trade-agent") return;
+    const onlineIds = onlinePlayerIds();
+    sendPreparedSnapshot(
+      socket,
+      context,
+      prepareSnapshot(context.playerId, onlineIds, context.clientKind === "npc-agent"),
+    );
+  };
+
   const refreshPlayers = (playerIds: string[]) => {
-    const targets = new Set(playerIds);
-    for (const [socket, socketContext] of sockets) {
-      if (targets.has(socketContext.playerId)) sendSnapshot(socket, socketContext);
+    const groups = groupSnapshotRefreshes(
+      playerIds,
+      [...sockets].map(([socket, context]) => ({ socket, context, ...context })),
+    );
+    if (groups.size === 0) return;
+    const onlineIds = onlinePlayerIds();
+    for (const [playerId, recipients] of groups) {
+      const prepared = prepareSnapshot(
+        playerId,
+        onlineIds,
+        recipients.some(({ clientKind }) => clientKind === "npc-agent"),
+      );
+      for (const { socket, context } of recipients) sendPreparedSnapshot(socket, context, prepared);
     }
   };
 
@@ -157,6 +216,7 @@ async function main() {
       visibleLocationIds: new Set(),
       windowStartedAt: Date.now(),
       messageCount: 0,
+      lastSyncAt: 0,
     };
     sockets.set(socket, context);
     if (context.clientKind !== "npc-trade-agent") {
@@ -251,6 +311,16 @@ async function main() {
       }
       try {
         if (command.type === "sync") {
+          const retryAfter = syncRetryAfterMs(context.lastSyncAt, now);
+          if (retryAfter > 0) {
+            send(socket, {
+              type: "error",
+              requestId: command.requestId,
+              message: `状态同步请求过于频繁，请在${Math.ceil(retryAfter / 1_000)}秒后重试。`,
+            });
+            return;
+          }
+          context.lastSyncAt = now;
           sendSnapshot(socket, context);
           send(socket, { type: "ack", requestId: command.requestId });
           return;
@@ -472,6 +542,7 @@ async function main() {
           const result = service.respondInteraction(
             context.playerId, command.interactionRequestId, command.accept, onlinePlayerIds(),
           );
+          if (result.event) broadcast({ type: "world.event", event: result.event });
           refreshPlayers(result.affectedPlayerIds);
           send(socket, { type: "ack", requestId: command.requestId, message: result.message });
           return;
@@ -708,7 +779,13 @@ async function main() {
 
   httpServer.on("upgrade", (request, socket, head) => {
     const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
-    if (url.pathname !== "/ws") {
+    const owner = serverUpgradeOwner(url.pathname, dev);
+    if (owner === "next") {
+      // Next.js 16 owns development upgrade channels such as /_next/hmr.
+      // Returning here lets the listener installed by Next handle those sockets.
+      return;
+    }
+    if (owner === "reject") {
       socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
       socket.destroy();
       return;
@@ -723,7 +800,12 @@ async function main() {
   });
 
   await app.prepare();
-  httpServer.on("request", (request, response) => handle(request, response));
+  httpServer.on("request", (request, response) => {
+    // Always overwrite a client-supplied value before the App Router sees it.
+    // /api/session uses this address unless a trusted reverse proxy is enabled.
+    request.headers[INTERNAL_CLIENT_ADDRESS_HEADER] = request.socket.remoteAddress ?? "unknown";
+    handle(request, response);
+  });
   service.settleMarket();
 
   const heartbeat = setInterval(() => {
@@ -826,8 +908,10 @@ async function main() {
   process.on("SIGTERM", shutdown);
 }
 
-main().catch((error) => {
-  console.error(error);
-  closeGameDatabase();
-  process.exit(1);
-});
+if (!process.env.VITEST) {
+  main().catch((error) => {
+    console.error(error);
+    closeGameDatabase();
+    process.exit(1);
+  });
+}
